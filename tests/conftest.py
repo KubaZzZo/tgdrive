@@ -66,6 +66,7 @@ def make_settings(tmp_path: Path, **overrides: Any) -> Settings:
         "temp_dir": tmp_path / "tmp",
         "db_path": tmp_path / "data" / "test.sqlite3",
         "frontend_dist": tmp_path / "dist",
+        "traffic_host_state": tmp_path / "host.json",
         "app_password": "correct-horse-battery-staple",
         "app_secret": "test-secret-" + "x" * 40,
         "cookie_secure": False,

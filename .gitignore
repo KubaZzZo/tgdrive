@@ -26,3 +26,7 @@ static/dist/
 .DS_Store
 .pytest_tmp/
 .ruff_cache/
+
+# 本地浏览器检查产物
+.playwright-cli/
+output/playwright/

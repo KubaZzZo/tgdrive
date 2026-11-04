@@ -1,0 +1,21 @@
+[Unit]
+Description=TG Drive host uplink traffic collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tgdrive
+Group=tgdrive
+WorkingDirectory=/opt/tgdrive
+ExecStart=/usr/bin/python3 /opt/tgdrive/scripts/traffic_collector.py --state /opt/tgdrive/data/traffic/host.json
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/tgdrive/data/traffic
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target

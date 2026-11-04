@@ -73,6 +73,7 @@ class TelegramStorage:
         self.chat: int | str | None = None
         self.error: str | None = None
         self._started = False
+        self.traffic = None
         self._message_cache: OrderedDict[tuple[str, int], tuple[float, Any]] = OrderedDict()
 
     @property
@@ -222,8 +223,13 @@ class TelegramStorage:
                 size = min(segment_size, total_size - start)
                 part_name = name if segment_count == 1 else f"{name}.part{index + 1:03d}"
                 reader = SegmentReader(path, start, size, part_name)
+                last_sent = 0
 
                 async def part_progress(sent: int, part_total: int, *, _start: int = start) -> None:
+                    nonlocal last_sent
+                    if self.traffic and sent > last_sent:
+                        self.traffic.record("telegram", outbound=sent - last_sent)
+                    last_sent = max(last_sent, sent)
                     await self._progress(progress, _start + sent, total_size)
 
                 try:
@@ -301,6 +307,8 @@ class TelegramStorage:
         remaining = length
         try:
             async for chunk in stream:
+                if self.traffic:
+                    self.traffic.record("telegram", inbound=len(chunk))
                 data = bytes(chunk[:remaining])
                 remaining -= len(data)
                 if data:

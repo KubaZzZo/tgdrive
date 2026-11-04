@@ -6,6 +6,7 @@ import type {
   ShareRecord,
   SyncStatus,
   UploadRecord,
+  TrafficStatus,
 } from './types'
 
 export class ApiError extends Error {
@@ -128,6 +129,8 @@ export async function uploadChunk(
 }
 
 export const api = {
+  traffic: () => request<TrafficStatus>('/api/traffic'),
+  saveTrafficQuota: (quotaBytes: number) => jsonRequest<TrafficStatus>('PUT', '/api/traffic/settings', { quota_bytes: quotaBytes }),
   syncStatus: () => request<SyncStatus>('/api/sync'),
   requestSync: (full = false) => jsonRequest<SyncStatus>('POST', '/api/sync', { full }),
   meta: () => request<Meta>('/api/meta'),

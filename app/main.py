@@ -18,6 +18,7 @@ from app.core.middleware import RequestContextMiddleware
 from app.core.security import LoginRateLimiter
 from app.db import Database
 from app.services.channel_sync import ChannelSyncService
+from app.services.traffic import TrafficMiddleware, TrafficMonitor
 from app.services.uploads import UploadService
 from app.storage import TelegramStorage
 
@@ -36,6 +37,8 @@ def create_app(
 
     database = db or Database(cfg.db_path)
     telegram = storage or TelegramStorage(cfg)
+    traffic = TrafficMonitor(database, cfg.traffic_host_state)
+    telegram.traffic = traffic
     upload_service = UploadService(
         database, telegram, cfg.upload_stale_hours, cfg.upload_concurrency
     )
@@ -65,6 +68,7 @@ def create_app(
             await channel_sync.shutdown()
             await upload_service.shutdown()
             await telegram.stop()
+            traffic.flush()
             database.close()
             logger.info("TG Drive stopped")
 
@@ -79,6 +83,7 @@ def create_app(
     app.state.settings = cfg
     app.state.db = database
     app.state.storage = telegram
+    app.state.traffic = traffic
     app.state.uploads = upload_service
     app.state.channel_sync = channel_sync
     app.state.login_limiter = LoginRateLimiter(cfg.login_max_attempts, cfg.login_window_seconds)
@@ -91,6 +96,7 @@ def create_app(
         max_age=cfg.session_max_age,
     )
     app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(TrafficMiddleware, monitor=traffic)
     install_exception_handlers(app)
 
     app.include_router(system.router)
