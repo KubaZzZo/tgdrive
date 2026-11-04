@@ -1,0 +1,80 @@
+<script setup lang="ts">
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+
+import AppHeader from '@/components/AppHeader.vue'
+import FileBrowser from '@/components/FileBrowser.vue'
+import LoginView from '@/components/LoginView.vue'
+import StorageWarning from '@/components/StorageWarning.vue'
+import ToastHost from '@/components/ToastHost.vue'
+import UploadPanel from '@/components/UploadPanel.vue'
+import { useAuthStore } from '@/stores/auth'
+import { useDriveStore } from '@/stores/drive'
+import { useToastStore } from '@/stores/toast'
+import { useUploadStore } from '@/stores/uploads'
+
+const auth = useAuthStore()
+const drive = useDriveStore()
+const uploads = useUploadStore()
+const toast = useToastStore()
+const entered = ref(false)
+
+async function enterApp(): Promise<void> {
+  if (entered.value) return
+  entered.value = true
+  await drive.load(null)
+  const pending = await uploads.restore()
+  if (pending > 0) {
+    toast.push(`有 ${pending} 个未完成的上传，重新拖入同名文件即可续传`, 'info', 6000)
+  }
+}
+
+function onUnauthorized(): void {
+  auth.markUnauthorized()
+  toast.error('登录状态已失效，请重新登录')
+}
+
+watch(
+  () => auth.authenticated,
+  (authenticated) => {
+    if (authenticated) {
+      void enterApp()
+    } else {
+      entered.value = false
+    }
+  },
+)
+
+watch(
+  () => uploads.completedCount,
+  () => {
+    if (auth.authenticated) void drive.load(drive.folderId)
+  },
+)
+
+onMounted(async () => {
+  window.addEventListener('tgdrive:unauthorized', onUnauthorized)
+  await auth.bootstrap()
+  if (auth.authenticated) await enterApp()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('tgdrive:unauthorized', onUnauthorized)
+})
+</script>
+
+<template>
+  <LoginView v-if="auth.ready && !auth.authenticated" />
+  <div v-else-if="auth.authenticated" class="app-shell">
+    <AppHeader />
+    <StorageWarning :storage="auth.storage" />
+    <main class="main">
+      <FileBrowser />
+    </main>
+    <UploadPanel />
+  </div>
+  <div v-else class="boot-screen">
+    <div class="brand-mark">TG</div>
+    <p>正在连接 TG Drive…</p>
+  </div>
+  <ToastHost />
+</template>

@@ -59,14 +59,21 @@ TG_PROXY=
 
 # ===== 应用 =====
 APP_NAME=TG Drive
+APP_ENV=production
 APP_PASSWORD=$APP_PASSWORD
 APP_SECRET=$COOKIE_SECRET
 COOKIE_SECURE=true
+SESSION_MAX_AGE=1209600
+LOGIN_MAX_ATTEMPTS=5
+LOGIN_WINDOW_SECONDS=300
 HOST=0.0.0.0
 PORT=8787
+LOG_LEVEL=INFO
+LOG_JSON=true
 DATA_DIR=$APP_DIR/data
 TEMP_DIR=$APP_DIR/tmp
 DB_PATH=$APP_DIR/data/tgdrive.sqlite3
+FRONTEND_DIST=$APP_DIR/static/dist
 
 # ===== 分片 =====
 TG_SEGMENT_SIZE=1800000000
@@ -97,6 +104,17 @@ else
   [[ -d "$APP_DIR/.venv" ]] || python3.12 -m venv "$APP_DIR/.venv"
   "$APP_DIR/.venv/bin/pip" install -q --upgrade pip
   "$APP_DIR/.venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"
+
+  NODE_MAJOR="$(node -v 2>/dev/null | sed 's/^v//' | cut -d. -f1 || true)"
+  if [[ -z "$NODE_MAJOR" || "$NODE_MAJOR" -lt 22 ]]; then
+    log "安装 Node.js 22（用于构建 Vue 前端）…"
+    apt-get install -y ca-certificates curl gnupg
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+    apt-get install -y nodejs
+  fi
+  log "构建前端…"
+  ( cd "$APP_DIR/frontend" && npm ci --no-audit --no-fund && npm run build )
+
   chown -R "$APP_USER:$APP_USER" "$APP_DIR"
   install -m 0644 "$APP_DIR/deploy/tgdrive.service" /etc/systemd/system/tgdrive.service
   systemctl daemon-reload && systemctl enable --now tgdrive

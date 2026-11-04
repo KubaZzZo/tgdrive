@@ -1,20 +1,23 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import io
-import os
+import logging
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from telethon import TelegramClient
 from telethon.tl.types import DocumentAttributeFilename
 
-from app.config import Settings, settings as default_settings
+from app.config import Settings
+from app.config import settings as default_settings
 from app.network import get_proxy
 
 ProgressCallback = Callable[[int, int], Awaitable[None] | None]
+logger = logging.getLogger("tgdrive.storage")
 
 
 class SegmentReader(io.RawIOBase):
@@ -32,7 +35,7 @@ class SegmentReader(io.RawIOBase):
         self._size = size
         self._pos = 0
         self.name = name
-        self._fh = open(path, "rb")
+        self._fh = open(path, "rb")  # noqa: SIM115 - lifetime owned by SegmentReader
         self._fh.seek(offset)
 
     def readable(self) -> bool:
@@ -113,10 +116,20 @@ class TelegramStorage:
                 if not self.settings.tg_bot_token:
                     self.error = "缺少 TG_BOT_TOKEN"
                     return
-                self.client = TelegramClient(self._session_path(), self.settings.tg_api_id, self.settings.tg_api_hash, **kwargs)
+                self.client = TelegramClient(
+                    self._session_path(),
+                    self.settings.tg_api_id,
+                    self.settings.tg_api_hash,
+                    **kwargs,
+                )
                 await self.client.start(bot_token=self.settings.tg_bot_token)
             else:
-                self.client = TelegramClient(self._session_path(), self.settings.tg_api_id, self.settings.tg_api_hash, **kwargs)
+                self.client = TelegramClient(
+                    self._session_path(),
+                    self.settings.tg_api_id,
+                    self.settings.tg_api_hash,
+                    **kwargs,
+                )
                 await self.client.connect()
                 if not await self.client.is_user_authorized():
                     self.error = "Telegram session 未登录，请先运行: python scripts/login_qr.py"
@@ -129,7 +142,9 @@ class TelegramStorage:
             me = await self.client.get_me()
             self.error = None
             self._started = True
-            print(f"[telegram] connected mode={self.mode} account={getattr(me, 'username', None) or getattr(me, 'id', '?')}")
+            print(
+                f"[telegram] connected mode={self.mode} account={getattr(me, 'username', None) or getattr(me, 'id', '?')}"
+            )
         except Exception as exc:  # pragma: no cover - depends on live Telegram
             self.error = f"Telegram 连接失败: {exc}"
             if self.client:
@@ -180,11 +195,11 @@ class TelegramStorage:
     ) -> list[dict[str, Any]]:
         """Upload a file, splitting it into Telegram-safe segments.
 
-        Telegram's MTProto uploader already transfers each message in 512 KiB
-        parts.  On top of that we split files larger than TG_SEGMENT_SIZE into
-        independent Telegram documents.  This makes single files bigger than
-        the per-file limit possible and keeps a failed upload recoverable at
-        segment granularity.
+        Telegram's MTProto uploader transfers each message in 512 KiB parts.
+        On top of that, files larger than TG_SEGMENT_SIZE are split into
+        independent documents, keeping a failed upload recoverable at segment
+        granularity.  Messages created by a failed attempt are removed on a
+        best-effort basis so normal failures do not leave orphan documents.
         """
         client = self.require_client()
         assert self.chat is not None
@@ -196,45 +211,55 @@ class TelegramStorage:
         segment_count = (total_size + segment_size - 1) // segment_size
         tag = storage_tag or uuid.uuid4().hex
         parts: list[dict[str, Any]] = []
+        uploaded_message_ids: list[int] = []
 
-        for index in range(segment_count):
-            start = index * segment_size
-            size = min(segment_size, total_size - start)
-            part_name = name if segment_count == 1 else f"{name}.part{index + 1:03d}"
-            reader = SegmentReader(path, start, size, part_name)
+        try:
+            for index in range(segment_count):
+                start = index * segment_size
+                size = min(segment_size, total_size - start)
+                part_name = name if segment_count == 1 else f"{name}.part{index + 1:03d}"
+                reader = SegmentReader(path, start, size, part_name)
 
-            async def part_progress(sent: int, part_total: int, *, _start: int = start) -> None:
-                await self._progress(progress, _start + sent, total_size)
+                async def part_progress(sent: int, part_total: int, *, _start: int = start) -> None:
+                    await self._progress(progress, _start + sent, total_size)
 
-            try:
-                uploaded = await client.upload_file(
-                    reader,
-                    file_size=size,
-                    part_size_kb=512,
-                    file_name=part_name,
-                    progress_callback=part_progress,
+                try:
+                    uploaded = await client.upload_file(
+                        reader,
+                        file_size=size,
+                        part_size_kb=512,
+                        file_name=part_name,
+                        progress_callback=part_progress,
+                    )
+                    message = await client.send_file(
+                        self.chat,
+                        uploaded,
+                        caption=f"tgdrive:v1:{tag}:{index}",
+                        force_document=True,
+                        attributes=[DocumentAttributeFilename(part_name)],
+                    )
+                finally:
+                    reader.close()
+
+                if not message:
+                    raise RuntimeError(f"Telegram 未返回第 {index + 1} 段的消息")
+                uploaded_message_ids.append(int(message.id))
+                parts.append(
+                    {
+                        "part_index": index,
+                        "tg_message_id": int(message.id),
+                        "size": size,
+                    }
                 )
-                message = await client.send_file(
-                    self.chat,
-                    uploaded,
-                    caption=f"tgdrive:v1:{tag}:{index}",
-                    force_document=True,
-                    attributes=[DocumentAttributeFilename(part_name)],
-                )
-            finally:
-                reader.close()
-
-            if not message:
-                raise RuntimeError(f"Telegram 未返回第 {index + 1} 段的消息")
-            parts.append(
-                {
-                    "part_index": index,
-                    "tg_message_id": int(message.id),
-                    "size": size,
-                }
-            )
-
-        return parts
+            return parts
+        except Exception:
+            if uploaded_message_ids:
+                try:
+                    await self.delete_messages(uploaded_message_ids)
+                    logger.info("Deleted %s partial Telegram segment(s)", len(uploaded_message_ids))
+                except Exception:
+                    logger.exception("Failed to clean up partial Telegram segments")
+            raise
 
     async def _get_message(self, message_id: int) -> Any:
         client = self.require_client()

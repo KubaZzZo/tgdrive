@@ -1,15 +1,18 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
+
+SCHEMA_VERSION = 1
 
 
 def utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 SCHEMA = """
@@ -57,24 +60,60 @@ CREATE TABLE IF NOT EXISTS uploads (
     updated_at TEXT NOT NULL
 );
 
+CREATE INDEX IF NOT EXISTS idx_uploads_state ON uploads(state);
+
 CREATE TABLE IF NOT EXISTS shares (
     token TEXT PRIMARY KEY,
     item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
     created_at TEXT NOT NULL,
     expires_at TEXT
 );
+
+CREATE INDEX IF NOT EXISTS idx_shares_item ON shares(item_id);
 """
 
 
 class Database:
+    """SQLite metadata store.
+
+    A single connection is shared by the FastAPI event loop and the upload
+    worker thread. sqlite3 is opened with ``check_same_thread=False`` and all
+    public operations are serialized with a re-entrant lock.
+    """
+
     def __init__(self, path: Path | str):
         self.path = str(path)
         self._lock = threading.RLock()
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
+        self.conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys=ON")
-        self.conn.executescript(SCHEMA)
-        self.conn.commit()
+        self.conn.execute("PRAGMA busy_timeout=30000")
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self._migrate()
+
+    def _migrate(self) -> None:
+        with self._lock:
+            current = int(self.conn.execute("PRAGMA user_version").fetchone()[0])
+            if current > SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"数据库版本 {current} 高于程序支持版本 {SCHEMA_VERSION}，请升级程序"
+                )
+            if current < 1:
+                self.conn.executescript(SCHEMA)
+                self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                self.conn.commit()
+
+    def schema_version(self) -> int:
+        with self._lock:
+            return int(self.conn.execute("PRAGMA user_version").fetchone()[0])
+
+    def ping(self) -> bool:
+        try:
+            with self._lock:
+                self.conn.execute("SELECT 1").fetchone()
+            return True
+        except sqlite3.Error:
+            return False
 
     def close(self) -> None:
         with self._lock:
@@ -90,14 +129,12 @@ class Database:
         with self._lock:
             if parent_id:
                 rows = self.conn.execute(
-                    "SELECT * FROM items WHERE parent_id = ? "
-                    "ORDER BY kind ASC, lower(name) ASC",
+                    "SELECT * FROM items WHERE parent_id = ? ORDER BY kind ASC, lower(name) ASC",
                     (parent_id,),
                 ).fetchall()
             else:
                 rows = self.conn.execute(
-                    "SELECT * FROM items WHERE parent_id IS NULL "
-                    "ORDER BY kind ASC, lower(name) ASC"
+                    "SELECT * FROM items WHERE parent_id IS NULL ORDER BY kind ASC, lower(name) ASC"
                 ).fetchall()
         return [dict(r) for r in rows]
 
@@ -166,7 +203,12 @@ class Database:
                 self.conn.execute(
                     "INSERT INTO file_parts (item_id, part_index, tg_message_id, size) "
                     "VALUES (?, ?, ?, ?)",
-                    (item_id, int(part["part_index"]), int(part["tg_message_id"]), int(part["size"])),
+                    (
+                        item_id,
+                        int(part["part_index"]),
+                        int(part["tg_message_id"]),
+                        int(part["size"]),
+                    ),
                 )
         return self.get_item(item_id)  # type: ignore[return-value]
 
@@ -240,9 +282,19 @@ class Database:
     # ---------- uploads ----------
 
     def create_upload(
-        self, parent_id: str | None, name: str, size: int, mime: str | None, temp_path: str, chunk_size: int
+        self,
+        parent_id: str | None,
+        name: str,
+        size: int,
+        mime: str | None,
+        temp_path: str,
+        chunk_size: int,
     ) -> dict[str, Any]:
         name = self._clean_name(name)
+        if int(size) <= 0:
+            raise ValueError("文件大小必须大于 0")
+        if int(chunk_size) <= 0:
+            raise ValueError("分片大小必须大于 0")
         upload_id = uuid.uuid4().hex
         now = utcnow()
         with self._lock, self.conn:
@@ -277,15 +329,36 @@ class Database:
         with self._lock, self.conn:
             self.conn.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
 
-    def list_uploads(self, states: tuple[str, ...] = ("uploading", "error")) -> list[dict[str, Any]]:
+    def list_uploads(
+        self, states: tuple[str, ...] = ("uploading", "error")
+    ) -> list[dict[str, Any]]:
         """未完成的上传任务，供前端刷新后断点续传。"""
+        if not states:
+            return []
         placeholders = ",".join("?" for _ in states)
         with self._lock:
             rows = self.conn.execute(
                 f"SELECT * FROM uploads WHERE state IN ({placeholders}) ORDER BY created_at DESC",
                 tuple(states),
             ).fetchall()
-        return [self._dict(r) for r in rows]  # type: ignore[misc]
+        return [dict(r) for r in rows]
+
+    def recover_interrupted_uploads(self) -> int:
+        """Mark tasks interrupted by a process restart as retryable errors."""
+        with self._lock, self.conn:
+            cursor = self.conn.execute(
+                "UPDATE uploads SET state='error', error=?, updated_at=? WHERE state='processing'",
+                ("服务重启导致 Telegram 写入中断，请检查文件后重试", utcnow()),
+            )
+        return int(cursor.rowcount)
+
+    def list_stale_uploads(self, before: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM uploads WHERE state IN ('uploading','error') AND updated_at < ?",
+                (before,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     # ---------- shares ----------
 

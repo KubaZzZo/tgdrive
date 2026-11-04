@@ -4,20 +4,25 @@ name: tgdrive
 
 services:
   app:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     image: tgdrive:latest
     container_name: tgdrive-app
     restart: unless-stopped
     env_file: [.env]
     expose: ["8787"]
     environment:
+      APP_ENV: production
       HOST: 0.0.0.0
       PORT: "8787"
       DATA_DIR: /data
       TEMP_DIR: /tmp/upload
       DB_PATH: /data/tgdrive.sqlite3
       TG_SESSION: /data/tgdrive.session
+      FRONTEND_DIST: /app/static/dist
       COOKIE_SECURE: "true"
+      LOG_JSON: "true"
     volumes:
       - tgdata:/data              # SQLite + session，必须备份
       - tgupload:/tmp/upload      # 上传临时分片，可随时清空
@@ -25,7 +30,7 @@ services:
     cap_drop: [ALL]
     shm_size: 256m
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/api/meta"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/api/health/live"]
       interval: 30s
       timeout: 5s
       retries: 3
