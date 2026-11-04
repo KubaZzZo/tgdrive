@@ -237,7 +237,13 @@ class AccountManager:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
         try:
-            if job.get("account"):
+            authorized = bool(job.get("account"))
+            if not authorized:
+                try:
+                    authorized = await asyncio.wait_for(job["client"].is_user_authorized(), 5)
+                except Exception:
+                    pass
+            if authorized:
                 try:
                     await asyncio.wait_for(job["client"].log_out(), 10)
                 except Exception:
@@ -442,11 +448,9 @@ class AccountManager:
             self.task(self._dispose(old))
 
     async def _dispose(self, runtime: Runtime) -> None:
-        try:
-            await runtime.uploads.shutdown()
-            await runtime.storage.stop()
-        finally:
-            self.retired.discard(runtime)
+        await runtime.uploads.shutdown()
+        await runtime.storage.stop()
+        self.retired.discard(runtime)
 
     async def shutdown(self) -> None:
         async with self.lock:
