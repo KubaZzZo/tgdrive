@@ -1,14 +1,12 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hmac
 
 from fastapi import HTTPException, Request, status
 
-from app.config import settings
 
-
-def check_password(password: str) -> bool:
-    return hmac.compare_digest(password or "", settings.app_password)
+def check_password(password: str, expected: str) -> bool:
+    return hmac.compare_digest((password or "").encode("utf-8"), (expected or "").encode("utf-8"))
 
 
 def is_authenticated(request: Request) -> bool:

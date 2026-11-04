@@ -1,0 +1,50 @@
+<script setup lang="ts">
+withDefaults(defineProps<{ name: string; size?: number }>(), { size: 20 })
+const paths: Record<string, string[]> = {
+  folder: ['M3 7V5a1 1 0 0 1 1-1h5l2 2h9a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7Z'],
+  image: [
+    'M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1Z',
+    'm3 17 5-5 4 4 4-6 5 8',
+    'M8 8h.01',
+  ],
+  video: ['M4 4h16v16H4Z', 'm10 8 6 4-6 4Z'],
+  audio: [
+    'M9 18V5l11-2v13',
+    'M9 14H5a3 3 0 1 0 0 6h1a3 3 0 0 0 3-3',
+    'M20 12h-4a3 3 0 1 0 0 6h1a3 3 0 0 0 3-3',
+  ],
+  document: ['M5 3h9l5 5v13H5Z', 'M14 3v6h5', 'M8 13h8M8 17h6'],
+  archive: ['M4 7h16v14H4Z', 'M3 3h18v4H3Z', 'M10 11h4'],
+  code: ['m8 7-5 5 5 5', 'm16 7 5 5-5 5', 'm14 4-4 16'],
+  application: ['M4 4h16v16H4Z', 'M4 9h16', 'M7 6.5h.01M10 6.5h.01'],
+  other: ['M4 4h6v6H4ZM14 4h6v6h-6ZM4 14h6v6H4ZM14 14h6v6h-6Z'],
+  all: ['M4 3h16v18H4Z', 'M8 8h8M8 12h8M8 16h4'],
+  recent: ['M12 3a9 9 0 1 0 9 9 9 9 0 0 0-9-9Z', 'M12 7v5l3 2'],
+  upload: ['M12 16V3m-5 5 5-5 5 5', 'M4 15v6h16v-6'],
+  search: ['M10.5 3a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15Z', 'm16 16 5 5'],
+  grid: ['M3 3h7v7H3ZM14 3h7v7h-7ZM3 14h7v7H3ZM14 14h7v7h-7Z'],
+  list: ['M8 5h13M8 12h13M8 19h13', 'M3 5h.01M3 12h.01M3 19h.01'],
+  more: ['M5 12h.01M12 12h.01M19 12h.01'],
+  chevron: ['m9 5 7 7-7 7'],
+  cloud: ['M7 18a5 5 0 1 1 0-10h1a6 6 0 0 1 11 2 4 4 0 0 1 0 8Z'],
+  refresh: ['M20 7a9 9 0 1 0 1 9', 'M20 3v5h-5'],
+  close: ['m6 6 12 12M6 18 18 6'],
+  plus: ['M12 4v16M4 12h16'],
+}
+</script>
+<template>
+  <svg
+    :width="size"
+    :height="size"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.7"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+    class="app-icon"
+  >
+    <path v-for="(path, index) in paths[name] ?? paths.document" :key="index" :d="path" />
+  </svg>
+</template>

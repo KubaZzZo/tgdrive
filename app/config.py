@@ -1,7 +1,7 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,57 +10,94 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT_DIR / ".env")
 
 
-def _as_int(name: str, default: int) -> int:
+def _env_int(name: str, default: int) -> int:
     value = os.getenv(name)
-    if value is None or value.strip() == "":
+    if value is None or not value.strip():
         return default
-    return int(value)
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f"环境变量 {name} 必须是整数") from exc
 
 
-def _as_bool(name: str, default: bool = False) -> bool:
+def _env_bool(name: str, default: bool = False) -> bool:
     value = os.getenv(name)
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-@dataclass(frozen=True)
+def _env_path(name: str, default: str) -> Path:
+    path = Path(os.getenv(name, default)).expanduser()
+    if not path.is_absolute():
+        path = ROOT_DIR / path
+    return path.resolve()
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:
-    app_name: str = os.getenv("APP_NAME", "TG Drive")
-    host: str = os.getenv("HOST", "127.0.0.1")
-    port: int = _as_int("PORT", 8787)
+    app_name: str = field(default_factory=lambda: os.getenv("APP_NAME", "TG Drive"))
+    app_env: str = field(
+        default_factory=lambda: os.getenv("APP_ENV", "development").strip().lower()
+    )
+    host: str = field(default_factory=lambda: os.getenv("HOST", "127.0.0.1"))
+    port: int = field(default_factory=lambda: _env_int("PORT", 8787))
+    log_level: str = field(default_factory=lambda: os.getenv("LOG_LEVEL", "INFO").upper())
+    log_json: bool = field(default_factory=lambda: _env_bool("LOG_JSON", False))
 
-    data_dir: Path = Path(os.getenv("DATA_DIR", str(ROOT_DIR / "data")))
-    temp_dir: Path = Path(os.getenv("TEMP_DIR", str(ROOT_DIR / "tmp")))
-    db_path: Path = Path(os.getenv("DB_PATH", str(ROOT_DIR / "data" / "tgdrive.sqlite3")))
+    data_dir: Path = field(default_factory=lambda: _env_path("DATA_DIR", "data"))
+    temp_dir: Path = field(default_factory=lambda: _env_path("TEMP_DIR", "tmp"))
+    db_path: Path = field(default_factory=lambda: _env_path("DB_PATH", "data/tgdrive.sqlite3"))
+    frontend_dist: Path = field(default_factory=lambda: _env_path("FRONTEND_DIST", "static/dist"))
 
-    app_password: str = os.getenv("APP_PASSWORD", "change-me")
-    app_secret: str = os.getenv("APP_SECRET", "change-this-secret-in-env")
-    cookie_secure: bool = _as_bool("COOKIE_SECURE", False)
+    app_password: str = field(default_factory=lambda: os.getenv("APP_PASSWORD", "change-me"))
+    app_secret: str = field(
+        default_factory=lambda: os.getenv("APP_SECRET", "change-this-secret-in-env")
+    )
+    cookie_secure: bool = field(default_factory=lambda: _env_bool("COOKIE_SECURE", False))
+    session_max_age: int = field(
+        default_factory=lambda: _env_int("SESSION_MAX_AGE", 14 * 24 * 3600)
+    )
 
-    tg_mode: str = os.getenv("TG_MODE", "user").strip().lower()
-    tg_api_id: int = _as_int("TG_API_ID", 0)
-    tg_api_hash: str = os.getenv("TG_API_HASH", "").strip()
-    tg_bot_token: str = os.getenv("TG_BOT_TOKEN", "").strip()
-    tg_session: Path = Path(os.getenv("TG_SESSION", str(ROOT_DIR / "data" / "tgdrive")))
-    tg_chat_id: str = os.getenv("TG_CHAT_ID", "").strip()
-    tg_proxy: str = os.getenv("TG_PROXY", "").strip()
+    login_max_attempts: int = field(default_factory=lambda: _env_int("LOGIN_MAX_ATTEMPTS", 5))
+    login_window_seconds: int = field(default_factory=lambda: _env_int("LOGIN_WINDOW_SECONDS", 300))
+
+    tg_mode: str = field(default_factory=lambda: os.getenv("TG_MODE", "user").strip().lower())
+    tg_api_id: int = field(default_factory=lambda: _env_int("TG_API_ID", 0))
+    tg_api_hash: str = field(default_factory=lambda: os.getenv("TG_API_HASH", "").strip())
+    tg_bot_token: str = field(default_factory=lambda: os.getenv("TG_BOT_TOKEN", "").strip())
+    tg_session: Path = field(default_factory=lambda: _env_path("TG_SESSION", "data/tgdrive"))
+    tg_chat_id: str = field(default_factory=lambda: os.getenv("TG_CHAT_ID", "").strip())
+    tg_proxy: str = field(default_factory=lambda: os.getenv("TG_PROXY", "").strip())
 
     # Telegram hard limit is 2 GB per file for normal accounts.
-    # Keeping a little headroom avoids edge cases at exactly 2 GB.
-    tg_segment_size: int = _as_int("TG_SEGMENT_SIZE", 1_800_000_000)
-    upload_chunk_size: int = _as_int("UPLOAD_CHUNK_SIZE", 8 * 1024 * 1024)
-    max_file_size: int = _as_int("MAX_FILE_SIZE", 0)  # 0 = unlimited
+    tg_segment_size: int = field(default_factory=lambda: _env_int("TG_SEGMENT_SIZE", 1_800_000_000))
+    upload_chunk_size: int = field(
+        default_factory=lambda: _env_int("UPLOAD_CHUNK_SIZE", 8 * 1024 * 1024)
+    )
+    upload_concurrency: int = field(default_factory=lambda: _env_int("UPLOAD_CONCURRENCY", 2))
+    max_file_size: int = field(
+        default_factory=lambda: _env_int("MAX_FILE_SIZE", 0)
+    )  # 0 = unlimited
+    upload_stale_hours: int = field(default_factory=lambda: _env_int("UPLOAD_STALE_HOURS", 72))
 
-    def ensure_dirs(self) -> None:
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.temp_dir.mkdir(parents=True, exist_ok=True)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+    channel_sync_enabled: bool = field(
+        default_factory=lambda: _env_bool("CHANNEL_SYNC_ENABLED", True)
+    )
+    channel_sync_interval: int = field(
+        default_factory=lambda: _env_int("CHANNEL_SYNC_INTERVAL", 30)
+    )
+
+    @property
+    def is_production(self) -> bool:
+        return self.app_env in {"prod", "production"}
 
     @property
     def is_configured(self) -> bool:
         if self.tg_mode == "bot":
-            return bool(self.tg_api_id and self.tg_api_hash and self.tg_bot_token and self.tg_chat_id)
+            return bool(
+                self.tg_api_id and self.tg_api_hash and self.tg_bot_token and self.tg_chat_id
+            )
         return bool(self.tg_api_id and self.tg_api_hash and self.tg_chat_id)
 
     @property
@@ -68,6 +105,38 @@ class Settings:
         if self.tg_mode == "bot":
             return "请在 .env 配置 TG_API_ID、TG_API_HASH、TG_BOT_TOKEN、TG_CHAT_ID"
         return "请在 .env 配置 TG_API_ID、TG_API_HASH、TG_CHAT_ID，并运行 scripts/login_qr.py"
+
+    @property
+    def index_file(self) -> Path:
+        return self.frontend_dist / "index.html"
+
+    def ensure_dirs(self) -> None:
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.temp_dir.mkdir(parents=True, exist_ok=True)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def validate(self) -> None:
+        if self.channel_sync_interval < 5:
+            raise RuntimeError("CHANNEL_SYNC_INTERVAL 必须至少为 5 秒")
+        if self.tg_mode not in {"user", "bot"}:
+            raise RuntimeError("TG_MODE 只能是 user 或 bot")
+        if self.upload_concurrency <= 0:
+            raise RuntimeError("UPLOAD_CONCURRENCY 必须大于 0")
+        if self.upload_chunk_size <= 0:
+            raise RuntimeError("UPLOAD_CHUNK_SIZE 必须大于 0")
+        if self.tg_segment_size <= 0:
+            raise RuntimeError("TG_SEGMENT_SIZE 必须大于 0")
+        if self.max_file_size < 0:
+            raise RuntimeError("MAX_FILE_SIZE 不能为负数")
+        if self.login_max_attempts <= 0 or self.login_window_seconds <= 0:
+            raise RuntimeError("登录限流配置必须大于 0")
+        if self.upload_stale_hours < 0:
+            raise RuntimeError("UPLOAD_STALE_HOURS 不能为负数")
+        if self.is_production:
+            if len(self.app_secret) < 32 or self.app_secret == "change-this-secret-in-env":
+                raise RuntimeError("生产环境必须配置至少 32 位的 APP_SECRET")
+            if self.app_password == "change-me":
+                raise RuntimeError("生产环境不能使用默认 APP_PASSWORD")
 
 
 settings = Settings()

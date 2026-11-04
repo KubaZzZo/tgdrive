@@ -1,10 +1,11 @@
-﻿from pathlib import Path
+from pathlib import Path
 
-from app.db import Database
+from app.db import SCHEMA_VERSION, Database
 
 
-def test_folder_and_file_lifecycle(tmp_path: Path):
-    db = Database(tmp_path / "test.sqlite3")
+def test_folder_and_file_lifecycle(workdir: Path):
+    db = Database(workdir / "test.sqlite3")
+    assert db.schema_version() == SCHEMA_VERSION
     folder = db.create_folder("videos", None)
     child = db.create_folder("2024", folder["id"])
     file_item = db.create_file(
@@ -32,8 +33,8 @@ def test_folder_and_file_lifecycle(tmp_path: Path):
     db.close()
 
 
-def test_upload_record(tmp_path: Path):
-    db = Database(tmp_path / "uploads.sqlite3")
+def test_upload_record(workdir: Path):
+    db = Database(workdir / "uploads.sqlite3")
     upload = db.create_upload(None, "a.bin", 100, "application/octet-stream", "tmp/a.part", 8)
     assert upload["received"] == 0
     updated = db.update_upload(upload["id"], received=8, progress=8, state="uploading")
@@ -41,4 +42,17 @@ def test_upload_record(tmp_path: Path):
     assert updated["progress"] == 8
     db.update_upload(upload["id"], state="done", item_id="x")
     assert db.get_upload(upload["id"])["item_id"] == "x"
+    db.close()
+
+
+def test_invalid_names_and_versions(workdir: Path):
+    db = Database(workdir / "validation.sqlite3")
+    for name in ("", "  ", "../x", "a/b", "a\\b"):
+        try:
+            db.create_folder(name, None)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for {name!r}")
+    assert db.ping() is True
     db.close()

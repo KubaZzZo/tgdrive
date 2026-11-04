@@ -1,5 +1,5 @@
-﻿from fastapi import HTTPException
 import pytest
+from fastapi import HTTPException
 
 from app.ranges import parse_range
 
@@ -26,5 +26,7 @@ def test_clamp_end():
 
 def test_bad_ranges():
     for header in ["bytes=100-", "bytes=5-4", "bytes=1-2,3-4", "nope"]:
-        with pytest.raises(HTTPException):
+        with pytest.raises(HTTPException) as exc:
             parse_range(header, 100)
+        assert exc.value.status_code == 416
+        assert exc.value.headers["Content-Range"] == "bytes */100"

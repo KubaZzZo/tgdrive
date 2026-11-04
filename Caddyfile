@@ -28,13 +28,16 @@ keepalive_idle_conns 32
 # 只压缩 JSON/文本，绝不压媒体流（否则 Range 语义失效）
 @compressible {
 not path /api/files/*
-not path /static/*
 not header Content-Type video/*
 not header Content-Type audio/*
 not header Content-Type image/*
 not header Content-Type application/octet-stream
 }
 encode @compressible zstd gzip
+
+# Vite 产物文件名带内容哈希，可长期缓存
+@assets path /assets/*
+header @assets Cache-Control "public, max-age=31536000, immutable"
 
 header {
 Strict-Transport-Security "max-age=31536000; includeSubDomains"
@@ -45,7 +48,7 @@ Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
 -Server
 }
 
-@notNoisy not path /api/meta
+@notNoisy not path /api/meta /api/health/live /api/health/ready
 log @notNoisy {
 output stdout
 format json
