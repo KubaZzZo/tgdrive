@@ -1,0 +1,54 @@
+# TG Drive 反向代理（自动 HTTPS）
+# 关键：关闭缓冲 + flush_interval -1 + 只压缩 JSON，否则视频拖不动进度条
+{
+email {$ACME_EMAIL}
+log {
+output stdout
+format console
+level ERROR
+}
+}
+
+{$DOMAIN} {
+# 单文件上限 2GB(普通)/4GB(Premium)，这里给 4.5GB 余量
+request_body { max_size 4.5GB }
+
+reverse_proxy app:8787 {
+request_buffering off
+response_buffering off
+flush_interval -1
+header_up X-Real-IP {remote_host}
+transport http {
+dial_timeout 10s
+response_header_timeout 300s
+keepalive_idle_conns 32
+}
+}
+
+# 只压缩 JSON/文本，绝不压媒体流（否则 Range 语义失效）
+@compressible {
+not path /api/files/*
+not path /static/*
+not header Content-Type video/*
+not header Content-Type audio/*
+not header Content-Type image/*
+not header Content-Type application/octet-stream
+}
+encode @compressible zstd gzip
+
+header {
+Strict-Transport-Security "max-age=31536000; includeSubDomains"
+X-Content-Type-Options "nosniff"
+Referrer-Policy "no-referrer"
+X-Frame-Options "SAMEORIGIN"
+Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
+-Server
+}
+
+@notNoisy not path /api/meta
+log @notNoisy {
+output stdout
+format json
+level INFO
+}
+}

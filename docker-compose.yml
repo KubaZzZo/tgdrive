@@ -1,0 +1,69 @@
+# TG Drive 生产编排（美国 VPS）
+# 网络模型：公网 -> caddy(80/443) -> app(8787，仅内网)
+name: tgdrive
+
+services:
+  app:
+    build: .
+    image: tgdrive:latest
+    container_name: tgdrive-app
+    restart: unless-stopped
+    env_file: [.env]
+    expose: ["8787"]
+    environment:
+      HOST: 0.0.0.0
+      PORT: "8787"
+      DATA_DIR: /data
+      TEMP_DIR: /tmp/upload
+      DB_PATH: /data/tgdrive.sqlite3
+      TG_SESSION: /data/tgdrive.session
+      COOKIE_SECURE: "true"
+    volumes:
+      - tgdata:/data              # SQLite + session，必须备份
+      - tgupload:/tmp/upload      # 上传临时分片，可随时清空
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    shm_size: 256m
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8787/api/meta"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    networks: [web]
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: tgdrive-caddy
+    restart: unless-stopped
+    depends_on:
+      app: { condition: service_healthy }
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN:?请在 .env 设置 DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    security_opt: [no-new-privileges:true]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    networks: [web]
+
+volumes:
+  tgdata:
+  tgupload:
+  caddy_data:
+  caddy_config:
+
+networks:
+  web:
+    driver: bridge

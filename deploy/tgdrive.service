@@ -1,0 +1,41 @@
+# 裸机部署用（不用 Docker）。安装：
+#   sudo cp deploy/tgdrive.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now tgdrive
+[Unit]
+Description=TG Drive (Telegram 云盘)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tgdrive
+Group=tgdrive
+WorkingDirectory=/opt/tgdrive
+EnvironmentFile=/opt/tgdrive/.env
+Environment=PYTHONUNBUFFERED=1
+# 只绑回环，对外一律走 Caddy
+ExecStart=/opt/tgdrive/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8787 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/opt/tgdrive/data /opt/tgdrive/tmp
+UMask=0027
+LimitNOFILE=65535
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tgdrive
+
+[Install]
+WantedBy=multi-user.target

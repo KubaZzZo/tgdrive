@@ -1,0 +1,284 @@
+﻿from __future__ import annotations
+
+import asyncio
+import io
+import os
+import time
+import uuid
+from pathlib import Path
+from typing import Any, Awaitable, Callable
+
+from telethon import TelegramClient
+from telethon.tl.types import DocumentAttributeFilename
+
+from app.config import Settings, settings as default_settings
+from app.network import get_proxy
+
+ProgressCallback = Callable[[int, int], Awaitable[None] | None]
+
+
+class SegmentReader(io.RawIOBase):
+    """A read-only view over a byte range of a file.
+
+    Telethon's uploader consumes a stream sequentially and we pass the exact
+    size separately, so this keeps memory usage bounded even for multi-GB
+    videos.
+    """
+
+    def __init__(self, path: Path, offset: int, size: int, name: str):
+        super().__init__()
+        self._path = path
+        self._offset = offset
+        self._size = size
+        self._pos = 0
+        self.name = name
+        self._fh = open(path, "rb")
+        self._fh.seek(offset)
+
+    def readable(self) -> bool:
+        return True
+
+    def seekable(self) -> bool:
+        return False
+
+    def tell(self) -> int:
+        return self._pos
+
+    def read(self, n: int = -1) -> bytes:
+        remaining = self._size - self._pos
+        if remaining <= 0:
+            return b""
+        if n is None or n < 0 or n > remaining:
+            n = remaining
+        data = self._fh.read(n)
+        self._pos += len(data)
+        return data
+
+    def close(self) -> None:
+        try:
+            self._fh.close()
+        finally:
+            super().close()
+
+
+class TelegramStorage:
+    def __init__(self, settings: Settings = default_settings):
+        self.settings = settings
+        self.client: TelegramClient | None = None
+        self.chat: int | str | None = None
+        self.error: str | None = None
+        self._started = False
+        self._message_cache: dict[tuple[str, int], tuple[float, Any]] = {}
+
+    @property
+    def mode(self) -> str:
+        return self.settings.tg_mode
+
+    @property
+    def configured(self) -> bool:
+        return self.settings.is_configured
+
+    @staticmethod
+    def _normalize_chat(value: str) -> int | str:
+        value = value.strip()
+        if value.lstrip("-").isdigit():
+            return int(value)
+        return value
+
+    def _session_path(self) -> str:
+        suffix = "_bot" if self.mode == "bot" else ""
+        return str(self.settings.tg_session) + suffix
+
+    async def start(self) -> None:
+        if self._started:
+            return
+        if not self.settings.tg_api_id or not self.settings.tg_api_hash:
+            self.error = "缺少 TG_API_ID / TG_API_HASH"
+            return
+        if not self.settings.tg_chat_id:
+            self.error = "缺少 TG_CHAT_ID（私有频道 ID）"
+            return
+
+        self.chat = self._normalize_chat(self.settings.tg_chat_id)
+        kwargs = {
+            "connection_retries": 5,
+            "request_retries": 5,
+            "timeout": 60,
+            "flood_sleep_threshold": 60,
+            "proxy": get_proxy(),
+        }
+
+        try:
+            if self.mode == "bot":
+                if not self.settings.tg_bot_token:
+                    self.error = "缺少 TG_BOT_TOKEN"
+                    return
+                self.client = TelegramClient(self._session_path(), self.settings.tg_api_id, self.settings.tg_api_hash, **kwargs)
+                await self.client.start(bot_token=self.settings.tg_bot_token)
+            else:
+                self.client = TelegramClient(self._session_path(), self.settings.tg_api_id, self.settings.tg_api_hash, **kwargs)
+                await self.client.connect()
+                if not await self.client.is_user_authorized():
+                    self.error = "Telegram session 未登录，请先运行: python scripts/login_qr.py"
+                    await self.client.disconnect()
+                    self.client = None
+                    return
+
+            # Validate that the configured chat is actually reachable.
+            await self.client.get_entity(self.chat)
+            me = await self.client.get_me()
+            self.error = None
+            self._started = True
+            print(f"[telegram] connected mode={self.mode} account={getattr(me, 'username', None) or getattr(me, 'id', '?')}")
+        except Exception as exc:  # pragma: no cover - depends on live Telegram
+            self.error = f"Telegram 连接失败: {exc}"
+            if self.client:
+                try:
+                    await self.client.disconnect()
+                except Exception:
+                    pass
+            self.client = None
+
+    async def stop(self) -> None:
+        if self.client:
+            await self.client.disconnect()
+        self.client = None
+        self._started = False
+
+    def require_client(self) -> TelegramClient:
+        if not self._started or not self.client or self.chat is None:
+            raise RuntimeError(self.error or "Telegram 尚未连接")
+        return self.client
+
+    async def me(self) -> dict[str, Any] | None:
+        client = self.require_client()
+        me = await client.get_me()
+        if not me:
+            return None
+        return {
+            "id": me.id,
+            "username": getattr(me, "username", None),
+            "first_name": getattr(me, "first_name", None),
+            "bot": bool(getattr(me, "bot", False)),
+        }
+
+    @staticmethod
+    async def _progress(cb: ProgressCallback | None, sent: int, total: int) -> None:
+        if cb is None:
+            return
+        result = cb(sent, total)
+        if asyncio.iscoroutine(result):
+            await result
+
+    async def upload_file(
+        self,
+        path: Path,
+        name: str,
+        mime: str | None = None,
+        progress: ProgressCallback | None = None,
+        storage_tag: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Upload a file, splitting it into Telegram-safe segments.
+
+        Telegram's MTProto uploader already transfers each message in 512 KiB
+        parts.  On top of that we split files larger than TG_SEGMENT_SIZE into
+        independent Telegram documents.  This makes single files bigger than
+        the per-file limit possible and keeps a failed upload recoverable at
+        segment granularity.
+        """
+        client = self.require_client()
+        assert self.chat is not None
+        total_size = path.stat().st_size
+        if total_size <= 0:
+            raise ValueError("空文件暂不支持")
+
+        segment_size = max(1, int(self.settings.tg_segment_size))
+        segment_count = (total_size + segment_size - 1) // segment_size
+        tag = storage_tag or uuid.uuid4().hex
+        parts: list[dict[str, Any]] = []
+
+        for index in range(segment_count):
+            start = index * segment_size
+            size = min(segment_size, total_size - start)
+            part_name = name if segment_count == 1 else f"{name}.part{index + 1:03d}"
+            reader = SegmentReader(path, start, size, part_name)
+
+            async def part_progress(sent: int, part_total: int, *, _start: int = start) -> None:
+                await self._progress(progress, _start + sent, total_size)
+
+            try:
+                uploaded = await client.upload_file(
+                    reader,
+                    file_size=size,
+                    part_size_kb=512,
+                    file_name=part_name,
+                    progress_callback=part_progress,
+                )
+                message = await client.send_file(
+                    self.chat,
+                    uploaded,
+                    caption=f"tgdrive:v1:{tag}:{index}",
+                    force_document=True,
+                    attributes=[DocumentAttributeFilename(part_name)],
+                )
+            finally:
+                reader.close()
+
+            if not message:
+                raise RuntimeError(f"Telegram 未返回第 {index + 1} 段的消息")
+            parts.append(
+                {
+                    "part_index": index,
+                    "tg_message_id": int(message.id),
+                    "size": size,
+                }
+            )
+
+        return parts
+
+    async def _get_message(self, message_id: int) -> Any:
+        client = self.require_client()
+        assert self.chat is not None
+        key = (str(self.chat), message_id)
+        cached = self._message_cache.get(key)
+        if cached and time.time() - cached[0] < 300:
+            return cached[1]
+        message = await client.get_messages(self.chat, ids=message_id)
+        if not message:
+            raise FileNotFoundError(f"Telegram 消息不存在: {message_id}")
+        self._message_cache[key] = (time.time(), message)
+        return message
+
+    async def iter_download(self, message_id: int, offset: int, length: int):
+        client = self.require_client()
+        message = await self._get_message(message_id)
+        if not getattr(message, "document", None):
+            raise FileNotFoundError(f"Telegram 消息不是文件: {message_id}")
+        async for chunk in client.iter_download(
+            message,
+            offset=offset,
+            limit=length,
+            request_size=1024 * 1024,
+        ):
+            yield chunk
+
+    async def delete_messages(self, message_ids: list[int]) -> None:
+        if not message_ids:
+            return
+        client = self.require_client()
+        assert self.chat is not None
+        for i in range(0, len(message_ids), 100):
+            batch = message_ids[i : i + 100]
+            await client.delete_messages(self.chat, batch)
+            for message_id in batch:
+                self._message_cache.pop((str(self.chat), message_id), None)
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "configured": self.configured,
+            "connected": self._started,
+            "mode": self.mode,
+            "error": self.error,
+            "chat_id": str(self.chat) if self.chat is not None else None,
+            "segment_size": self.settings.tg_segment_size,
+        }

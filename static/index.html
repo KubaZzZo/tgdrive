@@ -1,0 +1,77 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TG Drive</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="login-screen" class="login-screen hidden">
+    <form id="login-form" class="login-card">
+      <div class="brand-mark">TG</div>
+      <h1>TG Drive</h1>
+      <p class="muted">Telegram 驱动的私人网盘</p>
+      <input id="password" type="password" placeholder="访问密码" autocomplete="current-password" required>
+      <button type="submit" class="primary">进入</button>
+      <p id="login-error" class="error"></p>
+    </form>
+  </div>
+
+  <div id="app" class="app hidden">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark small">TG</span><span>TG Drive</span></div>
+      <div class="top-actions">
+        <span id="storage-pill" class="pill">连接中…</span>
+        <button id="logout-btn" class="ghost">退出</button>
+      </div>
+    </header>
+
+    <div id="storage-warning" class="warning hidden"></div>
+
+    <main class="main">
+      <div class="toolbar">
+        <div class="crumbs" id="crumbs"></div>
+        <div class="toolbar-actions">
+          <button id="new-folder-btn" class="ghost">＋ 文件夹</button>
+          <label class="primary file-btn">↑ 上传<input id="file-input" type="file" multiple hidden></label>
+        </div>
+      </div>
+
+      <div id="drop-zone" class="drop-zone">
+        <div class="drop-inner">
+          <span class="drop-icon">⇧</span>
+          <span>拖拽文件到这里上传</span>
+        </div>
+      </div>
+
+      <div class="stats-row" id="stats-row"></div>
+
+      <div class="table-wrap">
+        <table class="files-table">
+          <thead><tr><th>名称</th><th>大小</th><th>修改时间</th><th class="actions-col">操作</th></tr></thead>
+          <tbody id="file-list"></tbody>
+        </table>
+        <div id="empty-state" class="empty hidden">
+          <div class="empty-icon">☁</div>
+          <p>这里还没有文件</p>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <div id="upload-panel" class="upload-panel hidden"></div>
+
+  <div id="modal" class="modal hidden">
+    <div class="modal-card">
+      <button id="modal-close" class="modal-close">×</button>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/js/uploader.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
