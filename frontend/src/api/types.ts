@@ -1,4 +1,19 @@
 export type FileAction = 'download' | 'share' | 'rename' | 'remove'
+export interface TrafficTotals { inbound: number; outbound: number }
+export interface TrafficStatus {
+  day: string
+  timezone: string
+  quota_bytes: number
+  started_at: string
+  sources: { web: TrafficTotals; telegram: TrafficTotals }
+  host: {
+    available: boolean; stale: boolean; error: string | null
+    updated_at?: string; started_at?: string; interfaces?: string[]
+    inbound?: number; outbound?: number; used?: number; remaining?: number; percent?: number
+    warning?: 'near' | 'exceeded' | null; incomplete?: boolean
+    history?: (TrafficTotals & { day: string; incomplete?: boolean })[]
+  }
+}
 export type FileCategory =
   | 'image'
   | 'video'

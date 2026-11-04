@@ -49,6 +49,9 @@ class Settings:
     temp_dir: Path = field(default_factory=lambda: _env_path("TEMP_DIR", "tmp"))
     db_path: Path = field(default_factory=lambda: _env_path("DB_PATH", "data/tgdrive.sqlite3"))
     frontend_dist: Path = field(default_factory=lambda: _env_path("FRONTEND_DIST", "static/dist"))
+    traffic_host_state: Path = field(
+        default_factory=lambda: _env_path("TRAFFIC_HOST_STATE", "data/traffic/host.json")
+    )
 
     app_password: str = field(default_factory=lambda: os.getenv("APP_PASSWORD", "change-me"))
     app_secret: str = field(

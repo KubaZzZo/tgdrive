@@ -10,7 +10,7 @@ from typing import Any
 
 from app.categories import CATEGORY_LABELS, classify_file, effective_mime
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def utcnow() -> str:
@@ -153,6 +153,52 @@ class Database:
                         "ALTER TABLE channel_messages ADD COLUMN remote_version TEXT NOT NULL DEFAULT ''"
                     )
                     self.conn.execute("PRAGMA user_version=4")
+
+            if current < 5:
+                with self.conn:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    self.conn.execute("""CREATE TABLE traffic_daily (
+                        day TEXT NOT NULL, source TEXT NOT NULL,
+                        inbound INTEGER NOT NULL DEFAULT 0,
+                        outbound INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY(day, source))""")
+                    self.conn.execute("""CREATE TABLE traffic_config (
+                        id INTEGER PRIMARY KEY CHECK(id=1),
+                        started_at TEXT NOT NULL,
+                        quota_bytes INTEGER NOT NULL DEFAULT 100000000000)""")
+                    self.conn.execute(
+                        "INSERT INTO traffic_config(id,started_at) VALUES (1,?)", (utcnow(),)
+                    )
+                    self.conn.execute("PRAGMA user_version=5")
+
+    def record_traffic(self, rows: list[tuple[str, str, int, int]]) -> None:
+        with self._lock, self.conn:
+            self.conn.executemany(
+                """INSERT INTO traffic_daily(day,source,inbound,outbound) VALUES (?,?,?,?)
+                ON CONFLICT(day,source) DO UPDATE SET
+                inbound=inbound+excluded.inbound, outbound=outbound+excluded.outbound""",
+                rows,
+            )
+
+    def traffic_config(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self.conn.execute("SELECT * FROM traffic_config WHERE id=1").fetchone())
+
+    def update_traffic_config(self, quota_bytes: int) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "UPDATE traffic_config SET quota_bytes=? WHERE id=1",
+                (quota_bytes,),
+            )
+
+    def traffic_rows(self, since: str) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                dict(row)
+                for row in self.conn.execute(
+                    "SELECT * FROM traffic_daily WHERE day>=? ORDER BY day", (since,)
+                ).fetchall()
+            ]
 
     def schema_version(self) -> int:
         with self._lock:

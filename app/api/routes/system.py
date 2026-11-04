@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import get_db, get_settings, get_storage
 from app.auth import is_authenticated, require_auth
@@ -11,6 +11,22 @@ from app.db import Database
 from app.storage import TelegramStorage
 
 router = APIRouter(prefix="/api", tags=["system"])
+
+
+class TrafficSettingsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    quota_bytes: int = Field(ge=1, le=10**16)
+
+
+@router.get("/traffic", dependencies=[Depends(require_auth)])
+async def traffic_status(request: Request) -> dict:
+    return request.app.state.traffic.snapshot()
+
+
+@router.put("/traffic/settings", dependencies=[Depends(require_auth)])
+async def traffic_settings(body: TrafficSettingsBody, request: Request) -> dict:
+    request.app.state.db.update_traffic_config(body.quota_bytes)
+    return request.app.state.traffic.snapshot()
 
 
 @router.get("/meta")

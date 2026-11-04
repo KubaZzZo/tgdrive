@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 
 import ChannelSyncPanel from './ChannelSyncPanel.vue'
+import TrafficPanel from './TrafficPanel.vue'
 import { useAuthStore } from '@/stores/auth'
 
 const auth = useAuthStore()
@@ -38,6 +39,7 @@ async function logout(): Promise<void> {
       <span>TG Drive</span>
     </div>
     <div class="top-actions">
+      <TrafficPanel />
       <ChannelSyncPanel />
       <span class="pill" :class="storageClass">{{ storageLabel }}</span>
       <button class="ghost" type="button" :disabled="loggingOut" @click="logout">退出</button>

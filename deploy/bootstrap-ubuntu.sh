@@ -29,7 +29,7 @@ done
 export DEBIAN_FRONTEND=noninteractive
 log "安装基础依赖…"
 apt-get update -y
-apt-get install -y --no-install-recommends ca-certificates curl git gnupg ufw fail2ban jq sqlite3
+apt-get install -y --no-install-recommends ca-certificates curl git gnupg ufw fail2ban jq sqlite3 python3
 timedatectl set-timezone UTC || warn "时区设置失败"
 
 id -u "$APP_USER" >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin "$APP_USER"
@@ -89,6 +89,8 @@ EOF
 else
   log ".env 已存在，跳过"
 fi
+
+bash "$APP_DIR/deploy/install-traffic.sh"
 
 if [[ "$MODE" == "docker" ]]; then
   command -v docker >/dev/null 2>&1 || { log "安装 Docker…"; curl -fsSL https://get.docker.com | sh; }

@@ -1780,3 +1780,26 @@ h1 {
     flex-wrap: wrap;
   }
 }
+.traffic-panel { display: grid; gap: 14px; }
+.traffic-panel p { margin: 0; line-height: 1.65; }
+.traffic-hero { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
+.traffic-hero strong { font-size: 38px; letter-spacing: -1px; }
+.traffic-hero small { font-size: 16px; }
+.traffic-hero span { color: var(--muted); }
+.traffic-progress { width: 100%; height: 12px; accent-color: #287d63; }
+.traffic-progress.danger { accent-color: #c86625; }
+.traffic-note { padding: 12px; background: #fff6e6; color: #825414; border-radius: 8px; }
+.top-actions .traffic-alert { color: #a85b16; background: #fff5e7; }
+.traffic-totals { display: flex; flex-wrap: wrap; gap: 24px; }
+.traffic-totals strong { margin-left: 8px; }
+.traffic-history { display: flex; gap: 12px; align-items: center; font-size: 12px; }
+.traffic-history > span:last-child { min-width: 75px; text-align: right; }
+.traffic-bar { flex: 1; height: 9px; background: #edf0eb; border-radius: 4px; overflow: hidden; }
+.traffic-bar i { display: block; height: 100%; background: #669b87; }
+.traffic-settings { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.traffic-settings input { width: 130px; min-height: 40px; }
+.traffic-detail table { width: 100%; text-align: left; font-size: 13px; margin: 12px 0; }
+@media (max-width: 600px) {
+  .topbar .brand > span:last-child { display: none; }
+  .top-actions .traffic-button { font-size: 11px; padding-inline: 7px; }
+}

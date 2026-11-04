@@ -23,9 +23,11 @@ services:
       FRONTEND_DIST: /app/static/dist
       COOKIE_SECURE: "true"
       LOG_JSON: "true"
+      TRAFFIC_HOST_STATE: /host-traffic/host.json
     volumes:
       - tgdata:/data              # SQLite + session，必须备份
       - tgupload:/tmp/upload      # 上传临时分片，可随时清空
+      - ./data/traffic:/host-traffic:ro # 宿主机公网网卡计数，只读
     security_opt: [no-new-privileges:true]
     cap_drop: [ALL]
     shm_size: 256m
