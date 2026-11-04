@@ -7,11 +7,13 @@ import LoginView from '@/components/LoginView.vue'
 import StorageWarning from '@/components/StorageWarning.vue'
 import ToastHost from '@/components/ToastHost.vue'
 import UploadPanel from '@/components/UploadPanel.vue'
+import { useSyncStore } from '@/stores/sync'
 import { useAuthStore } from '@/stores/auth'
 import { useDriveStore } from '@/stores/drive'
 import { useToastStore } from '@/stores/toast'
 import { useUploadStore } from '@/stores/uploads'
 
+const sync = useSyncStore()
 const auth = useAuthStore()
 const drive = useDriveStore()
 const uploads = useUploadStore()
@@ -21,7 +23,8 @@ const entered = ref(false)
 async function enterApp(): Promise<void> {
   if (entered.value) return
   entered.value = true
-  await drive.load(null)
+  await drive.selectView('all')
+  sync.start()
   const pending = await uploads.restore()
   if (pending > 0) {
     toast.push(`有 ${pending} 个未完成的上传，重新拖入同名文件即可续传`, 'info', 6000)
@@ -39,6 +42,7 @@ watch(
     if (authenticated) {
       void enterApp()
     } else {
+      sync.stop()
       entered.value = false
     }
   },
@@ -47,7 +51,7 @@ watch(
 watch(
   () => uploads.completedCount,
   () => {
-    if (auth.authenticated) void drive.load(drive.folderId)
+    if (auth.authenticated) void drive.load()
   },
 )
 
@@ -58,6 +62,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  sync.stop()
   window.removeEventListener('tgdrive:unauthorized', onUnauthorized)
 })
 </script>
@@ -67,7 +72,7 @@ onBeforeUnmount(() => {
   <div v-else-if="auth.authenticated" class="app-shell">
     <AppHeader />
     <StorageWarning :storage="auth.storage" />
-    <main class="main">
+    <main class="main" :class="{ 'has-transfers': uploads.hasJobs }">
       <FileBrowser />
     </main>
     <UploadPanel />

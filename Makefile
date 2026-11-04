@@ -20,4 +20,4 @@ build:
 	cd frontend && npm run build
 
 check: lint test
-	cd frontend && npm run typecheck && npm run build
+	cd frontend && npm test && npm run typecheck && npm run build

@@ -1,8 +1,10 @@
 import type {
   DriveItem,
   ItemListResponse,
+  ItemQuery,
   Meta,
   ShareRecord,
+  SyncStatus,
   UploadRecord,
 } from './types'
 
@@ -43,11 +45,17 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   headers.set('Accept', 'application/json')
   if (init.body && typeof init.body === 'string') headers.set('Content-Type', 'application/json')
 
-  const response = await fetch(path, {
-    credentials: 'same-origin',
-    ...init,
-    headers,
-  })
+  let response: Response
+  try {
+    response = await fetch(path, {
+      credentials: 'same-origin',
+      ...init,
+      signal: init.signal ?? AbortSignal.timeout(30_000),
+      headers,
+    })
+  } catch {
+    throw new ApiError('网络连接中断', 0)
+  }
   const payload = await parsePayload(response)
   if (!response.ok) {
     if (response.status === 401 && !path.endsWith('/login')) {
@@ -104,8 +112,8 @@ export async function uploadChunk(
     if (response.status === 401) {
       window.dispatchEvent(new CustomEvent('tgdrive:unauthorized'))
     }
-    if (response.status === 409) {
-      return { kind: 'conflict', offset: Number(payload?.offset ?? 0) }
+    if (response.status === 409 && typeof payload?.offset === 'number' && Number.isSafeInteger(payload.offset)) {
+      return { kind: 'conflict', offset: payload.offset }
     }
     return {
       kind: 'error',
@@ -120,13 +128,17 @@ export async function uploadChunk(
 }
 
 export const api = {
+  syncStatus: () => request<SyncStatus>('/api/sync'),
+  requestSync: (full = false) => jsonRequest<SyncStatus>('POST', '/api/sync', { full }),
   meta: () => request<Meta>('/api/meta'),
   login: (password: string) => jsonRequest<{ ok: boolean }>('POST', '/api/login', { password }),
   logout: () => request<{ ok: boolean }>('/api/logout', { method: 'POST' }),
 
-  listItems: (folderId: string | null) => {
-    const query = folderId ? `?parent_id=${encodeURIComponent(folderId)}` : ''
-    return request<ItemListResponse>(`/api/items${query}`)
+  listItems: (folderId: string | null, options: ItemQuery = {}, signal?: AbortSignal) => {
+    const query = new URLSearchParams()
+    if (folderId) query.set('parent_id', folderId)
+    Object.entries(options).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
+    return request<ItemListResponse>(`/api/items?${query}`, { signal })
   },
   createFolder: (name: string, parentId: string | null) =>
     jsonRequest<DriveItem>('POST', '/api/folders', { name, parent_id: parentId }),

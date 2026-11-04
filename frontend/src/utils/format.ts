@@ -19,23 +19,11 @@ export function formatDate(value: string): string {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
-export function iconFor(item: DriveItem): string {
-  if (item.kind === 'folder') return '📁'
-  const mime = item.mime ?? ''
-  const name = item.name.toLowerCase()
-  if (mime.startsWith('video/') || /\.(mp4|webm|mov|mkv|avi)$/.test(name)) return '🎬'
-  if (mime.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|svg)$/.test(name)) return '🖼️'
-  if (mime.startsWith('audio/') || /\.(mp3|wav|flac|m4a|ogg)$/.test(name)) return '🎵'
-  if (mime === 'application/pdf' || name.endsWith('.pdf')) return '📕'
-  if (/\.(zip|rar|7z|tar|gz)$/.test(name)) return '🗜️'
-  if (/\.(docx?|xlsx?|pptx?)$/.test(name)) return '📄'
-  return '📄'
-}
-
-export type PreviewKind = 'video' | 'image' | 'audio' | 'none'
+export type PreviewKind = 'video' | 'image' | 'audio' | 'pdf' | 'none'
 
 export function previewKind(item: DriveItem): PreviewKind {
   const mime = item.mime ?? ''
+  if (mime === 'application/pdf') return 'pdf'
   if (mime.startsWith('video/')) return 'video'
   if (mime.startsWith('image/')) return 'image'
   if (mime.startsWith('audio/')) return 'audio'

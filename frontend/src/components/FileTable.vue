@@ -1,68 +1,98 @@
 <script setup lang="ts">
-import type { DriveItem } from '@/api/types'
-import { formatBytes, formatDate, iconFor } from '@/utils/format'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import type { DriveItem, FileAction } from '@/api/types'
+import { formatBytes, formatDate } from '@/utils/format'
+import { categoryLabel } from '@/utils/categories'
+import AppIcon from './AppIcon.vue'
+import FileActions from './FileActions.vue'
 
-defineProps<{ items: DriveItem[] }>()
+withDefaults(defineProps<{ items: DriveItem[]; layout?: 'list' | 'grid' }>(), {
+  layout: 'list',
+})
 const emit = defineEmits<{
   open: [item: DriveItem]
   preview: [item: DriveItem]
-  download: [item: DriveItem]
-  share: [item: DriveItem]
-  rename: [item: DriveItem]
-  remove: [item: DriveItem]
+  action: [action: FileAction, item: DriveItem]
 }>()
+const root = ref<HTMLElement | null>(null)
+function closeMenus(event: PointerEvent): void {
+  root.value?.querySelectorAll('details[open]').forEach((menu) => {
+    if (!menu.contains(event.target as Node)) menu.removeAttribute('open')
+  })
+}
+onMounted(() => document.addEventListener('pointerdown', closeMenus))
+onBeforeUnmount(() => document.removeEventListener('pointerdown', closeMenus))
+function open(item: DriveItem): void {
+  item.kind === 'folder' ? emit('open', item) : emit('preview', item)
+}
 </script>
-
 <template>
-  <div class="table-wrap">
+  <div v-if="layout === 'grid'" ref="root" class="file-grid">
+    <article v-for="item in items" :key="item.id" class="file-card">
+      <div class="file-card-top">
+        <span class="type-label">{{
+          item.kind === 'folder' ? '文件夹' : categoryLabel(item.category)
+        }}</span>
+        <FileActions :item="item" @action="emit('action', $event, item)" />
+      </div>
+      <button class="file-card-open" type="button" :title="item.name" @click="open(item)">
+        <span class="file-art" :class="item.kind === 'folder' ? 'folder' : item.category"
+          ><AppIcon
+            :name="item.kind === 'folder' ? 'folder' : (item.category ?? 'document')"
+            :size="40"
+        /></span>
+        <strong>{{ item.name }}</strong>
+      </button>
+      <p>
+        {{ item.kind === 'folder' ? '文件夹' : formatBytes(item.size) }} ·
+        {{ formatDate(item.created_at).split(' ')[0] }}
+      </p>
+    </article>
+  </div>
+  <div v-else ref="root" class="table-wrap">
     <table class="files-table">
       <thead>
         <tr>
-          <th>名称</th>
+          <th>文件名称</th>
+          <th>类型</th>
           <th>大小</th>
-          <th>修改时间</th>
-          <th class="actions-col">操作</th>
+          <th>上传时间</th>
+          <th><span class="sr-only">操作</span></th>
         </tr>
       </thead>
       <tbody>
         <tr v-for="item in items" :key="item.id">
           <td>
             <div class="name-cell">
-              <span class="file-icon">{{ iconFor(item) }}</span>
-              <button
-                class="name-btn"
-                type="button"
-                :title="item.name"
-                @click="item.kind === 'folder' ? emit('open', item) : emit('preview', item)"
-              >
-                {{ item.name }}
-              </button>
+              <span
+                class="file-art small"
+                :class="item.kind === 'folder' ? 'folder' : item.category"
+                ><AppIcon
+                  :name="item.kind === 'folder' ? 'folder' : (item.category ?? 'document')"
+                  :size="22"
+              /></span>
+              <div class="file-name-block">
+                <button class="name-btn" type="button" :title="item.name" @click="open(item)">
+                  {{ item.name }}
+                </button>
+                <span class="mobile-meta">{{
+                  item.kind === 'folder'
+                    ? '文件夹'
+                    : `${categoryLabel(item.category)} · ${formatBytes(item.size)}`
+                }}</span>
+              </div>
             </div>
           </td>
-          <td class="meta-size">{{ item.kind === 'folder' ? '—' : formatBytes(item.size) }}</td>
-          <td class="meta-time">{{ formatDate(item.updated_at) }}</td>
+          <td class="meta-type">
+            {{ item.kind === 'folder' ? '文件夹' : categoryLabel(item.category)
+            }}<span v-if="item.source === 'channel'" class="source-badge">频道</span>
+          </td>
+          <td class="meta-size">
+            {{ item.kind === 'folder' ? '—' : formatBytes(item.size) }}
+          </td>
+          <td class="meta-time">{{ formatDate(item.created_at) }}</td>
           <td class="actions-col">
-            <div class="row-actions">
-              <template v-if="item.kind === 'file'">
-                <button class="icon-btn" type="button" title="下载" @click="emit('download', item)">
-                  下载
-                </button>
-                <button class="icon-btn" type="button" title="分享" @click="emit('share', item)">
-                  分享
-                </button>
-              </template>
-              <button class="icon-btn" type="button" title="重命名" @click="emit('rename', item)">
-                改名
-              </button>
-              <button
-                class="icon-btn danger"
-                type="button"
-                title="删除"
-                @click="emit('remove', item)"
-              >
-                删除
-              </button>
-            </div>
+            <FileActions :item="item" @action="emit('action', $event, item)" />
           </td>
         </tr>
       </tbody>

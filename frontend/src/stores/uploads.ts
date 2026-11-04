@@ -7,7 +7,7 @@ import { formatBytes, formatEta } from '@/utils/format'
 import { useAuthStore } from './auth'
 import { useToastStore } from './toast'
 
-export type JobState = 'queued' | 'uploading' | 'processing' | 'done' | 'error' | 'canceled'
+export type JobState = 'queued' | 'paused' | 'uploading' | 'processing' | 'done' | 'error' | 'canceling' | 'canceled'
 
 export interface UploadJob {
   key: string
@@ -27,25 +27,25 @@ export interface UploadJob {
 
 const LS_KEY = 'tgdrive_resume_v2'
 const MAX_ACTIVE = 2
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms))
-}
+const wait = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms))
 
 function loadResumeMap(): Record<string, string> {
   try {
     const parsed = JSON.parse(localStorage.getItem(LS_KEY) ?? '{}')
-    return parsed && typeof parsed === 'object' ? (parsed as Record<string, string>) : {}
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
   } catch {
     return {}
   }
 }
 
-function saveResumeMap(map: Record<string, string>): void {
+function saveResume(key: string, id: string | null): void {
   try {
+    const map = loadResumeMap()
+    if (id) map[key] = id
+    else delete map[key]
     localStorage.setItem(LS_KEY, JSON.stringify(map))
   } catch {
-    // Private mode or storage quota: upload still works without resume hint.
+    // Upload remains available when local storage is disabled.
   }
 }
 
@@ -53,224 +53,206 @@ function fingerprint(parentId: string | null, file: File): string {
   return [parentId ?? '', file.name, file.size, file.lastModified || 0].join('|')
 }
 
-function isAbort(error: unknown): boolean {
-  return error instanceof DOMException && error.name === 'AbortError'
+function retryable(cause: unknown): boolean {
+  return cause instanceof ApiError && (cause.status === 0 || cause.status === 429 || cause.status >= 500)
 }
 
 export const useUploadStore = defineStore('uploads', () => {
   const jobs = ref<UploadJob[]>([])
   const completedCount = ref(0)
   const restoredPending = ref(0)
-  let active = 0
-
-  const activeCount = computed(
-    () => jobs.value.filter((job) => job.state === 'uploading' || job.state === 'processing').length,
-  )
+  const running = new Map<string, Promise<void>>()
+  const activeCount = computed(() => jobs.value.filter((j) => j.state === 'uploading' || j.state === 'processing').length)
   const hasJobs = computed(() => jobs.value.length > 0)
+  const totalProgress = computed(() => {
+    const included = jobs.value.filter((j) => j.state !== 'canceled')
+    const size = included.reduce((sum, j) => sum + j.file.size, 0)
+    return size ? included.reduce((sum, j) => sum + j.file.size * j.progress, 0) / size : 0
+  })
+  const stopped = (job: UploadJob): boolean => job.canceled || job.state === 'paused' || job.state === 'queued'
 
   function enqueue(files: FileList | File[], parentId: string | null): number {
     const toast = useToastStore()
     const limit = Number(useAuthStore().meta?.max_file_size ?? 0)
-    const nonEmpty = Array.from(files).filter((file) => file.size > 0)
-    const selected = limit > 0 ? nonEmpty.filter((file) => file.size <= limit) : nonEmpty
-    if (nonEmpty.length > selected.length) {
-      toast.error(`有 ${nonEmpty.length - selected.length} 个文件超过大小限制`)
-    }
-    if (!selected.length) {
-      if (!nonEmpty.length) toast.error('暂不支持空文件')
-      return 0
-    }
-    for (const file of selected) {
-      const job: UploadJob = {
-        key: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        file: markRaw(file),
-        parentId,
-        uploadId: null,
-        state: 'queued',
-        progress: 0,
-        received: 0,
-        message: '等待上传',
-        error: '',
-        speed: null,
-        eta: null,
-        canceled: false,
-        controller: null,
+    let added = 0
+    for (const file of Array.from(files)) {
+      if (!file.size || (limit > 0 && file.size > limit)) {
+        toast.error(`${file.name}：文件为空或超过大小限制`)
+        continue
       }
-      jobs.value.push(job)
+      const key = fingerprint(parentId, file)
+      if (jobs.value.some((j) => !['done', 'canceled'].includes(j.state) && fingerprint(j.parentId, j.file) === key)) {
+        toast.push(`${file.name} 已在上传队列中`)
+        continue
+      }
+      jobs.value.push({
+        key: crypto.randomUUID(), file: markRaw(file), parentId, uploadId: null,
+        state: 'queued', progress: 0, received: 0, message: '等待上传', error: '',
+        speed: null, eta: null, canceled: false, controller: null,
+      })
+      added += 1
     }
-    toast.push(`已加入 ${selected.length} 个上传任务`)
+    if (added) toast.push(`已加入 ${added} 个上传任务`)
     pump()
-    return selected.length
+    return added
   }
 
   function pump(): void {
-    while (active < MAX_ACTIVE) {
-      const job = jobs.value.find((candidate) => candidate.state === 'queued' && !candidate.canceled)
+    while (running.size < MAX_ACTIVE) {
+      const job = jobs.value.find((j) => j.state === 'queued' && !j.canceled && !running.has(j.key))
       if (!job) break
-      active += 1
-      void runJob(job).finally(() => {
-        active -= 1
+      const task = runJob(job).finally(() => {
+        running.delete(job.key)
         pump()
       })
+      running.set(job.key, task)
     }
   }
 
-  async function ensureUpload(job: UploadJob): Promise<{ id: string; chunkSize: number; offset: number }> {
-    const map = loadResumeMap()
+  async function withRetry<T>(operation: () => Promise<T>): Promise<T> {
+    for (let attempt = 0; ; attempt += 1) {
+      try { return await operation() }
+      catch (cause) {
+        if (!retryable(cause) || attempt >= 4) throw cause
+        await wait(1000 * 2 ** attempt)
+      }
+    }
+  }
+
+  async function ensureUpload(job: UploadJob): Promise<Pick<UploadRecord, 'id' | 'received' | 'chunk_size' | 'state'>> {
     const key = fingerprint(job.parentId, job.file)
-    const known = map[key]
+    const known = job.uploadId ?? loadResumeMap()[key]
     if (known) {
       try {
-        const info = await api.getUpload(known)
-        if (
-          Number(info.size) === job.file.size &&
-          info.state !== 'done' &&
-          Number(info.received) <= job.file.size
-        ) {
-          if (info.state === 'processing') {
-            throw new Error('该文件正在 Telegram 写入中，请稍后查看结果')
-          }
+        const info = await withRetry(() => api.getUpload(known))
+        if (Number(info.size) === job.file.size && info.name === job.file.name && info.parent_id === job.parentId) {
           job.uploadId = info.id
-          return {
-            id: info.id,
-            chunkSize: Number(info.chunk_size),
-            offset: Number(info.received),
-          }
+          return info
         }
       } catch (cause) {
-        if (cause instanceof Error && cause.message.includes('正在 Telegram')) throw cause
+        // Keep the existing upload on network/auth errors; only 404 permits recreation.
+        if (!(cause instanceof ApiError) || cause.status !== 404) throw cause
       }
-      delete map[key]
-      saveResumeMap(map)
+      job.uploadId = null
+      saveResume(key, null)
     }
-
-    const created = await api.createUpload({
-      name: job.file.name,
-      size: job.file.size,
-      mime: job.file.type || 'application/octet-stream',
-      parent_id: job.parentId,
-    })
-    map[key] = created.id
-    saveResumeMap(map)
+    // Creation is not retried automatically: a lost response may already have created a task.
+    const created = await api.createUpload({ name: job.file.name, size: job.file.size,
+      mime: job.file.type || 'application/octet-stream', parent_id: job.parentId })
     job.uploadId = created.id
-    return { id: created.id, chunkSize: Number(created.chunk_size), offset: 0 }
+    saveResume(key, created.id)
+    return { ...created, received: created.offset, state: 'uploading' }
   }
 
   async function runJob(job: UploadJob): Promise<void> {
-    const toast = useToastStore()
     job.state = 'uploading'
     job.message = '连接服务器…'
     job.error = ''
-    job.canceled = false
-    let attempt = 0
-    let offset = 0
-
     try {
       const source = await ensureUpload(job)
-      offset = source.offset
+      if (stopped(job)) return
+      let offset = Number(source.received)
       job.received = offset
-      job.progress = Math.min(80, (offset / job.file.size) * 80)
-      if (offset > 0) job.message = `断点续传：已有 ${formatBytes(offset)}`
-      else job.message = '上传中'
-
-      let lastTime = performance.now()
-      let lastOffset = offset
-
-      while (offset < job.file.size) {
-        if (job.canceled) return
-        const end = Math.min(offset + source.chunkSize, job.file.size)
-        const controller = new AbortController()
-        job.controller = controller
-
-        try {
-          const result = await uploadChunk(
-            source.id,
-            offset,
-            job.file.slice(offset, end),
-            controller.signal,
-          )
-          if (result.kind === 'conflict') {
-            offset = result.offset
+      job.progress = Math.min(80, offset / job.file.size * 80)
+      if (!['processing', 'done'].includes(source.state)) {
+        let attempt = 0
+        let conflicts = 0
+        let lastTime = performance.now()
+        let lastOffset = offset
+        while (offset < job.file.size) {
+          if (stopped(job)) return
+          const end = Math.min(offset + Number(source.chunk_size), job.file.size)
+          if (end <= offset) throw new Error('服务器返回了无效的分片大小')
+          const controller = new AbortController()
+          job.controller = controller
+          const timeout = window.setTimeout(() => controller.abort(), 60_000)
+          try {
+            const result = await uploadChunk(source.id, offset, job.file.slice(offset, end), controller.signal)
+            if (stopped(job)) return
+            if (result.kind === 'error') throw new ApiError(result.message, result.status)
+            const next = Number(result.kind === 'conflict' ? result.offset : result.data.offset)
+            if (!Number.isSafeInteger(next) || next < 0 || next > job.file.size) throw new Error('服务器返回了无效的上传进度')
+            if (result.kind === 'conflict') {
+              if (++conflicts > 4) throw new Error('上传进度持续冲突，请稍后重试')
+            } else {
+              if (next <= offset) throw new Error('上传进度没有前进，请稍后重试')
+              conflicts = 0
+            }
+            offset = next
             job.received = offset
             attempt = 0
-            continue
+            const now = performance.now()
+            if (now - lastTime >= 600) {
+              job.speed = Math.max(0, (offset - lastOffset) / ((now - lastTime) / 1000))
+              lastTime = now
+              lastOffset = offset
+            }
+            job.progress = Math.min(80, offset / job.file.size * 80)
+            job.eta = job.speed ? (job.file.size - offset) / job.speed : null
+            job.message = `上传中 ${formatBytes(offset)} / ${formatBytes(job.file.size)}` +
+              (job.speed ? ` · ${formatBytes(job.speed)}/s` : '') + (job.eta ? ` · 剩 ${formatEta(job.eta)}` : '')
+          } catch (cause) {
+            if (stopped(job)) return
+            const error = controller.signal.aborted ? new ApiError('上传请求超时', 0) : cause
+            if (!retryable(error) || attempt >= 4) throw error
+            job.message = `连接异常，${2 ** attempt} 秒后重试…`
+            await wait(1000 * 2 ** attempt++)
+          } finally {
+            window.clearTimeout(timeout)
+            job.controller = null
           }
-          if (result.kind === 'error') {
-            if (!result.retryable || attempt >= 4) throw new Error(result.message)
-            attempt += 1
-            job.message = `服务异常，${2 ** (attempt - 1)} 秒后重试…`
-            await wait(1000 * 2 ** (attempt - 1))
-            continue
-          }
-
-          offset = Number(result.data.offset)
-          job.received = offset
-          attempt = 0
-          const now = performance.now()
-          const elapsed = (now - lastTime) / 1000
-          if (elapsed >= 0.6) {
-            job.speed = (offset - lastOffset) / elapsed
-            lastTime = now
-            lastOffset = offset
-          }
-          job.progress = Math.min(80, (offset / job.file.size) * 80)
-          job.eta = job.speed && job.speed > 0 ? (job.file.size - offset) / job.speed : null
-          job.message =
-            `上传中 ${formatBytes(offset)} / ${formatBytes(job.file.size)}` +
-            (job.speed ? ` · ${formatBytes(job.speed)}/s` : '') +
-            (job.eta ? ` · 剩 ${formatEta(job.eta)}` : '')
-        } catch (cause) {
-          if (job.canceled || isAbort(cause)) return
-          attempt += 1
-          if (attempt > 4) throw cause
-          job.message = `网络中断，${2 ** (attempt - 1)} 秒后重试…`
-          await wait(1000 * 2 ** (attempt - 1))
-        } finally {
-          job.controller = null
         }
       }
-
-      if (job.canceled) return
+      if (stopped(job)) return
       job.state = 'processing'
+      job.message = '等待 Telegram 保存…'
       job.progress = 80
-      job.message = '提交到 Telegram…'
-      await api.completeUpload(source.id)
-
-      let polls = 0
-      while (true) {
-        await wait(1200)
-        if (job.canceled) return
-        const record: UploadRecord = await api.getUpload(source.id)
+      if (!['processing', 'done'].includes(source.state)) await withRetry(() => api.completeUpload(source.id))
+      // Resume observing an existing Telegram task, including one completed while offline.
+      for (let polls = 0; ; polls += 1) {
+        const record = await withRetry(() => api.getUpload(source.id))
         if (record.state === 'done') {
           job.state = 'done'
+          job.received = job.file.size
           job.progress = 100
           job.message = '完成'
-          job.speed = null
-          job.eta = null
-          const map = loadResumeMap()
-          delete map[fingerprint(job.parentId, job.file)]
-          saveResumeMap(map)
+          saveResume(fingerprint(job.parentId, job.file), null)
           completedCount.value += 1
-          toast.success(`${job.file.name} 上传完成`)
+          useToastStore().success(`${job.file.name} 上传完成`)
           return
         }
         if (record.state === 'error') throw new Error(record.error || 'Telegram 保存失败')
-        const ratio = record.size ? Number(record.progress) / Number(record.size) : 0
-        job.progress = 80 + ratio * 20
-        job.message = `Telegram 保存中 ${formatBytes(record.progress)} / ${formatBytes(record.size)}`
-        polls += 1
-        if (polls > 1500) throw new Error('Telegram 保存超时，请稍后重试')
+        job.progress = 80 + Math.max(0, Math.min(1, Number(record.progress) / job.file.size)) * 20
+        job.message = `Telegram 保存中 ${formatBytes(record.progress)} / ${formatBytes(job.file.size)}`
+        // Long transfers poll less often to reduce metadata traffic.
+        await wait(Math.min(5000, 1200 + polls * 200))
       }
     } catch (cause) {
-      if (job.canceled || isAbort(cause)) return
-      const message = cause instanceof Error ? cause.message : '上传失败'
+      if (stopped(job)) return
       job.state = 'error'
-      job.error = message
-      job.message = message
+      job.error = cause instanceof Error ? cause.message : '上传失败'
+      job.message = job.error
+      useToastStore().error(`${job.file.name}：${job.error}`)
+    } finally {
       job.speed = null
       job.eta = null
-      toast.error(`${job.file.name}：${message}`)
     }
+  }
+
+  function pause(job: UploadJob): void {
+    if (job.state !== 'queued' && job.state !== 'uploading') return
+    job.state = 'paused'
+    job.message = '已暂停，可继续上传'
+    job.controller?.abort()
+  }
+
+  function resume(job: UploadJob): void {
+    if (!['paused', 'error', 'canceled'].includes(job.state)) return
+    job.canceled = false
+    job.error = ''
+    job.state = 'queued'
+    job.message = '等待继续上传'
+    pump()
   }
 
   async function cancel(job: UploadJob): Promise<void> {
@@ -278,64 +260,45 @@ export const useUploadStore = defineStore('uploads', () => {
       useToastStore().error('正在写入 Telegram，暂时不能取消')
       return
     }
-    if (job.state === 'done' || job.state === 'canceled') return
+    if (job.state === 'done' || job.canceled) return
     job.canceled = true
+    job.state = 'canceling'
+    job.message = '正在取消…'
     job.controller?.abort()
+    await running.get(job.key)
     if (job.uploadId) {
-      try {
-        await api.cancelUpload(job.uploadId)
-      } catch {
-        // The request may already be gone; local cancellation still wins.
+      try { await api.cancelUpload(job.uploadId) }
+      catch (cause) {
+        if (!(cause instanceof ApiError) || cause.status !== 404) {
+          job.state = 'error'
+          job.canceled = false
+          job.message = cause instanceof Error ? cause.message : '取消失败，请重试'
+          return
+        }
       }
     }
-    const map = loadResumeMap()
-    delete map[fingerprint(job.parentId, job.file)]
-    saveResumeMap(map)
+    saveResume(fingerprint(job.parentId, job.file), null)
+    job.uploadId = null
     job.state = 'canceled'
     job.message = '已取消'
-    job.speed = null
-    job.eta = null
   }
 
-  function retry(job: UploadJob): void {
-    if (job.state !== 'error' && job.state !== 'canceled') return
-    job.canceled = false
-    job.error = ''
-    job.state = 'queued'
-    job.progress = 0
-    job.received = 0
-    job.message = '等待重试'
-    pump()
-  }
-
+  function pauseAll(): void { jobs.value.forEach(pause) }
+  function resumeAll(): void { jobs.value.filter((j) => j.state === 'paused').forEach(resume) }
+  function retryAll(): void { jobs.value.filter((j) => j.state === 'error').forEach(resume) }
   function clearFinished(): void {
-    jobs.value = jobs.value.filter(
-      (job) => job.state !== 'done' && job.state !== 'error' && job.state !== 'canceled',
-    )
+    jobs.value = jobs.value.filter((j) => j.state !== 'done' && (j.state !== 'canceled' || j.uploadId !== null))
   }
-
   async function restore(): Promise<number> {
     try {
       const data = await api.listUploads()
-      restoredPending.value = data.uploads.filter((upload) => Number(upload.received) > 0).length
+      restoredPending.value = data.uploads.filter((u) => Number(u.received) > 0).length
       return restoredPending.value
-    } catch {
-      return 0
-    }
+    } catch { return 0 }
   }
 
-  return {
-    jobs,
-    completedCount,
-    restoredPending,
-    activeCount,
-    hasJobs,
-    enqueue,
-    cancel,
-    retry,
-    clearFinished,
-    restore,
-  }
+  return { jobs, completedCount, restoredPending, activeCount, hasJobs, totalProgress,
+    enqueue, pause, resume, pauseAll, resumeAll, retryAll, cancel, retry: resume, clearFinished, restore }
 })
 
 export { fingerprint as uploadFingerprint }

@@ -19,14 +19,16 @@ function stateClass(state: string): string {
   <aside v-if="uploads.hasJobs" class="upload-panel" :class="{ collapsed }">
     <header class="upload-head">
       <div>
-        <strong>上传队列</strong>
+        <strong>上传队列 · {{ Math.round(uploads.totalProgress) }}%</strong>
         <span v-if="uploads.activeCount" class="upload-active">{{ uploads.activeCount }} 个进行中</span>
       </div>
       <div class="upload-head-actions">
+        <button class="icon-btn" type="button" @click="uploads.pauseAll">全部暂停</button>
+        <button class="icon-btn" type="button" @click="uploads.resumeAll">全部继续</button>
+        <button class="icon-btn" type="button" @click="uploads.retryAll">重试失败</button>
         <button
           class="icon-btn"
           type="button"
-          :disabled="uploads.activeCount > 0"
           @click="uploads.clearFinished"
         >
           清空已完成
@@ -51,6 +53,14 @@ function stateClass(state: string): string {
           <span class="upload-size">{{ formatBytes(job.received) }} / {{ formatBytes(job.file.size) }}</span>
           <button
             v-if="job.state === 'queued' || job.state === 'uploading'"
+            class="text-btn" type="button" @click="uploads.pause(job)"
+          >暂停</button>
+          <button
+            v-if="job.state === 'paused'"
+            class="text-btn" type="button" @click="uploads.resume(job)"
+          >继续</button>
+          <button
+            v-if="job.state === 'queued' || job.state === 'uploading' || job.state === 'paused'"
             class="text-btn danger-text"
             type="button"
             @click="uploads.cancel(job)"
