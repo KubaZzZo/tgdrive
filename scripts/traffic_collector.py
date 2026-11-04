@@ -6,11 +6,11 @@ import argparse
 import json
 import os
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-UTC = UTC
+UTC = timezone.utc  # noqa: UP017 - Ubuntu 22.04 system Python is 3.10.
 
 
 def read_interfaces(proc: Path = Path("/proc"), selected: list[str] | None = None) -> dict:
