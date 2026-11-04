@@ -1,4 +1,15 @@
 export type FileAction = 'download' | 'share' | 'rename' | 'remove'
+export interface TelegramIdentity { id: number; username: string | null; first_name: string | null; bot: boolean }
+export interface TelegramProfile { id: string; chat_id: string; user_id: number; username: string | null; first_name: string | null; title: string }
+export interface TelegramAccountStatus {
+  active_id: string | null; account: TelegramIdentity | null; chat_id: string; connected: boolean
+  can_login: boolean; switching: boolean; profiles: TelegramProfile[]
+}
+export interface TelegramLogin {
+  id: string; state: 'connecting' | 'waiting' | 'password' | 'ready' | 'error' | 'expired' | 'canceled'
+  qr_image: string | null; error: string | null; account: TelegramIdentity | null
+}
+export interface TelegramChannel { id: string; title: string; writable: boolean }
 export interface TrafficTotals { inbound: number; outbound: number }
 export interface TrafficStatus {
   day: string
@@ -79,6 +90,7 @@ export interface StorageStatus {
 }
 
 export interface Meta {
+  workspace_is_default?: boolean
   app_name: string
   authenticated: boolean
   storage: StorageStatus

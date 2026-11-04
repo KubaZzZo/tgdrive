@@ -3,6 +3,8 @@ import { beforeEach, test } from 'node:test'
 import { createPinia, setActivePinia } from 'pinia'
 import { useUploadStore } from '../src/stores/uploads.ts'
 import { uploadChunk } from '../src/api/client.ts'
+import { useAuthStore } from '../src/stores/auth.ts'
+import type { Meta } from '../src/api/types.ts'
 
 const memory = new Map<string, string>()
 Object.assign(globalThis, {
@@ -24,6 +26,27 @@ async function until(predicate: () => boolean) {
   }
 }
 beforeEach(() => { memory.clear(); setActivePinia(createPinia()) })
+
+test('switching channels isolates resume IDs and preserves the original channel resume map', async () => {
+  memory.set('tgdrive_resume_v2', JSON.stringify({ '|data.bin|8|123': 'original-upload' }))
+  const auth = useAuthStore()
+  auth.meta = { workspace_is_default: false, storage: { chat_id: '-100222' } } as Meta
+  let creates = 0
+  let originalLookups = 0
+  globalThis.fetch = async (url, init) => {
+    if (String(url).includes('original-upload')) originalLookups++
+    if (url === '/api/uploads') { creates++; return json({ id: 'new-channel-upload', offset: 8, chunk_size: 4, size: 8 }) }
+    if (init?.method === 'POST') return json({ ok: true }, 202)
+    return json({ id: 'new-channel-upload', state: 'done', progress: 8 })
+  }
+  const store = useUploadStore()
+  store.enqueue([file()], null)
+  await until(() => store.jobs[0]?.state === 'done')
+  assert.equal(creates, 1)
+  assert.equal(originalLookups, 0)
+  assert.equal(JSON.parse(memory.get('tgdrive_resume_v2')!)['|data.bin|8|123'], 'original-upload')
+  assert.deepEqual(JSON.parse(memory.get('tgdrive_resume_v2:-100222')!), {})
+})
 
 test('409 without offset is an error, not a reset to zero', async () => {
   globalThis.fetch = async () => json({ detail: 'processing' }, 409)

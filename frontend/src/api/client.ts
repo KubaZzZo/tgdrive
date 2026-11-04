@@ -7,6 +7,7 @@ import type {
   SyncStatus,
   UploadRecord,
   TrafficStatus,
+  TelegramAccountStatus, TelegramLogin, TelegramChannel,
 } from './types'
 
 export class ApiError extends Error {
@@ -22,6 +23,8 @@ export class ApiError extends Error {
 }
 
 type JsonBody = Record<string, unknown>
+let workspaceId: string | null = null
+export function setWorkspaceId(value: string | null): void { workspaceId = value }
 
 async function parsePayload(response: Response): Promise<unknown> {
   const contentType = response.headers.get('content-type') ?? ''
@@ -44,6 +47,7 @@ function errorMessage(payload: unknown, fallback: string): string {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   headers.set('Accept', 'application/json')
+  if (workspaceId) headers.set('X-Workspace-ID', workspaceId)
   if (init.body && typeof init.body === 'string') headers.set('Content-Type', 'application/json')
 
   let response: Response
@@ -59,6 +63,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   const payload = await parsePayload(response)
   if (!response.ok) {
+    if (response.status === 409 && (payload as { workspace_changed?: boolean })?.workspace_changed) window.location.reload()
     if (response.status === 401 && !path.endsWith('/login')) {
       window.dispatchEvent(new CustomEvent('tgdrive:unauthorized'))
     }
@@ -102,11 +107,13 @@ export async function uploadChunk(
         Accept: 'application/json',
         'Content-Type': 'application/octet-stream',
         'Upload-Offset': String(offset),
+        ...(workspaceId ? { 'X-Workspace-ID': workspaceId } : {}),
       },
       body: blob,
       signal,
     })
     const payload = (await parsePayload(response)) as Record<string, unknown> | null
+    if (response.status === 409 && payload?.workspace_changed) window.location.reload()
     if (response.ok) {
       return { kind: 'ok', data: payload as unknown as ChunkResponse }
     }
@@ -129,6 +136,14 @@ export async function uploadChunk(
 }
 
 export const api = {
+  telegramAccounts: () => request<TelegramAccountStatus>('/api/telegram'),
+  telegramLogin: () => request<TelegramLogin>('/api/telegram/login', { method: 'POST' }),
+  telegramLoginStatus: (id: string) => request<TelegramLogin>(`/api/telegram/login/${encodeURIComponent(id)}`),
+  telegramCancelLogin: (id: string) => request<{ ok: boolean }>(`/api/telegram/login/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  telegramPassword: (id: string, password: string) => jsonRequest<TelegramLogin>('POST', `/api/telegram/login/${encodeURIComponent(id)}/password`, { password }),
+  telegramChannels: (id: string) => request<{ channels: TelegramChannel[] }>(`/api/telegram/login/${encodeURIComponent(id)}/channels`),
+  telegramActivate: (id: string, chatId: string) => request<TelegramAccountStatus>(`/api/telegram/login/${encodeURIComponent(id)}/activate`, { method: 'POST', body: JSON.stringify({ chat_id: chatId }), signal: AbortSignal.timeout(180_000) }),
+  telegramSwitch: (id: string) => request<TelegramAccountStatus>(`/api/telegram/profiles/${encodeURIComponent(id)}/activate`, { method: 'POST', signal: AbortSignal.timeout(180_000) }),
   traffic: () => request<TrafficStatus>('/api/traffic'),
   saveTrafficQuota: (quotaBytes: number) => jsonRequest<TrafficStatus>('PUT', '/api/traffic/settings', { quota_bytes: quotaBytes }),
   syncStatus: () => request<SyncStatus>('/api/sync'),
@@ -178,6 +193,10 @@ export const api = {
   cancelUpload: (uploadId: string) =>
     request<{ ok: boolean }>(`/api/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' }),
 
-  downloadUrl: (itemId: string, download = false) =>
-    `/api/files/${encodeURIComponent(itemId)}/download${download ? '?download=1' : ''}`,
+  downloadUrl: (itemId: string, download = false) => {
+    const query = new URLSearchParams()
+    if (download) query.set('download', '1')
+    if (workspaceId) query.set('workspace_id', workspaceId)
+    return `/api/files/${encodeURIComponent(itemId)}/download${query.size ? '?' + query : ''}`
+  },
 }

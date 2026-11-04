@@ -98,8 +98,12 @@ docker compose cp app:/data/backup.db ./backup-$(date +%F).db
 docker compose exec -T app rm /data/backup.db
 
 # session + .env 等同账号所有权，必须加密后异地保存
+# 多频道完整备份：先停止应用，确保各 SQLite 和账号映射处于同一时点
+docker compose stop app
 docker run --rm -v tgdrive_tgdata:/d -v $PWD:/out alpine \
   tar czf /out/data-$(date +%F).tgz -C /d .
+docker compose start app
+# 另备份宿主机 data/traffic/ 和 .env；它们不在 tgdata 卷内
 ```
 
 ## 7. 升级
@@ -175,3 +179,13 @@ ExecStart=/usr/bin/python3 /opt/tgdrive/scripts/traffic_collector.py --state /op
 - 监测只告警，不自动限速或断流。若采集暂停，不能把显示的剩余额度当作实时值。
 
 登录密码使用 VPS `.env` 的 `APP_PASSWORD`。修改后需重建/重启应用以加载；本地 `.env` 不会随 Git 推送到 VPS。
+## Telegram 账号和频道切换的部署与备份
+
+更新后重建/重启应用，登录网页，通过顶部“Telegram 账号”完成扫码、两步验证与频道选择。
+无需手工覆盖原 `.env` 或原 session。网页保存的活动连接优先于初始 `.env` 连接；初始连接保留在列表中可切回。
+新账号需先加入目标频道并取得发送、删除消息的管理员权限。
+
+数据库 schema v6 自动保存账号/频道组合和频道数据库映射。备份不能只包含 `tgdrive.sqlite3`：
+必须同时保存整个 `/data` 卷，包括 `accounts/*.session`、`channels/*.sqlite3` 和初始 session，另备份宿主机 `data/traffic/` 和 `.env`。
+为得到一致的完整备份，应先停止应用，再归档整个数据卷；恢复时也应整组恢复，不能混用不同备份中的映射和频道数据库。
+会话文件等同登录凭证，备份需加密保存，不能提交 Git。切换功能使用单应用进程部署。
