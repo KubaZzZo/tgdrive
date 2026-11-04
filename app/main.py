@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -9,7 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.api.routes import auth, files, items, system, uploads
+from app.api.routes import accounts, auth, files, items, system, uploads
 from app.config import Settings
 from app.config import settings as default_settings
 from app.core.errors import install_exception_handlers
@@ -17,6 +18,7 @@ from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.core.security import LoginRateLimiter
 from app.db import Database
+from app.services.accounts import AccountManager, Runtime, WorkspaceMiddleware, account_settings
 from app.services.channel_sync import ChannelSyncService
 from app.services.traffic import TrafficMiddleware, TrafficMonitor
 from app.services.uploads import UploadService
@@ -36,8 +38,18 @@ def create_app(
     configure_logging(cfg.log_level, cfg.log_json)
 
     database = db or Database(cfg.db_path)
-    telegram = storage or TelegramStorage(cfg)
-    traffic = TrafficMonitor(database, cfg.traffic_host_state)
+    control = database
+    profile = control.active_telegram_profile() if storage is None else None
+    if profile:
+        key = control.telegram_workspace(profile["chat_id"])
+        if key is None:
+            raise RuntimeError("当前 Telegram 频道缺少数据库映射，请恢复完整的数据备份")
+        if key:
+            if not re.fullmatch(r"[a-f0-9]{32}", key):
+                raise RuntimeError("频道数据库配置无效")
+            database = Database(cfg.data_dir / "channels" / f"{key}.sqlite3")
+    telegram = storage or TelegramStorage(account_settings(cfg, profile))
+    traffic = TrafficMonitor(control, cfg.traffic_host_state)
     telegram.traffic = traffic
     upload_service = UploadService(
         database, telegram, cfg.upload_stale_hours, cfg.upload_concurrency
@@ -54,6 +66,7 @@ def create_app(
         await telegram.start()
         upload_service.start()
         await channel_sync.start()
+        await account_manager.start()
         if telegram.error:
             logger.warning("Telegram unavailable: %s", telegram.error)
         logger.info(
@@ -65,11 +78,7 @@ def create_app(
         try:
             yield
         finally:
-            await channel_sync.shutdown()
-            await upload_service.shutdown()
-            await telegram.stop()
-            traffic.flush()
-            database.close()
+            await account_manager.shutdown()
             logger.info("TG Drive stopped")
 
     app = FastAPI(
@@ -87,7 +96,12 @@ def create_app(
     app.state.uploads = upload_service
     app.state.channel_sync = channel_sync
     app.state.login_limiter = LoginRateLimiter(cfg.login_max_attempts, cfg.login_window_seconds)
+    account_manager = AccountManager(
+        app, cfg, control, Runtime(database, telegram, upload_service, channel_sync)
+    )
+    app.state.accounts = account_manager
 
+    app.add_middleware(WorkspaceMiddleware, manager=account_manager)
     app.add_middleware(
         SessionMiddleware,
         secret_key=cfg.app_secret,
@@ -100,6 +114,7 @@ def create_app(
     install_exception_handlers(app)
 
     app.include_router(system.router)
+    app.include_router(accounts.router)
     app.include_router(auth.router)
     app.include_router(items.router)
     app.include_router(uploads.router)

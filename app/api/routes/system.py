@@ -25,7 +25,7 @@ async def traffic_status(request: Request) -> dict:
 
 @router.put("/traffic/settings", dependencies=[Depends(require_auth)])
 async def traffic_settings(body: TrafficSettingsBody, request: Request) -> dict:
-    request.app.state.db.update_traffic_config(body.quota_bytes)
+    request.app.state.traffic.db.update_traffic_config(body.quota_bytes)
     return request.app.state.traffic.snapshot()
 
 
@@ -41,6 +41,8 @@ async def meta(
         "storage": storage.status(),
         "chunk_size": settings.upload_chunk_size,
         "max_file_size": settings.max_file_size,
+        "workspace_is_default": request.state.telegram_runtime.db
+        is request.app.state.accounts.control,
     }
 
 

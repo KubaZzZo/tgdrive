@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 
-import { api, ApiError } from '@/api/client'
+import { api, ApiError, setWorkspaceId } from '@/api/client'
 import type { Meta, StorageStatus } from '@/api/types'
 
 export const useAuthStore = defineStore('auth', () => {
@@ -18,6 +18,7 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = ''
     try {
       meta.value = await api.meta()
+      setWorkspaceId(meta.value.storage.chat_id)
     } catch (cause) {
       error.value = cause instanceof ApiError ? cause.message : '无法连接后端服务'
     } finally {
@@ -32,6 +33,7 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       await api.login(password)
       meta.value = await api.meta()
+      setWorkspaceId(meta.value.storage.chat_id)
       if (!meta.value.authenticated) throw new Error('登录状态未生效')
     } catch (cause) {
       error.value = cause instanceof ApiError ? cause.message : '登录失败'
@@ -51,6 +53,7 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function refreshMeta(): Promise<void> {
     meta.value = await api.meta()
+    setWorkspaceId(meta.value.storage.chat_id)
   }
 
   function markUnauthorized(): void {

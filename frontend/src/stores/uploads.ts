@@ -27,11 +27,15 @@ export interface UploadJob {
 
 const LS_KEY = 'tgdrive_resume_v2'
 const MAX_ACTIVE = 2
+function resumeStorageKey(): string {
+  const meta = useAuthStore().meta
+  return meta?.workspace_is_default === false ? `${LS_KEY}:${meta.storage.chat_id}` : LS_KEY
+}
 const wait = (ms: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, ms))
 
 function loadResumeMap(): Record<string, string> {
   try {
-    const parsed = JSON.parse(localStorage.getItem(LS_KEY) ?? '{}')
+    const parsed = JSON.parse(localStorage.getItem(resumeStorageKey()) ?? '{}')
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
   } catch {
     return {}
@@ -43,7 +47,7 @@ function saveResume(key: string, id: string | null): void {
     const map = loadResumeMap()
     if (id) map[key] = id
     else delete map[key]
-    localStorage.setItem(LS_KEY, JSON.stringify(map))
+    localStorage.setItem(resumeStorageKey(), JSON.stringify(map))
   } catch {
     // Upload remains available when local storage is disabled.
   }

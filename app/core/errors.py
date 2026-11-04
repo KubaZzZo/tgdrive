@@ -36,7 +36,12 @@ def install_exception_handlers(app: FastAPI) -> None:
             status_code=422,
             content={
                 "detail": "请求参数校验失败",
-                "errors": jsonable_encoder(exc.errors()),
+                "errors": jsonable_encoder(
+                    [
+                        {key: value for key, value in error.items() if key not in {"input", "ctx"}}
+                        for error in exc.errors()
+                    ]
+                ),
                 "request_id": _request_id(request),
             },
         )

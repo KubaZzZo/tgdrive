@@ -167,6 +167,8 @@ async def complete_upload(
 ) -> dict[str, Any] | JSONResponse:
     async with uploads.lock(upload_id):
         del storage  # dependency guarantees connectivity before scheduling work
+        if uploads._closed:
+            raise HTTPException(409, "账号正在切换，请刷新页面后重试")
         upload = db.get_upload(upload_id)
         if not upload:
             raise HTTPException(404, "上传任务不存在")

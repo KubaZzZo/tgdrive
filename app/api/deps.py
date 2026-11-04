@@ -15,15 +15,15 @@ def get_settings(request: Request) -> Settings:
 
 
 def get_db(request: Request) -> Database:
-    return request.app.state.db
+    return request.state.telegram_runtime.db
 
 
 def get_storage(request: Request) -> TelegramStorage:
-    return request.app.state.storage
+    return request.state.telegram_runtime.storage
 
 
 def get_upload_service(request: Request) -> UploadService:
-    return request.app.state.uploads
+    return request.state.telegram_runtime.uploads
 
 
 def require_storage(storage: TelegramStorage = Depends(get_storage)) -> TelegramStorage:
