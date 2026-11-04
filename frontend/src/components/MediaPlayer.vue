@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { mediaTime, playbackPosition, savePlayback } from '@/utils/playback'
+import { attachMedia, bufferedSeek, type MediaSession } from '@/utils/fragmentedMp4'
 
 const props = defineProps<{ src: string; itemId: string; kind: 'video' | 'audio' }>()
 const player = ref<HTMLMediaElement | null>(null)
@@ -17,6 +18,10 @@ const muted = ref(false)
 let restored = false
 let lastSaved = 0
 let disposed = false
+let session: MediaSession | undefined
+let setup: Promise<void> | undefined
+let controller = new AbortController()
+const streaming = ref(false)
 const pipAvailable = computed(
   () =>
     props.kind === 'video' && typeof document !== 'undefined' && document.pictureInPictureEnabled,
@@ -31,7 +36,7 @@ function metadata(): void {
   if (!media) return
   media.playbackRate = rate.value
   duration.value = Number.isFinite(media.duration) ? media.duration : 0
-  if (!restored && duration.value > 0) {
+  if (!restored && duration.value > 0 && !streaming.value) {
     restored = true
     const position = playbackPosition(props.itemId, media.duration)
     if (position) {
@@ -48,6 +53,7 @@ function update(): void {
   }
 }
 async function toggle(): Promise<void> {
+  await setup
   const media = player.value
   if (!media) return
   if (media.paused) {
@@ -62,12 +68,22 @@ async function toggle(): Promise<void> {
 function seek(value: number): void {
   const media = player.value
   if (!media || !Number.isFinite(media.duration)) return
-  media.currentTime = Math.max(0, Math.min(media.duration - 0.05, value))
+  let target = Math.max(0, Math.min(media.duration - 0.05, value))
+  if (streaming.value) {
+    const available = bufferedSeek(media.buffered, target)
+    if (available === null) return
+    if (Math.abs(available - target) > 0.2) notice.value = '此分片视频可拖动到已缓冲的位置，请等待后续内容缓冲。'
+    target = available
+  }
+  if (Math.abs(media.currentTime - target) > 0.05) media.currentTime = target
   current.value = media.currentTime
 }
 function restart(): void {
   seek(0)
   notice.value = ''
+}
+function seeking(): void {
+  if (streaming.value && player.value) seek(player.value.currentTime)
 }
 function changeRate(): void {
   if (player.value) player.value.playbackRate = rate.value
@@ -115,11 +131,35 @@ function failed(): void {
       ? '视频传输中断，请重试加载。'
       : '浏览器无法播放此文件的格式或编码，可以下载后使用本地播放器观看。'
 }
+function start(): void {
+  controller.abort()
+  session?.dispose()
+  controller = new AbortController()
+  const signal = controller.signal
+  const media = player.value
+  if (!media) return
+  media.pause()
+  media.removeAttribute('src')
+  media.load()
+  streaming.value = false
+  if (props.kind === 'audio') { media.src = props.src; return }
+  setup = attachMedia(media, props.src, signal, () => {
+    if (!signal.aborted) {
+      loading.value = false
+      error.value = '视频传输中断，请重试加载。'
+    }
+  }).then(value => {
+    if (signal.aborted) value.dispose()
+    else { session = value; streaming.value = value.streaming }
+  }).catch(() => {
+    if (!signal.aborted) { loading.value = false; error.value = '视频加载失败，请重试。' }
+  })
+}
 function retry(): void {
   error.value = ''
   loading.value = true
   restored = false
-  player.value?.load()
+  start()
 }
 function onKey(event: KeyboardEvent): void {
   if ((event.target as HTMLElement).matches('input, select, button, a')) return
@@ -136,12 +176,15 @@ function pause(): void {
   save()
 }
 onMounted(() => {
+  start()
   window.addEventListener('pagehide', save)
   document.addEventListener('visibilitychange', save)
 })
 onBeforeUnmount(() => {
   save()
   disposed = true
+  controller.abort()
+  session?.dispose()
   window.removeEventListener('pagehide', save)
   document.removeEventListener('visibilitychange', save)
   if (player.value) {
@@ -164,7 +207,6 @@ onBeforeUnmount(() => {
       <component
         :is="kind"
         ref="player"
-        :src="src"
         controls
         playsinline
         preload="metadata"
@@ -172,6 +214,7 @@ onBeforeUnmount(() => {
         @loadedmetadata="metadata"
         @durationchange="metadata"
         @timeupdate="update"
+        @seeking="seeking"
         @play="paused = false"
         @pause="pause"
         @ended="pause"
@@ -230,7 +273,7 @@ onBeforeUnmount(() => {
         {{ notice }}
         <button @click="restart">从头播放</button>
       </p>
-      <p class="media-hint">自动记住播放位置 · 空格播放/暂停 · ← → 快进快退</p>
+      <p class="media-hint">{{ streaming ? '流式播放 · 可在已缓冲范围内拖动进度' : '自动记住播放位置' }} · 空格播放/暂停 · ← → 快进快退</p>
     </div>
   </div>
 </template>
