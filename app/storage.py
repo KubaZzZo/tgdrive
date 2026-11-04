@@ -295,12 +295,16 @@ class TelegramStorage:
         if length <= 0:
             return
         # Telegram requires a 4 KiB multiple that divides 1 MiB; use powers of two.
-        # Telethon limit counts chunks, while the final output is clipped to bytes.
+        # Align the start ourselves: Telethon can select its direct iterator for
+        # a 4 KiB-aligned offset even when a request would cross a 1 MiB boundary.
+        # Browser ranges such as 688128-1048575 trigger that path.
         chunk_size = min(512 * 1024, max(4096, 1 << (length - 1).bit_length()))
+        aligned_offset = offset // chunk_size * chunk_size
+        skip = offset - aligned_offset
         stream = client.iter_download(
             message,
-            offset=offset,
-            limit=(length + chunk_size - 1) // chunk_size,
+            offset=aligned_offset,
+            limit=(skip + length + chunk_size - 1) // chunk_size,
             chunk_size=chunk_size,
             request_size=chunk_size,
         )
@@ -309,6 +313,10 @@ class TelegramStorage:
             async for chunk in stream:
                 if self.traffic:
                     self.traffic.record("telegram", inbound=len(chunk))
+                if skip:
+                    discarded = min(skip, len(chunk))
+                    chunk = chunk[discarded:]
+                    skip -= discarded
                 data = bytes(chunk[:remaining])
                 remaining -= len(data)
                 if data:

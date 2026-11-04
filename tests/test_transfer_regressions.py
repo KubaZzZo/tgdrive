@@ -24,11 +24,23 @@ def test_unicode_password():
 
 @pytest.mark.parametrize(
     "offset,length",
-    [(2, 3), (0, 1), (7, 3), (17, 800_000), (0, 1_200_000), (0, 93_470), (777, 24_576)],
+    [
+        (2, 3),
+        (0, 1),
+        (7, 3),
+        (17, 800_000),
+        (0, 1_200_000),
+        (0, 93_470),
+        (777, 24_576),
+        (688_128, 360_448),
+        (688_128, 524_288),
+        (1_044_480, 8192),
+        (4096, 524_288),
+    ],
 )
 def test_download_uses_real_telethon_iterator(workdir, offset, length):
     async def run():
-        data = (b"0123456789" * 120_000) if length > 10 else b"0123456789"
+        data = (b"0123456789" * 400_000) if length > 10 else b"0123456789"
         client = TelegramClient(MemorySession(), 12345, "test")
         location = InputDocumentFileLocation(1, 1, b"", "")
 
