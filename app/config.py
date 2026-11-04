@@ -75,10 +75,18 @@ class Settings:
     upload_chunk_size: int = field(
         default_factory=lambda: _env_int("UPLOAD_CHUNK_SIZE", 8 * 1024 * 1024)
     )
+    upload_concurrency: int = field(default_factory=lambda: _env_int("UPLOAD_CONCURRENCY", 2))
     max_file_size: int = field(
         default_factory=lambda: _env_int("MAX_FILE_SIZE", 0)
     )  # 0 = unlimited
     upload_stale_hours: int = field(default_factory=lambda: _env_int("UPLOAD_STALE_HOURS", 72))
+
+    channel_sync_enabled: bool = field(
+        default_factory=lambda: _env_bool("CHANNEL_SYNC_ENABLED", True)
+    )
+    channel_sync_interval: int = field(
+        default_factory=lambda: _env_int("CHANNEL_SYNC_INTERVAL", 30)
+    )
 
     @property
     def is_production(self) -> bool:
@@ -108,8 +116,12 @@ class Settings:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def validate(self) -> None:
+        if self.channel_sync_interval < 5:
+            raise RuntimeError("CHANNEL_SYNC_INTERVAL 必须至少为 5 秒")
         if self.tg_mode not in {"user", "bot"}:
             raise RuntimeError("TG_MODE 只能是 user 或 bot")
+        if self.upload_concurrency <= 0:
+            raise RuntimeError("UPLOAD_CONCURRENCY 必须大于 0")
         if self.upload_chunk_size <= 0:
             raise RuntimeError("UPLOAD_CHUNK_SIZE 必须大于 0")
         if self.tg_segment_size <= 0:

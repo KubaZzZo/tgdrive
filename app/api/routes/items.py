@@ -3,12 +3,13 @@ from __future__ import annotations
 import logging
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.api.deps import get_db, get_storage
 from app.auth import require_auth
+from app.categories import Category
 from app.db import Database
 from app.schemas import FolderBody, ShareBody, UpdateItemBody
 from app.storage import TelegramStorage
@@ -30,17 +31,39 @@ def ensure_folder(db: Database, parent_id: str | None) -> dict[str, Any] | None:
 
 @router.get("/items")
 async def list_items(
-    parent_id: str | None = None, db: Database = Depends(get_db)
+    parent_id: str | None = None,
+    scope: Literal["folder", "all", "recent"] = "folder",
+    category: Category | None = None,
+    q: str = Query(default="", max_length=255),
+    sort: Literal["name", "size", "created_at", "updated_at"] = "name",
+    direction: Literal["asc", "desc"] = "asc",
+    limit: int = Query(default=60, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Database = Depends(get_db),
 ) -> dict[str, Any]:
-    ensure_folder(db, parent_id)
-    items = db.list_items(parent_id)
+    if scope == "folder":
+        ensure_folder(db, parent_id)
+    items, total = db.query_items(
+        parent_id,
+        scope=scope,
+        category=category,
+        query=q.strip(),
+        sort=sort,
+        direction=direction,
+        limit=limit,
+        offset=offset,
+    )
     for item in items:
         item["download_url"] = (
             f"/api/files/{item['id']}/download" if item["kind"] == "file" else None
         )
     return {
         "items": items,
-        "path": db.get_path(parent_id),
+        "path": db.get_path(parent_id) if scope == "folder" else [],
+        "categories": db.category_stats(),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
         "stats": db.stats(),
     }
 

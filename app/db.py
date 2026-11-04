@@ -8,7 +8,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+from app.categories import CATEGORY_LABELS, classify_file, effective_mime
+
+SCHEMA_VERSION = 4
 
 
 def utcnow() -> str:
@@ -100,8 +102,57 @@ class Database:
                 )
             if current < 1:
                 self.conn.executescript(SCHEMA)
-                self.conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+                self.conn.execute("PRAGMA user_version=1")
                 self.conn.commit()
+
+            if current < 2:
+                with self.conn:
+                    # Include DDL in the transaction so an interrupted backfill is retryable.
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    self.conn.execute("ALTER TABLE items ADD COLUMN category TEXT")
+                    rows = self.conn.execute(
+                        "SELECT id, name, mime FROM items WHERE kind='file'"
+                    ).fetchall()
+                    self.conn.executemany(
+                        "UPDATE items SET category=?, mime=? WHERE id=?",
+                        [
+                            (
+                                classify_file(row["name"], row["mime"]),
+                                effective_mime(row["name"], row["mime"]),
+                                row["id"],
+                            )
+                            for row in rows
+                        ],
+                    )
+                    self.conn.execute(
+                        "CREATE INDEX idx_items_category ON items(category, created_at DESC)"
+                    )
+                    self.conn.execute("CREATE INDEX idx_items_created ON items(created_at DESC)")
+                    self.conn.execute("PRAGMA user_version=2")
+
+            if current < 3:
+                with self.conn:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    self.conn.execute(
+                        "ALTER TABLE items ADD COLUMN source TEXT NOT NULL DEFAULT 'web'"
+                    )
+                    self.conn.execute("CREATE INDEX idx_items_source ON items(source, tg_chat_id)")
+                    self.conn.execute("""CREATE TABLE channel_messages (
+                        chat_id TEXT NOT NULL, message_id INTEGER NOT NULL,
+                        item_id TEXT REFERENCES items(id) ON DELETE SET NULL,
+                        state TEXT NOT NULL, media_key TEXT, scan_run TEXT,
+                        PRIMARY KEY(chat_id, message_id))""")
+                    self.conn.execute("""CREATE TABLE channel_sync_state (
+                        chat_id TEXT PRIMARY KEY, last_message_id INTEGER NOT NULL DEFAULT 0)""")
+                    self.conn.execute("PRAGMA user_version=3")
+
+            if current < 4:
+                with self.conn:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    self.conn.execute(
+                        "ALTER TABLE channel_messages ADD COLUMN remote_version TEXT NOT NULL DEFAULT ''"
+                    )
+                    self.conn.execute("PRAGMA user_version=4")
 
     def schema_version(self) -> int:
         with self._lock:
@@ -137,6 +188,67 @@ class Database:
                     "SELECT * FROM items WHERE parent_id IS NULL ORDER BY kind ASC, lower(name) ASC"
                 ).fetchall()
         return [dict(r) for r in rows]
+
+    def query_items(
+        self,
+        parent_id: str | None = None,
+        *,
+        scope: str = "folder",
+        category: str | None = None,
+        query: str = "",
+        sort: str = "name",
+        direction: str = "asc",
+        limit: int = 60,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if category:
+            conditions.extend(["kind='file'", "category=?"])
+            params.append(category)
+        elif scope == "recent":
+            conditions.append("kind='file'")
+        if scope == "folder":
+            conditions.append("parent_id = ?" if parent_id else "parent_id IS NULL")
+            if parent_id:
+                params.append(parent_id)
+        if query:
+            # instr treats %, _ and backslashes literally rather than as LIKE wildcards.
+            conditions.append("instr(lower(name), lower(?)) > 0")
+            params.append(query)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        column = {
+            "name": "name COLLATE NOCASE",
+            "size": "size",
+            "created_at": "created_at",
+            "updated_at": "updated_at",
+        }[sort]
+        order = "DESC" if direction == "desc" else "ASC"
+        with self._lock:
+            total = self.conn.execute("SELECT COUNT(*) FROM items" + where, params).fetchone()[0]
+            rows = self.conn.execute(
+                "SELECT * FROM items"
+                + where
+                + f" ORDER BY (kind='folder') DESC, {column} {order}, id ASC LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ).fetchall()
+        return [dict(row) for row in rows], int(total)
+
+    def category_stats(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT category, COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes FROM items WHERE kind='file' GROUP BY category"
+            ).fetchall()
+        counts = {row["category"]: dict(row) for row in rows}
+        return [
+            {
+                "id": key,
+                "label": label,
+                "count": counts.get(key, {}).get("count", 0),
+                "bytes": counts.get(key, {}).get("bytes", 0),
+            }
+            for key, label in CATEGORY_LABELS.items()
+        ]
 
     def get_item(self, item_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -190,14 +302,26 @@ class Database:
         parts: Iterable[dict[str, Any]],
     ) -> dict[str, Any]:
         name = self._clean_name(name)
+        mime = effective_mime(name, mime)
         now = utcnow()
         item_id = uuid.uuid4().hex
         with self._lock, self.conn:
             self.conn.execute(
                 "INSERT INTO items "
-                "(id, parent_id, kind, name, size, mime, sha256, tg_chat_id, created_at, updated_at) "
-                "VALUES (?, ?, 'file', ?, ?, ?, ?, ?, ?, ?)",
-                (item_id, parent_id, name, int(size), mime, sha256, str(chat_id), now, now),
+                "(id, parent_id, kind, name, size, mime, sha256, tg_chat_id, created_at, updated_at, category) "
+                "VALUES (?, ?, 'file', ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    item_id,
+                    parent_id,
+                    name,
+                    int(size),
+                    mime,
+                    sha256,
+                    str(chat_id),
+                    now,
+                    now,
+                    classify_file(name, mime),
+                ),
             )
             for part in parts:
                 self.conn.execute(
@@ -215,9 +339,13 @@ class Database:
     def rename_item(self, item_id: str, name: str) -> dict[str, Any] | None:
         name = self._clean_name(name)
         with self._lock, self.conn:
+            item = self.get_item(item_id)
+            if not item:
+                return None
+            category = classify_file(name, item["mime"]) if item["kind"] == "file" else None
             self.conn.execute(
-                "UPDATE items SET name = ?, updated_at = ? WHERE id = ?",
-                (name, utcnow(), item_id),
+                "UPDATE items SET name = ?, category = ?, updated_at = ? WHERE id = ?",
+                (name, category, utcnow(), item_id),
             )
         return self.get_item(item_id)
 
@@ -359,6 +487,149 @@ class Database:
                 (before,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    # ---------- channel synchronization ----------
+
+    def channel_cursor(self, chat_id: str) -> int:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT last_message_id FROM channel_sync_state WHERE chat_id=?", (chat_id,)
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def channel_high_water(self, chat_id: str) -> int:
+        with self._lock:
+            return int(
+                self.conn.execute(
+                    "SELECT COALESCE(MAX(message_id),0) FROM channel_messages WHERE chat_id=?",
+                    (chat_id,),
+                ).fetchone()[0]
+            )
+
+    def advance_channel_cursor(self, chat_id: str, message_id: int) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                """INSERT INTO channel_sync_state VALUES (?,?)
+                ON CONFLICT(chat_id) DO UPDATE SET last_message_id=MAX(last_message_id,excluded.last_message_id)""",
+                (chat_id, message_id),
+            )
+
+    def import_channel_file(
+        self, chat_id: str, message_id: int, file: dict[str, Any], scan_run: str | None = None
+    ) -> bool:
+        """Atomically import/update one remote document; tombstones prevent resurrection."""
+        with self._lock, self.conn:
+            seen = self.conn.execute(
+                "SELECT * FROM channel_messages WHERE chat_id=? AND message_id=?",
+                (chat_id, message_id),
+            ).fetchone()
+            if seen and seen["state"] != "imported":
+                return False
+            if seen:
+                self.conn.execute(
+                    "UPDATE channel_messages SET scan_run=COALESCE(?,scan_run) WHERE chat_id=? AND message_id=?",
+                    (scan_run, chat_id, message_id),
+                )
+                if seen["remote_version"] > file["remote_version"]:
+                    return False
+                self.conn.execute(
+                    "UPDATE channel_messages SET remote_version=? WHERE chat_id=? AND message_id=?",
+                    (file["remote_version"], chat_id, message_id),
+                )
+                if not seen["item_id"] or seen["media_key"] == file["media_key"]:
+                    return False
+                # A Telegram media replacement updates the file without resetting local renames for caption-only edits.
+                self.conn.execute(
+                    "UPDATE items SET name=?,size=?,mime=?,category=?,updated_at=? WHERE id=? AND source='channel'",
+                    (
+                        file["name"],
+                        file["size"],
+                        file["mime"],
+                        classify_file(file["name"], file["mime"]),
+                        utcnow(),
+                        seen["item_id"],
+                    ),
+                )
+                self.conn.execute(
+                    "UPDATE file_parts SET size=? WHERE item_id=?", (file["size"], seen["item_id"])
+                )
+                self.conn.execute(
+                    "UPDATE channel_messages SET media_key=? WHERE chat_id=? AND message_id=?",
+                    (file["media_key"], chat_id, message_id),
+                )
+                return True
+            existing = self.conn.execute(
+                """SELECT i.id FROM file_parts p JOIN items i ON i.id=p.item_id
+                WHERE i.tg_chat_id=? AND p.tg_message_id=? LIMIT 1""",
+                (chat_id, message_id),
+            ).fetchone()
+            if existing:
+                self.conn.execute(
+                    "INSERT INTO channel_messages(chat_id,message_id,item_id,state,media_key,scan_run) VALUES (?,?,?,'ignored',?,?)",
+                    (chat_id, message_id, existing[0], file["media_key"], scan_run),
+                )
+                return False
+            item_id = uuid.uuid4().hex
+            now = utcnow()
+            self.conn.execute(
+                """INSERT INTO items (id,parent_id,kind,name,size,mime,tg_chat_id,created_at,updated_at,category,source)
+                VALUES (?,NULL,'file',?,?,?,?,?,?,?,'channel')""",
+                (
+                    item_id,
+                    file["name"],
+                    file["size"],
+                    file["mime"],
+                    chat_id,
+                    file["created_at"],
+                    now,
+                    classify_file(file["name"], file["mime"]),
+                ),
+            )
+            self.conn.execute(
+                "INSERT INTO file_parts VALUES (?,0,?,?)", (item_id, message_id, file["size"])
+            )
+            self.conn.execute(
+                "INSERT INTO channel_messages(chat_id,message_id,item_id,state,media_key,scan_run,remote_version) VALUES (?,?,?,'imported',?,?,?)",
+                (chat_id, message_id, item_id, file["media_key"], scan_run, file["remote_version"]),
+            )
+            return True
+
+    def remove_channel_messages(self, chat_id: str, message_ids: list[int]) -> int:
+        removed = 0
+        with self._lock, self.conn:
+            for mid in message_ids:
+                row = self.conn.execute(
+                    "SELECT item_id FROM channel_messages WHERE chat_id=? AND message_id=? AND state='imported'",
+                    (chat_id, mid),
+                ).fetchone()
+                if row and row[0]:
+                    removed += self.conn.execute(
+                        "DELETE FROM items WHERE id=? AND source='channel'", (row[0],)
+                    ).rowcount
+                self.conn.execute(
+                    """INSERT INTO channel_messages(chat_id,message_id,state) VALUES (?,?,'deleted')
+                    ON CONFLICT(chat_id,message_id) DO UPDATE SET state='deleted',item_id=NULL""",
+                    (chat_id, mid),
+                )
+        return removed
+
+    def reconcile_channel(self, chat_id: str, scan_run: str, max_id: int) -> int:
+        """Only prune after a complete, successful scan of a fixed history snapshot."""
+        with self._lock:
+            rows = self.conn.execute(
+                """SELECT message_id FROM channel_messages WHERE chat_id=?
+                AND state='imported' AND message_id<=? AND scan_run IS NOT ?""",
+                (chat_id, max_id, scan_run),
+            ).fetchall()
+            return self.remove_channel_messages(chat_id, [int(row[0]) for row in rows])
+
+    def channel_file_count(self, chat_id: str) -> int:
+        with self._lock:
+            return int(
+                self.conn.execute(
+                    "SELECT COUNT(*) FROM items WHERE source='channel' AND tg_chat_id=?", (chat_id,)
+                ).fetchone()[0]
+            )
 
     # ---------- shares ----------
 

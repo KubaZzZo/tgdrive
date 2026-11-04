@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import html
 import mimetypes
+from contextlib import aclosing
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 
 from app.api.deps import get_db, get_settings, get_storage
 from app.auth import require_auth
@@ -45,11 +46,12 @@ async def iter_item_range(
             continue
         local_start = max(start, part_start) - part_start
         local_end = min(end, part_end) - part_start
-        async for chunk in storage.iter_download(
-            int(part["tg_message_id"]), local_start, local_end - local_start
-        ):
-            if chunk:
-                yield chunk
+        async with aclosing(
+            storage.iter_download(int(part["tg_message_id"]), local_start, local_end - local_start)
+        ) as stream:
+            async for chunk in stream:
+                if chunk:
+                    yield chunk
 
 
 async def stream_item(
@@ -58,7 +60,7 @@ async def stream_item(
     db: Database,
     storage: TelegramStorage,
     public: bool = False,
-) -> StreamingResponse:
+) -> Response:
     if item["kind"] != "file":
         raise HTTPException(400, "只能下载文件")
     if not storage.status()["connected"]:
@@ -83,6 +85,8 @@ async def stream_item(
     }
     if partial:
         headers["Content-Range"] = f"bytes {start}-{end - 1}/{size}"
+    if request.method == "HEAD":
+        return Response(status_code=206 if partial else 200, media_type=mime, headers=headers)
     return StreamingResponse(
         iter_item_range(db, storage, item, start, end),
         status_code=206 if partial else 200,
@@ -91,13 +95,13 @@ async def stream_item(
     )
 
 
-@auth_router.get("/files/{item_id}/download")
+@auth_router.api_route("/files/{item_id}/download", methods=["GET", "HEAD"])
 async def download_file(
     item_id: str,
     request: Request,
     db: Database = Depends(get_db),
     storage: TelegramStorage = Depends(get_storage),
-) -> StreamingResponse:
+) -> Response:
     item = db.get_item(item_id)
     if not item:
         raise HTTPException(404, "文件不存在")
@@ -135,13 +139,13 @@ async def share_page(
 </style></head><body><div class="card"><div class="badge">TG DRIVE SHARE</div><h1>{name}</h1><p>{size}</p><a href="/s/{token}/download">下载文件</a></div></body></html>"""
 
 
-@router.get("/s/{token}/download")
+@router.api_route("/s/{token}/download", methods=["GET", "HEAD"])
 async def share_download(
     token: str,
     request: Request,
     db: Database = Depends(get_db),
     storage: TelegramStorage = Depends(get_storage),
-) -> StreamingResponse:
+) -> Response:
     share = db.get_share(token)
     if not share or not share_is_valid(share):
         raise HTTPException(404, "分享链接不存在或已过期")

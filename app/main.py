@@ -17,6 +17,7 @@ from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.core.security import LoginRateLimiter
 from app.db import Database
+from app.services.channel_sync import ChannelSyncService
 from app.services.uploads import UploadService
 from app.storage import TelegramStorage
 
@@ -35,7 +36,11 @@ def create_app(
 
     database = db or Database(cfg.db_path)
     telegram = storage or TelegramStorage(cfg)
-    upload_service = UploadService(database, telegram, cfg.upload_stale_hours)
+    upload_service = UploadService(
+        database, telegram, cfg.upload_stale_hours, cfg.upload_concurrency
+    )
+
+    channel_sync = ChannelSyncService(database, telegram, cfg)
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
@@ -44,6 +49,8 @@ def create_app(
             logger.warning("Marked %s interrupted upload(s) as retryable errors", interrupted)
         upload_service.cleanup_stale()
         await telegram.start()
+        upload_service.start()
+        await channel_sync.start()
         if telegram.error:
             logger.warning("Telegram unavailable: %s", telegram.error)
         logger.info(
@@ -55,6 +62,7 @@ def create_app(
         try:
             yield
         finally:
+            await channel_sync.shutdown()
             await upload_service.shutdown()
             await telegram.stop()
             database.close()
@@ -72,6 +80,7 @@ def create_app(
     app.state.db = database
     app.state.storage = telegram
     app.state.uploads = upload_service
+    app.state.channel_sync = channel_sync
     app.state.login_limiter = LoginRateLimiter(cfg.login_max_attempts, cfg.login_window_seconds)
 
     app.add_middleware(

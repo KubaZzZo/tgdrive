@@ -80,73 +80,82 @@ async def upload_chunk(
     upload_id: str,
     request: Request,
     db: Database = Depends(get_db),
+    uploads: UploadService = Depends(get_upload_service),
 ) -> dict[str, Any] | JSONResponse:
-    upload = db.get_upload(upload_id)
-    if not upload:
-        raise HTTPException(404, "上传任务不存在")
-    if upload["state"] not in {"uploading", "error"}:
-        raise HTTPException(409, f"当前状态不能继续上传: {upload['state']}")
-    try:
-        offset = int(request.headers.get("upload-offset", ""))
-    except ValueError:
-        raise HTTPException(400, "缺少或非法 Upload-Offset") from None
-    received = int(upload["received"])
-    if offset < received:
-        # 客户端重发已写入的分片（上次响应丢失），幂等返回当前进度
-        return {
-            "offset": received,
-            "received": received,
-            "size": upload["size"],
-            "duplicate": True,
-        }
-    if offset > received:
-        return JSONResponse({"error": "offset 不匹配", "offset": received}, status_code=409)
-
-    remaining = int(upload["size"]) - offset
-    if remaining <= 0:
-        raise HTTPException(400, "文件已上传完成，请调用 complete")
-    chunk_limit = min(int(upload["chunk_size"]), remaining)
-
-    content_length = request.headers.get("content-length")
-    if content_length is not None:
+    async with uploads.lock(upload_id):
+        upload = db.get_upload(upload_id)
+        if not upload:
+            raise HTTPException(404, "上传任务不存在")
+        if upload["state"] not in {"uploading", "error"}:
+            raise HTTPException(409, f"当前状态不能继续上传: {upload['state']}")
         try:
-            declared = int(content_length)
+            offset = int(request.headers.get("upload-offset", ""))
         except ValueError:
-            raise HTTPException(400, "Content-Length 无效") from None
-        if declared <= 0:
-            raise HTTPException(400, "空分片")
-        if declared > chunk_limit:
-            raise HTTPException(413, "分片超过约定大小")
+            raise HTTPException(400, "缺少或非法 Upload-Offset") from None
+        if offset < 0:
+            raise HTTPException(400, "Upload-Offset 不能为负数")
+        received = int(upload["received"])
+        if offset < received:
+            # 客户端重发已写入的分片（上次响应丢失），幂等返回当前进度
+            return {
+                "offset": received,
+                "received": received,
+                "size": upload["size"],
+                "duplicate": True,
+            }
+        if offset > received:
+            return JSONResponse({"error": "offset 不匹配", "offset": received}, status_code=409)
 
-    written = 0
-    path = Path(upload["temp_path"])
-    async with aiofiles.open(path, "r+b") as fh:
-        await fh.seek(offset)
-        async for chunk in request.stream():
-            if not chunk:
-                continue
-            if written + len(chunk) > chunk_limit:
+        remaining = int(upload["size"]) - offset
+        if remaining <= 0:
+            raise HTTPException(400, "文件已上传完成，请调用 complete")
+        chunk_limit = min(int(upload["chunk_size"]), remaining)
+
+        content_length = request.headers.get("content-length")
+        if content_length is not None:
+            try:
+                declared = int(content_length)
+            except ValueError:
+                raise HTTPException(400, "Content-Length 无效") from None
+            if declared <= 0:
+                raise HTTPException(400, "空分片")
+            if declared > chunk_limit:
                 raise HTTPException(413, "分片超过约定大小")
-            await fh.write(chunk)
-            written += len(chunk)
-    if written == 0:
-        raise HTTPException(400, "空分片")
 
-    new_offset = offset + written
-    db.update_upload(upload_id, received=new_offset, state="uploading", error=None)
-    return {"offset": new_offset, "received": new_offset, "size": upload["size"]}
+        written = 0
+        path = Path(upload["temp_path"])
+        async with aiofiles.open(path, "r+b") as fh:
+            await fh.seek(offset)
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                if written + len(chunk) > chunk_limit:
+                    raise HTTPException(413, "分片超过约定大小")
+                await fh.write(chunk)
+                written += len(chunk)
+        if written == 0:
+            raise HTTPException(400, "空分片")
+
+        new_offset = offset + written
+        db.update_upload(upload_id, received=new_offset, state="uploading", error=None)
+        return {"offset": new_offset, "received": new_offset, "size": upload["size"]}
 
 
 @router.delete("/{upload_id}")
-async def cancel_upload(upload_id: str, db: Database = Depends(get_db)) -> dict[str, bool]:
-    upload = db.get_upload(upload_id)
-    if not upload:
-        raise HTTPException(404, "上传任务不存在")
-    if upload["state"] == "processing":
-        raise HTTPException(409, "正在写入 Telegram，无法取消")
-    Path(upload["temp_path"]).unlink(missing_ok=True)
-    db.delete_upload(upload_id)
-    return {"ok": True}
+async def cancel_upload(
+    upload_id: str,
+    db: Database = Depends(get_db),
+    uploads: UploadService = Depends(get_upload_service),
+) -> dict[str, bool]:
+    async with uploads.lock(upload_id):
+        upload = db.get_upload(upload_id)
+        if not upload:
+            raise HTTPException(404, "上传任务不存在")
+        if upload["state"] == "processing":
+            raise HTTPException(409, "正在写入 Telegram，无法取消")
+        Path(upload["temp_path"]).unlink(missing_ok=True)
+        db.delete_upload(upload_id)
+        return {"ok": True}
 
 
 @router.post("/{upload_id}/complete", response_model=None)
@@ -156,27 +165,29 @@ async def complete_upload(
     uploads: UploadService = Depends(get_upload_service),
     storage: TelegramStorage = Depends(require_storage),
 ) -> dict[str, Any] | JSONResponse:
-    del storage  # dependency guarantees connectivity before scheduling work
-    upload = db.get_upload(upload_id)
-    if not upload:
-        raise HTTPException(404, "上传任务不存在")
-    if upload["state"] == "done":
-        return public_upload(upload)
-    if upload["state"] not in {"uploading", "error"}:
+    async with uploads.lock(upload_id):
+        del storage  # dependency guarantees connectivity before scheduling work
+        upload = db.get_upload(upload_id)
+        if not upload:
+            raise HTTPException(404, "上传任务不存在")
+        if upload["state"] == "done":
+            return public_upload(upload)
+        if upload["state"] not in {"uploading", "error"}:
+            return JSONResponse(
+                {"error": "正在处理中", "upload": public_upload(upload)}, status_code=202
+            )
+        if int(upload["received"]) != int(upload["size"]):
+            raise HTTPException(400, f"文件尚未上传完成: {upload['received']}/{upload['size']}")
+        db.update_upload(upload_id, state="processing", progress=0, error=None)
+        if not uploads.schedule(upload_id):
+            return JSONResponse(
+                {
+                    "error": "任务已在处理中",
+                    "upload": public_upload(db.get_upload(upload_id) or upload),
+                },
+                status_code=202,
+            )
         return JSONResponse(
-            {"error": "正在处理中", "upload": public_upload(upload)}, status_code=202
-        )
-    if int(upload["received"]) != int(upload["size"]):
-        raise HTTPException(400, f"文件尚未上传完成: {upload['received']}/{upload['size']}")
-    db.update_upload(upload_id, state="processing", progress=0, error=None)
-    if not uploads.schedule(upload_id):
-        return JSONResponse(
-            {
-                "error": "任务已在处理中",
-                "upload": public_upload(db.get_upload(upload_id) or upload),
-            },
+            {"ok": True, "upload": public_upload(db.get_upload(upload_id) or upload)},
             status_code=202,
         )
-    return JSONResponse(
-        {"ok": True, "upload": public_upload(db.get_upload(upload_id) or upload)}, status_code=202
-    )

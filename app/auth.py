@@ -6,7 +6,7 @@ from fastapi import HTTPException, Request, status
 
 
 def check_password(password: str, expected: str) -> bool:
-    return hmac.compare_digest(password or "", expected or "")
+    return hmac.compare_digest((password or "").encode("utf-8"), (expected or "").encode("utf-8"))
 
 
 def is_authenticated(request: Request) -> bool:

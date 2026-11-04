@@ -5,11 +5,13 @@ import io
 import logging
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from telethon import TelegramClient
+import anyio
+from telethon import TelegramClient, events, utils
 from telethon.tl.types import DocumentAttributeFilename
 
 from app.config import Settings
@@ -71,7 +73,7 @@ class TelegramStorage:
         self.chat: int | str | None = None
         self.error: str | None = None
         self._started = False
-        self._message_cache: dict[tuple[str, int], tuple[float, Any]] = {}
+        self._message_cache: OrderedDict[tuple[str, int], tuple[float, Any]] = OrderedDict()
 
     @property
     def mode(self) -> str:
@@ -138,7 +140,8 @@ class TelegramStorage:
                     return
 
             # Validate that the configured chat is actually reachable.
-            await self.client.get_entity(self.chat)
+            entity = await self.client.get_entity(self.chat)
+            self.chat = utils.get_peer_id(entity)
             me = await self.client.get_me()
             self.error = None
             self._started = True
@@ -252,7 +255,7 @@ class TelegramStorage:
                     }
                 )
             return parts
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             if uploaded_message_ids:
                 try:
                     await self.delete_messages(uploaded_message_ids)
@@ -266,26 +269,95 @@ class TelegramStorage:
         assert self.chat is not None
         key = (str(self.chat), message_id)
         cached = self._message_cache.get(key)
-        if cached and time.time() - cached[0] < 300:
+        if cached and time.monotonic() - cached[0] < 300:
+            self._message_cache.move_to_end(key)
             return cached[1]
         message = await client.get_messages(self.chat, ids=message_id)
         if not message:
             raise FileNotFoundError(f"Telegram 消息不存在: {message_id}")
-        self._message_cache[key] = (time.time(), message)
+        self._message_cache[key] = (time.monotonic(), message)
+        self._message_cache.move_to_end(key)
+        while len(self._message_cache) > 256:
+            self._message_cache.popitem(last=False)
         return message
 
     async def iter_download(self, message_id: int, offset: int, length: int):
         client = self.require_client()
         message = await self._get_message(message_id)
-        if not getattr(message, "document", None):
+        if not getattr(message, "document", None) and not getattr(message, "photo", None):
             raise FileNotFoundError(f"Telegram 消息不是文件: {message_id}")
-        async for chunk in client.iter_download(
+        if length <= 0:
+            return
+        # Telegram requires a 4 KiB multiple that divides 1 MiB; use powers of two.
+        # Telethon limit counts chunks, while the final output is clipped to bytes.
+        chunk_size = min(512 * 1024, max(4096, 1 << (length - 1).bit_length()))
+        stream = client.iter_download(
             message,
             offset=offset,
-            limit=length,
-            request_size=1024 * 1024,
+            limit=(length + chunk_size - 1) // chunk_size,
+            chunk_size=chunk_size,
+            request_size=chunk_size,
+        )
+        remaining = length
+        try:
+            async for chunk in stream:
+                data = bytes(chunk[:remaining])
+                remaining -= len(data)
+                if data:
+                    yield data
+                if remaining == 0:
+                    break
+            if remaining:
+                raise OSError("Telegram 文件内容不完整")
+        finally:
+            # Seek/disconnect cancellation must still return borrowed Telegram senders.
+            with anyio.CancelScope(shield=True):
+                await stream.close()
+
+    def invalidate_message(self, message_id: int) -> None:
+        self._message_cache.pop((str(self.chat), message_id), None)
+
+    async def latest_channel_message_id(self) -> int:
+        messages = await self.require_client().get_messages(self.chat, limit=1)
+        return int(messages[0].id) if messages else 0
+
+    async def iter_channel_messages(self, after_id: int, max_id: int):
+        if max_id <= after_id:
+            return
+        async for message in self.require_client().iter_messages(
+            self.chat,
+            min_id=after_id,
+            max_id=max_id + 1,
+            reverse=True,
+            limit=None,
         ):
-            yield chunk
+            yield message
+
+    async def subscribe_channel(self, on_message, on_edit, on_delete):
+        client = self.require_client()
+
+        async def added(event):
+            await on_message(event.message)
+
+        async def edited(event):
+            await on_edit(event.message)
+
+        async def deleted(event):
+            await on_delete(event.deleted_ids)
+
+        handlers = [
+            (added, events.NewMessage(chats=self.chat)),
+            (edited, events.MessageEdited(chats=self.chat)),
+            (deleted, events.MessageDeleted(chats=self.chat)),
+        ]
+        for callback, builder in handlers:
+            client.add_event_handler(callback, builder)
+
+        def unsubscribe():
+            for callback, builder in handlers:
+                client.remove_event_handler(callback, builder)
+
+        return unsubscribe
 
     async def delete_messages(self, message_ids: list[int]) -> None:
         if not message_ids:
