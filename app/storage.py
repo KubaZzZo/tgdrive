@@ -354,6 +354,17 @@ class TelegramStorage:
         messages = await self.require_client().get_messages(self.chat, limit=1)
         return int(messages[0].id) if messages else 0
 
+    async def get_album_messages(self, message: Any) -> list[Any]:
+        group = getattr(message, "grouped_id", None)
+        if not group:
+            return [message]
+        # Telegram albums contain at most 10 media. Fetch a bounded neighborhood
+        # and require the exact group ID; proximity alone never links captions.
+        messages = await self.require_client().get_messages(
+            self.chat, ids=list(range(max(1, message.id - 16), message.id + 17))
+        )
+        return [m for m in messages if m and getattr(m, "grouped_id", None) == group]
+
     async def iter_channel_messages(self, after_id: int, max_id: int):
         if max_id <= after_id:
             return
@@ -378,10 +389,17 @@ class TelegramStorage:
         async def deleted(event):
             await on_delete(event.deleted_ids)
 
+        async def album(event):
+            if event.messages:
+                # Refresh after all members arrive, including caption-first or
+                # caption-last albums split across Telegram update packets.
+                await on_message(event.messages[0])
+
         handlers = [
             (added, events.NewMessage(chats=self.chat)),
             (edited, events.MessageEdited(chats=self.chat)),
             (deleted, events.MessageDeleted(chats=self.chat)),
+            (album, events.Album(chats=self.chat)),
         ]
         for callback, builder in handlers:
             client.add_event_handler(callback, builder)
