@@ -193,8 +193,9 @@ class AccountManager:
                         result = await client(functions.auth.ImportLoginTokenRequest(result.token))
                     if isinstance(result, types.auth.LoginTokenSuccess):
                         # Initialize Telethon's update state, as QRLogin.wait does.
-                        await client._on_login(result.authorization.user)
-                        await self._ready(job)
+                        user = result.authorization.user
+                        await client._on_login(user)
+                        self._ready(job, user)
                         return
                 if not isinstance(result, types.auth.LoginToken):
                     raise RuntimeError("Unexpected Telegram QR login response")
@@ -224,8 +225,7 @@ class AccountManager:
         finally:
             client.remove_event_handler(on_scan)
 
-    async def _ready(self, job: dict) -> None:
-        me = await asyncio.wait_for(job["client"].get_me(), 30)
+    def _ready(self, job: dict, me) -> None:
         if not me or getattr(me, "bot", False):
             raise HTTPException(400, "请使用个人 Telegram 账号扫码")
         job.update(
@@ -249,8 +249,8 @@ class AccountManager:
                 raise HTTPException(429, "验证次数过多，请取消后重新扫码")
             job["attempts"] += 1
             try:
-                await asyncio.wait_for(job["client"].sign_in(password=password), 30)
-                await self._ready(job)
+                user = await asyncio.wait_for(job["client"].sign_in(password=password), 30)
+                self._ready(job, user)
             except PasswordHashInvalidError:
                 raise HTTPException(400, "两步验证密码错误") from None
             except FloodWaitError as exc:

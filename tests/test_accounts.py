@@ -44,6 +44,8 @@ class Client:
         self.disconnected = False
         self.revoked = False
         self.exports = 0
+        self.identity_reads = 0
+        self.user = SimpleNamespace(id=42, username="second", first_name="Second", bot=False)
 
     async def connect(self):
         if self.fail_connect:
@@ -59,7 +61,8 @@ class Client:
         return True
 
     async def get_me(self):
-        return SimpleNamespace(id=42, username="second", first_name="Second", bot=False)
+        self.identity_reads += 1
+        return self.user
 
     def add_event_handler(self, handler, _event):
         self.scan_handler = handler
@@ -86,7 +89,7 @@ class Client:
             assert self.migrated and request.token == b"migration-token"
         if self.two_factor:
             raise SessionPasswordNeededError(None)
-        return types.auth.LoginTokenSuccess(SimpleNamespace(user=await self.get_me()))
+        return types.auth.LoginTokenSuccess(SimpleNamespace(user=self.user))
 
     async def _switch_dc(self, dc):
         assert dc == 2
@@ -98,6 +101,7 @@ class Client:
     async def sign_in(self, password):
         if password != " correct password ":
             raise PasswordHashInvalidError(None)
+        return self.user
 
     async def iter_dialogs(self, **kwargs):
         yield SimpleNamespace(entity=channel(), name="Channel 222")
@@ -203,6 +207,7 @@ def test_qr_refresh_2fa_channel_permissions_and_activation(workdir, fake_telegra
             await manager.password(login["id"], "wrong")
         result = await manager.password(login["id"], " correct password ")
         assert result["state"] == "ready"
+        assert client.identity_reads == 0
         choices = await manager.channels(login["id"])
         assert [c["writable"] for c in choices] == [True, False]
         with pytest.raises(HTTPException, match="400"):
