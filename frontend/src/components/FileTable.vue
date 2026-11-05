@@ -5,6 +5,7 @@ import { formatBytes, formatDate } from '@/utils/format'
 import { categoryLabel } from '@/utils/categories'
 import AppIcon from './AppIcon.vue'
 import FileActions from './FileActions.vue'
+import VideoCover from './VideoCover.vue'
 
 withDefaults(defineProps<{ items: DriveItem[]; layout?: 'list' | 'grid' }>(), {
   layout: 'list',
@@ -37,7 +38,7 @@ function open(item: DriveItem): void {
       </div>
       <button class="file-card-open" type="button" :title="item.name" @click="open(item)">
         <span class="file-art" :class="item.kind === 'folder' ? 'folder' : item.category"
-          ><AppIcon
+          ><VideoCover v-if="item.category === 'video'" :item="item" /><AppIcon v-else
             :name="item.kind === 'folder' ? 'folder' : (item.category ?? 'document')"
             :size="40"
         /></span>
@@ -67,7 +68,7 @@ function open(item: DriveItem): void {
               <span
                 class="file-art small"
                 :class="item.kind === 'folder' ? 'folder' : item.category"
-                ><AppIcon
+                ><VideoCover v-if="item.category === 'video'" :item="item" /><AppIcon v-else
                   :name="item.kind === 'folder' ? 'folder' : (item.category ?? 'document')"
                   :size="22"
               /></span>
