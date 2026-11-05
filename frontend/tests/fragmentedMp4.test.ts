@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { bufferedSeek, fragmentedMp4Type } from '../src/utils/fragmentedMp4.ts'
+import { attachMedia, fragmentedMp4Type } from '../src/utils/fragmentedMp4.ts'
 
 function box(type: string, ...parts: Uint8Array[]): Uint8Array {
   const length = 8 + parts.reduce((sum, part) => sum + part.length, 0)
@@ -33,11 +33,67 @@ test('ordinary, unsupported, incomplete and invalid MP4 headers stay native', ()
   assert.equal(fragmentedMp4Type(Uint8Array.from([255, 255, 255, 255, 109, 111, 111, 118])), null)
 })
 
-test('fragmented video seeks stay within buffered ranges, including gaps', () => {
-  const buffered = { length: 2, start: (i: number) => [0, 30][i]!, end: (i: number) => [10, 40][i]! }
-  assert.equal(bufferedSeek(buffered, 5), 5)
-  assert.equal(bufferedSeek(buffered, 35), 35)
-  assert.equal(bufferedSeek(buffered, 120), 39.9)
-  assert.equal(bufferedSeek(buffered, 20), 30)
-  assert.equal(bufferedSeek({ ...buffered, length: 0 }, 20), null)
+function words(...values: number[]): Uint8Array<ArrayBuffer> {
+  const data = new Uint8Array(values.length * 4)
+  const view = new DataView(data.buffer)
+  values.forEach((value, index) => view.setUint32(index * 4, value))
+  return data
+}
+
+test('an unbuffered seek starts appending at a nearby video keyframe', async () => {
+  const video = box('avc1', new Uint8Array(78), box('avcC', Uint8Array.from([1, 100, 0, 31])))
+  const header = box('moov', box('trak', box('tkhd', words(0, 0, 0, 1)),
+    box('mdia', box('mdhd', words(0, 0, 0, 1000)), box('hdlr', words(0, 0, 0x76696465)),
+      box('minf', box('stbl', box('stsd', words(0, 1), video))))), box('mvex'))
+  const moof = (index: number) => box('moof', box('mfhd', words(0, index)),
+    box('traf', box('tfhd', words(0, 1)), box('tfdt', words(0, index * 5000)),
+      box('trun', words(4, 1, index % 2 ? 0x10000 : 0x02000000))))
+  const parts = Array.from({ length: 200 }, (_, index) =>
+    [moof(index), box('mdat', new Uint8Array(index % 3 ? 20000 : 10000))]).flat()
+  const file = new Blob([header, ...parts] as Uint8Array<ArrayBuffer>[])
+  const media = Object.assign(new EventTarget(), {
+    src: '', load() {}, error: null, duration: 1000, currentTime: 0, paused: true,
+    buffered: { length: 1, start: () => 0, end: () => 10 },
+  })
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'MediaSource')
+  const create = URL.createObjectURL, revoke = URL.revokeObjectURL
+  const controller = new AbortController()
+  const { promise, resolve, reject } = Promise.withResolvers<Uint8Array>()
+  class FakeBuffer extends EventTarget {
+    buffered = media.buffered
+    reset = false
+    abort() { this.reset = true }
+    remove() { queueMicrotask(() => this.dispatchEvent(new Event('updateend'))) }
+    appendBuffer(bytes: Uint8Array) {
+      if (this.reset) resolve(bytes)
+      queueMicrotask(() => this.dispatchEvent(new Event('updateend')))
+    }
+  }
+  class FakeSource {
+    static isTypeSupported() { return true }
+    readyState = 'open'
+    addSourceBuffer() { return new FakeBuffer() }
+  }
+  Object.defineProperty(globalThis, 'MediaSource', { value: FakeSource, configurable: true })
+  URL.createObjectURL = () => 'blob:test-seek'
+  URL.revokeObjectURL = () => {}
+  const timeout = setTimeout(() => reject(new Error('No fragment appended for the seek')), 2000)
+  let session
+  try {
+    session = await attachMedia(media as unknown as HTMLMediaElement, '/video', controller.signal,
+      () => reject(new Error('Media pump failed')), { file, bufferSeconds: () => 5 })
+    media.currentTime = 655
+    media.dispatchEvent(new Event('seeking'))
+    const firstAppend = await promise
+    assert.deepEqual(firstAppend.subarray(0, moof(130).length), moof(130))
+    assert.equal(media.currentTime, 655)
+  } finally {
+    clearTimeout(timeout)
+    controller.abort()
+    session?.dispose()
+    URL.createObjectURL = create
+    URL.revokeObjectURL = revoke
+    if (original) Object.defineProperty(globalThis, 'MediaSource', original)
+    else Reflect.deleteProperty(globalThis, 'MediaSource')
+  }
 })

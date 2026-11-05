@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { mediaTime, playbackPosition, savePlayback } from '@/utils/playback'
-import { attachMedia, bufferedSeek, type MediaSession } from '@/utils/fragmentedMp4'
+import { attachMedia, type MediaSession } from '@/utils/fragmentedMp4'
 import { cacheVideo, cachedVideo, clearVideoCache, deviceCacheAvailable } from '@/utils/deviceCache'
 
 const props = defineProps<{ src: string; itemId: string; kind: 'video' | 'audio'; size: number; version: string; mime: string; poster?: string }>()
@@ -49,6 +49,7 @@ const notice = ref('')
 const paused = ref(true)
 const duration = ref(0)
 const current = ref(0)
+const scrub = ref<number | null>(null)
 const rate = ref(1)
 const volume = ref(1)
 const muted = ref(false)
@@ -105,22 +106,23 @@ async function toggle(): Promise<void> {
 function seek(value: number): void {
   const media = player.value
   if (!media || !Number.isFinite(media.duration)) return
-  let target = Math.max(0, Math.min(media.duration - 0.05, value))
-  if (streaming.value) {
-    const available = bufferedSeek(media.buffered, target)
-    if (available === null) return
-    if (Math.abs(available - target) > 0.2) notice.value = '此分片视频可拖动到已缓冲的位置，请等待后续内容缓冲。'
-    target = available
-  }
+  const target = Math.max(0, Math.min(media.duration - 0.05, value))
   if (Math.abs(media.currentTime - target) > 0.05) media.currentTime = target
   current.value = media.currentTime
+}
+function commitSeek(event: Event): void {
+  seek(Number((event.target as HTMLInputElement).value))
+  scrub.value = null
 }
 function restart(): void {
   seek(0)
   notice.value = ''
 }
 function seeking(): void {
-  if (streaming.value && player.value) seek(player.value.currentTime)
+  const media = player.value
+  if (!media) return
+  current.value = media.currentTime
+  loading.value = media.readyState < HTMLMediaElement.HAVE_FUTURE_DATA
 }
 function changeRate(): void {
   if (player.value) player.value.playbackRate = rate.value
@@ -276,6 +278,7 @@ onBeforeUnmount(() => {
         @durationchange="metadata"
         @timeupdate="update"
         @seeking="seeking"
+        @seeked="loading = false"
         @play="paused = false"
         @pause="pause"
         @ended="pause"
@@ -301,9 +304,11 @@ onBeforeUnmount(() => {
           min="0"
           :max="duration || 1"
           step="0.1"
-          :value="current"
+          :value="scrub ?? current"
           :disabled="!duration"
-          @input="seek(Number(($event.target as HTMLInputElement).value))"
+          @input="scrub = Number(($event.target as HTMLInputElement).value)"
+          @change="commitSeek"
+          @blur="scrub = null"
         /><span>{{ mediaTime(duration) }}</span>
       </div>
       <div class="media-buttons">
@@ -339,7 +344,7 @@ onBeforeUnmount(() => {
         {{ notice }}
         <button @click="restart">从头播放</button>
       </p>
-      <p class="media-hint">{{ local ? '正在播放本机缓存' : streaming ? '流式播放 · 可在已缓冲范围内拖动进度' : '自动记住播放位置' }} · 空格播放/暂停 · ← → 快进快退</p>
+      <p class="media-hint">{{ local ? '正在播放本机缓存' : streaming ? '流式播放 · 跳转后从目标附近缓冲' : '自动记住播放位置' }} · 空格播放/暂停 · ← → 快进快退</p>
       <p v-if="kind === 'video' && cacheSupported" class="media-hint">本机缓存保留最近一部视频，完成后可从本机读取；首次仍需网络传输，浏览器可能回收缓存。</p>
     </div>
   </div>
