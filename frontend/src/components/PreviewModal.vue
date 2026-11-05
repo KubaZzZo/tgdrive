@@ -29,6 +29,10 @@ const src = computed(() => (props.item ? api.downloadUrl(props.item.id) : ''))
       :src="src"
       :item-id="item.id"
       :kind="kind"
+      :size="item.size"
+      :version="item.updated_at"
+      :mime="item.mime || 'video/mp4'"
+      :poster="kind === 'video' ? api.thumbnailUrl(item.id) : undefined"
     />
     <div v-else-if="open" class="preview-stage">
       <div v-if="failed" class="preview-fallback">浏览器暂不支持预览此格式，请下载后查看。</div>

@@ -136,6 +136,7 @@ export async function uploadChunk(
 }
 
 export const api = {
+  thumbnailUrl: (itemId: string) => `/api/files/${encodeURIComponent(itemId)}/thumbnail${workspaceId ? '?workspace_id=' + encodeURIComponent(workspaceId) : ''}`,
   telegramAccounts: () => request<TelegramAccountStatus>('/api/telegram'),
   telegramLogin: () => request<TelegramLogin>('/api/telegram/login', { method: 'POST' }),
   telegramLoginStatus: (id: string) => request<TelegramLogin>(`/api/telegram/login/${encodeURIComponent(id)}`),

@@ -2,8 +2,45 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { mediaTime, playbackPosition, savePlayback } from '@/utils/playback'
 import { attachMedia, bufferedSeek, type MediaSession } from '@/utils/fragmentedMp4'
+import { cacheVideo, cachedVideo, clearVideoCache, deviceCacheAvailable } from '@/utils/deviceCache'
 
-const props = defineProps<{ src: string; itemId: string; kind: 'video' | 'audio' }>()
+const props = defineProps<{ src: string; itemId: string; kind: 'video' | 'audio'; size: number; version: string; mime: string; poster?: string }>()
+const cacheSupported = deviceCacheAvailable()
+const cacheBusy = ref(false)
+const cacheProgress = ref(0)
+const local = ref(false)
+const bufferSeconds = ref(60)
+const playbackMode = ref('auto')
+let localFile: Blob | undefined
+let cacheController: AbortController | undefined
+const cacheKey = () => `${props.src}|${props.version}`
+async function cacheHere(): Promise<void> {
+  cacheBusy.value = true
+  cacheProgress.value = 0
+  cacheController = new AbortController()
+  try {
+    const file = await cacheVideo(props.src, cacheKey(), props.size, cacheController.signal,
+      bytes => { cacheProgress.value = Math.floor(bytes / props.size * 100) })
+    if (disposed) return
+    localFile = file.slice(0, file.size, props.mime)
+    local.value = true
+    save()
+    restored = false
+    start()
+    notice.value = '已缓存到本机，可以播放；缓存仅占用当前设备空间。'
+  } catch (e) {
+    if (!disposed) notice.value = cacheController.signal.aborted ? '已取消缓存' : (e instanceof Error ? e.message : '本机缓存失败')
+  } finally { cacheBusy.value = false }
+}
+async function clearCache(): Promise<void> {
+  try {
+    await clearVideoCache()
+    localFile = undefined
+    local.value = false
+    save(); restored = false; start()
+    notice.value = '本机视频缓存已清除'
+  } catch (e) { notice.value = e instanceof Error ? e.message : '清除失败' }
+}
 const player = ref<HTMLMediaElement | null>(null)
 const container = ref<HTMLElement | null>(null)
 const loading = ref(true)
@@ -124,8 +161,9 @@ async function pictureInPicture(): Promise<void> {
 }
 function failed(): void {
   if (disposed) return
-  loading.value = false
   const code = player.value?.error?.code
+  if (!code) return
+  loading.value = false
   error.value =
     code === 2
       ? '视频传输中断，请重试加载。'
@@ -142,13 +180,21 @@ function start(): void {
   media.removeAttribute('src')
   media.load()
   streaming.value = false
-  if (props.kind === 'audio') { media.src = props.src; return }
+  if (props.kind === 'audio' || playbackMode.value === 'native') {
+    if (localFile) {
+      const objectUrl = URL.createObjectURL(localFile)
+      media.src = objectUrl
+      session = { streaming: false, dispose: () => URL.revokeObjectURL(objectUrl) }
+    } else media.src = props.src
+    setup = Promise.resolve()
+    return
+  }
   setup = attachMedia(media, props.src, signal, () => {
     if (!signal.aborted) {
       loading.value = false
-      error.value = '视频传输中断，请重试加载。'
+      error.value = '视频流加载失败，请重试；若仍失败，可切换播放方式。'
     }
-  }).then(value => {
+  }, { file: localFile, bufferSeconds: () => bufferSeconds.value }).then(value => {
     if (signal.aborted) value.dispose()
     else { session = value; streaming.value = value.streaming }
   }).catch(() => {
@@ -175,14 +221,28 @@ function pause(): void {
   paused.value = true
   save()
 }
-onMounted(() => {
+onMounted(async () => {
   start()
   window.addEventListener('pagehide', save)
   document.addEventListener('visibilitychange', save)
+  if (cacheSupported && props.kind === 'video') {
+    // Revalidate authorization before reusing device data after a new login.
+    try {
+      const response = await fetch(props.src, { method: 'HEAD', signal: controller.signal })
+      if (!response.ok) return
+      const file = await cachedVideo(cacheKey(), props.size)
+      if (file && !disposed && !cacheBusy.value) {
+        localFile = file.slice(0, file.size, props.mime)
+        local.value = true
+        start()
+      }
+    } catch { /* Network playback retains its own error handling. */ }
+  }
 })
 onBeforeUnmount(() => {
   save()
   disposed = true
+  cacheController?.abort()
   controller.abort()
   session?.dispose()
   window.removeEventListener('pagehide', save)
@@ -210,6 +270,7 @@ onBeforeUnmount(() => {
         controls
         playsinline
         preload="metadata"
+        :poster="kind === 'video' ? poster : undefined"
         :aria-label="kind === 'video' ? '视频播放' : '音频播放'"
         @loadedmetadata="metadata"
         @durationchange="metadata"
@@ -268,12 +329,18 @@ onBeforeUnmount(() => {
           @input="changeVolume"
         /><button v-if="pipAvailable" @click="pictureInPicture">画中画</button
         ><button v-if="kind === 'video'" @click="fullscreen">全屏</button>
+        <label v-if="kind === 'video'" class="speed-control">播放方式<select v-model="playbackMode" aria-label="播放方式" @change="retry"><option value="auto">兼容模式（推荐）</option><option value="native">浏览器原生</option></select></label>
+        <label v-if="streaming" class="speed-control">预缓冲<select v-model.number="bufferSeconds" aria-label="预缓冲时长"><option :value="60">60 秒</option><option :value="120">120 秒</option></select></label>
+        <button v-if="kind === 'video' && cacheSupported && !cacheBusy && !local" @click="cacheHere">缓存到本机</button>
+        <button v-if="cacheBusy" @click="cacheController?.abort()">取消缓存 {{ cacheProgress }}%</button>
+        <button v-if="cacheSupported && !cacheBusy" @click="clearCache">清除本机缓存</button>
       </div>
       <p v-if="notice" class="media-notice" role="status">
         {{ notice }}
         <button @click="restart">从头播放</button>
       </p>
-      <p class="media-hint">{{ streaming ? '流式播放 · 可在已缓冲范围内拖动进度' : '自动记住播放位置' }} · 空格播放/暂停 · ← → 快进快退</p>
+      <p class="media-hint">{{ local ? '正在播放本机缓存' : streaming ? '流式播放 · 可在已缓冲范围内拖动进度' : '自动记住播放位置' }} · 空格播放/暂停 · ← → 快进快退</p>
+      <p v-if="kind === 'video' && cacheSupported" class="media-hint">本机缓存保留最近一部视频，完成后可从本机读取；首次仍需网络传输，浏览器可能回收缓存。</p>
     </div>
   </div>
 </template>

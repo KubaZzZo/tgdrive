@@ -10,7 +10,7 @@ from typing import Any
 
 from app.categories import CATEGORY_LABELS, classify_file, effective_mime
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def utcnow() -> str:
@@ -183,6 +183,14 @@ class Database:
                     self.conn.execute("""CREATE TABLE telegram_active (
                         id INTEGER PRIMARY KEY CHECK(id=1), profile_id TEXT NOT NULL)""")
                     self.conn.execute("PRAGMA user_version=6")
+
+            if current < 7:
+                with self.conn:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    # NULL = legacy row to adopt conservatively; empty string =
+                    # explicitly renamed locally; otherwise last automatic name.
+                    self.conn.execute("ALTER TABLE channel_messages ADD COLUMN remote_name TEXT")
+                    self.conn.execute("PRAGMA user_version=7")
 
     def telegram_profiles(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -455,6 +463,9 @@ class Database:
                 "UPDATE items SET name = ?, category = ?, updated_at = ? WHERE id = ?",
                 (name, category, utcnow(), item_id),
             )
+            self.conn.execute(
+                "UPDATE channel_messages SET remote_name='' WHERE item_id=?", (item_id,)
+            )
         return self.get_item(item_id)
 
     def move_item(self, item_id: str, parent_id: str | None) -> dict[str, Any] | None:
@@ -644,7 +655,30 @@ class Database:
                     "UPDATE channel_messages SET remote_version=? WHERE chat_id=? AND message_id=?",
                     (file["remote_version"], chat_id, message_id),
                 )
-                if not seen["item_id"] or seen["media_key"] == file["media_key"]:
+                if seen["item_id"] and seen["media_key"] == file["media_key"]:
+                    item = self.get_item(seen["item_id"])
+                    previous = seen["remote_name"]
+                    if previous is None:
+                        candidates = {
+                            file.get("original_name", file["name"]),
+                            file.get("legacy_name", file["name"]),
+                        }
+                        previous = item["name"] if item and item["name"] in candidates else ""
+                    changed = False
+                    if item and previous and item["name"] == previous:
+                        if item["name"] != file["name"]:
+                            self.conn.execute(
+                                "UPDATE items SET name=?,updated_at=? WHERE id=? AND source='channel'",
+                                (file["name"], utcnow(), item["id"]),
+                            )
+                            changed = True
+                        previous = file["name"]
+                    self.conn.execute(
+                        "UPDATE channel_messages SET remote_name=? WHERE chat_id=? AND message_id=?",
+                        (previous, chat_id, message_id),
+                    )
+                    return changed
+                if not seen["item_id"]:
                     return False
                 # A Telegram media replacement updates the file without resetting local renames for caption-only edits.
                 self.conn.execute(
@@ -662,8 +696,8 @@ class Database:
                     "UPDATE file_parts SET size=? WHERE item_id=?", (file["size"], seen["item_id"])
                 )
                 self.conn.execute(
-                    "UPDATE channel_messages SET media_key=? WHERE chat_id=? AND message_id=?",
-                    (file["media_key"], chat_id, message_id),
+                    "UPDATE channel_messages SET media_key=?,remote_name=? WHERE chat_id=? AND message_id=?",
+                    (file["media_key"], file["name"], chat_id, message_id),
                 )
                 return True
             existing = self.conn.execute(
@@ -697,8 +731,16 @@ class Database:
                 "INSERT INTO file_parts VALUES (?,0,?,?)", (item_id, message_id, file["size"])
             )
             self.conn.execute(
-                "INSERT INTO channel_messages(chat_id,message_id,item_id,state,media_key,scan_run,remote_version) VALUES (?,?,?,'imported',?,?,?)",
-                (chat_id, message_id, item_id, file["media_key"], scan_run, file["remote_version"]),
+                "INSERT INTO channel_messages(chat_id,message_id,item_id,state,media_key,scan_run,remote_version,remote_name) VALUES (?,?,?,'imported',?,?,?,?)",
+                (
+                    chat_id,
+                    message_id,
+                    item_id,
+                    file["media_key"],
+                    scan_run,
+                    file["remote_version"],
+                    file["name"],
+                ),
             )
             return True
 

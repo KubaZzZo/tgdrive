@@ -76,20 +76,28 @@ export interface MediaSession { streaming: boolean; dispose: () => void }
 
 export async function attachMedia(
   media: HTMLMediaElement, url: string, signal: AbortSignal, onError: () => void,
+  options: { file?: Blob; bufferSeconds?: () => number } = {},
 ): Promise<MediaSession> {
   const native = () => {
-    if (!signal.aborted) media.src = url
-    return { streaming: false, dispose: () => {} }
+    const objectUrl = options.file ? URL.createObjectURL(options.file) : null
+    if (!signal.aborted) media.src = objectUrl ?? url
+    return { streaming: false, dispose: () => { if (objectUrl) URL.revokeObjectURL(objectUrl) } }
   }
-  if (typeof MediaSource === 'undefined') return native()
+  // iPhone exposes ManagedMediaSource rather than the desktop MediaSource API.
+  const ManagedSource = (globalThis as typeof globalThis & {
+    ManagedMediaSource?: typeof MediaSource
+  }).ManagedMediaSource
+  const Source = ManagedSource ?? (typeof MediaSource !== 'undefined' ? MediaSource : undefined)
+  if (!Source) return native()
   const range = async (start: number, end: number) => {
+    if (options.file) return { reader: options.file.slice(start, end + 1).stream().getReader(), size: options.file.size }
     const response = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal })
     if (response.status !== 206 || !response.body) {
       await response.body?.cancel()
       throw new Error('Byte ranges unavailable')
     }
     const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('Content-Range') ?? '')
-    if (!match || Number(match[1]) !== start || Number(match[2]) > end) {
+    if (!match || Number(match[1]) !== start || Number(match[2]) !== Math.min(end, Number(match[3]) - 1)) {
       await response.body.cancel(); throw new Error('Invalid media range')
     }
     return { reader: response.body.getReader(), size: Number(match[3]) }
@@ -112,12 +120,23 @@ export async function attachMedia(
     for (const chunk of chunks) { first.set(chunk, cursor); cursor += chunk.length }
   } catch { return native() }
   const type = fragmentedMp4Type(first)
-  if (!type || !MediaSource.isTypeSupported(type) || signal.aborted) return native()
-  const source = new MediaSource(), objectUrl = URL.createObjectURL(source)
+  if (!type || !Source.isTypeSupported(type) || signal.aborted) return native()
+  const managed = Source === ManagedSource
+  const source = new Source() as MediaSource & { readonly streaming?: boolean }
+  // Without an HLS AirPlay alternative, WebKit requires remote playback to be
+  // disabled *before* attaching MMS or it never opens on iPhone.
+  const previousRemotePlayback = media.disableRemotePlayback
+  if (managed) media.disableRemotePlayback = true
+  const objectUrl = URL.createObjectURL(source)
   media.src = objectUrl
+  media.load()
   const abort = () => { if (source.readyState === 'open') { try { source.endOfStream() } catch { /* Updating buffer. */ } } }
   signal.addEventListener('abort', abort, { once: true })
-  const dispose = () => { signal.removeEventListener('abort', abort); URL.revokeObjectURL(objectUrl) }
+  const dispose = () => {
+    signal.removeEventListener('abort', abort)
+    URL.revokeObjectURL(objectUrl)
+    if (managed) media.disableRemotePlayback = previousRemotePlayback
+  }
   const wait = () => new Promise<void>((resolve, reject) => {
     const stop = () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')) }
     const timer = setTimeout(() => { signal.removeEventListener('abort', stop); resolve() }, 200)
@@ -125,7 +144,12 @@ export async function attachMedia(
     if (signal.aborted) stop()
   })
   const pump = async () => {
-    while (source.readyState !== 'open') { if (signal.aborted) return; await wait() }
+    const deadline = Date.now() + 15000
+    while (source.readyState !== 'open') {
+      if (signal.aborted) return
+      if (Date.now() > deadline || media.error) throw new Error('Media source did not open')
+      await wait()
+    }
     const buffer = source.addSourceBuffer(type)
     const change = (operation: () => void) => new Promise<void>((resolve, reject) => {
       if (signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return }
@@ -134,29 +158,47 @@ export async function attachMedia(
       buffer.addEventListener('updateend', done, { once: true }); buffer.addEventListener('error', failed, { once: true }); signal.addEventListener('abort', failed, { once: true })
       try { operation() } catch (error) { clean(); reject(error) }
     })
+    // MMS can suspend downloads even while playing. Respect the browser's
+    // startstreaming/endstreaming state instead of filling its mobile buffer.
+    const streamingWindow = async () => {
+      while (managed && source.streaming === false && !signal.aborted) await wait()
+      signal.throwIfAborted()
+    }
+    await streamingWindow()
     await change(() => buffer.appendBuffer(first as Uint8Array<ArrayBuffer>))
     let offset = first.length
+    let failures = 0
     while (offset < size && !signal.aborted) {
       // Keep preload, paused playback and normal buffering bounded. Closing the
       // modal aborts the active fetch; no whole-file background download.
       while (!signal.aborted && media.buffered.length &&
-        media.buffered.end(media.buffered.length - 1) - media.currentTime > (media.paused ? 5 : 30)) await wait()
+        media.buffered.end(media.buffered.length - 1) - media.currentTime > (options.bufferSeconds?.() ?? (media.paused ? 10 : 60))) await wait()
       if (signal.aborted) return
+      await streamingWindow()
       if (media.currentTime > 90 && buffer.buffered.length && buffer.buffered.start(0) < media.currentTime - 60)
         await change(() => buffer.remove(0, media.currentTime - 60))
-      const { reader } = await range(offset, Math.min(size - 1, offset + 2 * 1024 * 1024 - 1))
-      let received = 0
       try {
-        while (!signal.aborted) {
-          const { done, value } = await reader.read()
-          if (done) break
-          received += value.length
-          if (received > 2 * 1024 * 1024) throw new Error('Oversized media segment')
-          await change(() => buffer.appendBuffer(value as Uint8Array<ArrayBuffer>))
-        }
-      } finally { await reader.cancel() }
-      if (!received) throw new Error('Incomplete media segment')
-      offset += received
+        const end = Math.min(size - 1, offset + 2 * 1024 * 1024 - 1)
+        const { reader, size: total } = await range(offset, end)
+        try {
+          if (total !== size) throw new Error('Media changed during playback')
+          while (!signal.aborted) {
+            const { done, value } = await reader.read()
+            if (done) break
+            if (offset + value.length > end + 1) throw new Error('Oversized media segment')
+            await change(() => buffer.appendBuffer(value as Uint8Array<ArrayBuffer>))
+            offset += value.length
+          }
+          if (offset !== end + 1) throw new Error('Incomplete media segment')
+          failures = 0
+        } finally { await reader.cancel() }
+      } catch (error) {
+        if (signal.aborted) return
+        if (++failures > 2 || media.error) throw error
+        // Resume from the last successfully appended byte after a dropped
+        // connection. Never append the already accepted prefix twice.
+        await wait()
+      }
     }
     if (!signal.aborted && source.readyState === 'open') source.endOfStream()
   }
