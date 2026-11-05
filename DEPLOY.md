@@ -14,11 +14,13 @@
 
 ## 2. 一键部署
 
+将示例域名、邮箱和仓库地址替换为自己的部署参数。
+
 ```bash
 sudo bash deploy/bootstrap-ubuntu.sh \
   --domain drive.example.com \
   --email you@example.com \
-  --repo https://github.com/KubaZzZo/tgdrive.git
+  --repo https://github.com/OWNER/tgdrive.git
 ```
 
 Docker 镜像采用多阶段构建，会自动执行前端 `npm ci && npm run build`，无需在宿主机安装 Node。
