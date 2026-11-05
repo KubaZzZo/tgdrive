@@ -183,6 +183,8 @@ static/dist/          前端构建产物（不提交）
 deploy/               Docker/Caddy/systemd 部署辅助
 ```
 
+详细说明见[架构文档](docs/ARCHITECTURE.md)与[视频播放和本机缓存指南](docs/video-playback.md)。历史验证记录：[频道同步与播放器](docs/CHANNEL_SYNC_AND_PLAYER_TEST.md)、[前端分类](docs/FRONTEND_CLASSIFICATION_TEST.md)、[真实传输](docs/LIVE_TRANSFER_TEST.md)。
+
 ## API 摘要
 
 | 方法 | 路径 | 说明 |
@@ -199,6 +201,7 @@ deploy/               Docker/Caddy/systemd 部署辅助
 | PATCH | `/api/uploads/{id}` | 上传分片 |
 | POST | `/api/uploads/{id}/complete` | 提交到 Telegram |
 | GET | `/api/files/{id}/download` | 下载/Range 流 |
+| GET | `/api/files/{id}/thumbnail` | 需要登录的视频封面，缺少缩略图时返回 404 |
 | GET | `/api/health/live` | 进程存活 |
 | GET | `/api/health/ready` | DB + Telegram 就绪 |
 
@@ -217,7 +220,7 @@ deploy/               Docker/Caddy/systemd 部署辅助
 ## 已知限制
 
 - 单用户，没有多租户隔离和权限系统。
-- 没有缩略图、转码、秒传。
+- 没有服务端转码或秒传；视频封面使用 Telegram 缩略图或浏览器首帧。
 - 分享链接没有密码保护。
 - 上传中断后的分段级续传还没有实现。
 - Telegram 不是专业对象存储，没有 SLA，请务必保留独立备份。
@@ -268,7 +271,9 @@ deploy/               Docker/Caddy/systemd 部署辅助
 
 文件直接通过 HTTP Range 从 Telegram 流式读取，无需先下载完整视频。实际可播放的容器、视频和音频编码由浏览器决定；播放器不执行服务端转码，不支持的编码会提示下载到本地播放。
 
-对于 H.264/AAC 分片 MP4，支持 MediaSource 的浏览器会使用流式播放器，避免原生播放器先扫描整段视频。此模式从头播放，支持在已缓冲范围内拖动进度；暂停后停止继续预取，单次在途请求最多 2 MiB，正常播放保留约 30 秒前向缓冲。关闭弹窗立即取消读取。其他文件或浏览器使用原生播放。
+对于 H.264/AAC 分片 MP4，支持 MediaSource 或 ManagedMediaSource 的浏览器会使用兼容流式播放器，避免原生播放器先扫描整段视频。此模式从头播放，支持在已缓冲范围内拖动进度；默认预缓冲 60 秒，可选择 120 秒，iPhone 还会遵守系统缓冲窗口。普通播放单次在途请求最多 2 MiB，关闭弹窗立即取消读取。其他文件或浏览器使用原生播放。
+
+需要完整缓存时，在播放器点击“缓存到本机”；缓存保存在当前设备，首次传输仍经 VPS 转发。操作和限制见[视频播放与本机缓存](docs/video-playback.md)。
 ## VPS 每日流量
 
 登录后点击顶部的流量按钮，可查看每天入站＋出站总量、剩余额度和近 7 天记录。
