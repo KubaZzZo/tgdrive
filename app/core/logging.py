@@ -14,6 +14,13 @@ def current_request_id() -> str:
     return request_id_ctx.get()
 
 
+def request_log_path(path: str) -> str:
+    if not path.startswith("/s/"):
+        return path
+    _, _, suffix = path.removeprefix("/s/").partition("/")
+    return "/s/[redacted]/download" if suffix == "download" else "/s/[redacted]"
+
+
 class RequestIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.request_id = getattr(record, "request_id", None) or current_request_id()

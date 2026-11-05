@@ -21,7 +21,7 @@ function choose(action: FileAction, event: Event): void {
     <div class="file-menu-options">
       <template v-if="item.kind === 'file'">
         <button type="button" @click="choose('download', $event)">下载文件</button>
-        <button type="button" @click="choose('share', $event)">创建分享链接</button>
+        <button type="button" @click="choose('share', $event)">管理分享链接</button>
       </template>
       <button type="button" @click="choose('rename', $event)">重命名</button>
       <button class="danger-text" type="button" @click="choose('remove', $event)">

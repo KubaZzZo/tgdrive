@@ -28,6 +28,10 @@ class ShareBody(ApiModel):
     expires_hours: int = Field(default=0, ge=0, le=24 * 365)
 
 
+class RevokeShareBody(ApiModel):
+    token: str = Field(min_length=1, max_length=128)
+
+
 class UploadCreateBody(ApiModel):
     name: str = Field(min_length=1, max_length=255)
     size: int = Field(gt=0)

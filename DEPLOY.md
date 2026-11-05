@@ -75,7 +75,7 @@ curl -sI -b /tmp/tg.cookie -H 'Range: bytes=0-1023' \
 1. 上传至少 500 MB 视频，确认完成。
 2. 刷新页面后重新拖入同名文件，确认从断点继续。
 3. 播放视频并拖动进度条，确认 3 秒内出画面。
-4. 创建分享链接并在无登录窗口打开。
+4. 创建分享链接并在无登录窗口打开。撤销后，重新打开分享页或发起下载应返回 404。
 5. 删除文件，确认 Telegram 频道里的消息也被清理。
 
 ## 5. 日志
@@ -87,6 +87,8 @@ docker compose logs -f --tail=200 app
 ```
 
 每个响应带 `X-Request-ID`，日志字段 `request_id` 可用于关联一次请求。
+
+分享页及下载响应使用 `Cache-Control: no-store`，应用日志会隐藏 `/s/` 路径中的令牌。使用自建反代或 CDN 时，关闭 `/s/*` 的缓存和访问日志。升级时清理代理此前保存的分享响应。
 
 ## 6. 备份
 
@@ -126,7 +128,7 @@ SQLite schema 使用 `PRAGMA user_version` 管理；启动时会拒绝打开版�
 | 502 | app 未启动/健康检查失败 | `docker compose logs app`、`docker compose ps` |
 | 启动即退出 | 生产环境密码或 APP_SECRET 未通过校验 | 检查 `.env` |
 | 首页显示 frontend not built | 未执行前端构建且不是 Docker 部署 | `cd frontend && npm ci && npm run build` |
-| 视频拖不动 | 反代缓冲或被 gzip | 检查 Caddy `flush_interval -1`、`response_buffering off` |
+| 视频拖不动 | 反代缓冲或被 gzip | 检查 Caddy `flush_interval -1`，并确认媒体路径跳过压缩 |
 | 上传卡住 | 磁盘满或临时卷异常 | `docker compose exec app df -h` |
 | FloodWaitError | Telegram 限流 | 等待，降低并发，勿反复重启 |
 | 401 | `COOKIE_SECURE=true` 但使用 http 访问 | 必须走 HTTPS |

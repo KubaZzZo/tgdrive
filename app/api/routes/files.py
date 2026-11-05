@@ -3,7 +3,6 @@ from __future__ import annotations
 import html
 import mimetypes
 from contextlib import aclosing
-from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -59,7 +58,6 @@ async def stream_item(
     item: dict[str, Any],
     db: Database,
     storage: TelegramStorage,
-    public: bool = False,
 ) -> Response:
     if item["kind"] != "file":
         raise HTTPException(400, "只能下载文件")
@@ -79,9 +77,7 @@ async def stream_item(
         "Accept-Ranges": "bytes",
         "Content-Length": str(length),
         "Content-Disposition": content_disposition(item["name"], inline=inline),
-        "Cache-Control": (
-            "public, max-age=3600" if public else "private, max-age=0, must-revalidate"
-        ),
+        "Cache-Control": "private, max-age=0, must-revalidate",
     }
     if partial:
         headers["Content-Range"] = f"bytes {start}-{end - 1}/{size}"
@@ -130,16 +126,6 @@ async def file_thumbnail(
     )
 
 
-def share_is_valid(share: dict[str, Any]) -> bool:
-    expires_at = share.get("expires_at")
-    if not expires_at:
-        return True
-    try:
-        return datetime.fromisoformat(expires_at) > datetime.now(UTC)
-    except ValueError:
-        return False
-
-
 @router.get("/s/{token}", response_class=HTMLResponse)
 async def share_page(
     token: str,
@@ -147,7 +133,7 @@ async def share_page(
     settings: Settings = Depends(get_settings),
 ) -> str:
     share = db.get_share(token)
-    if not share or not share_is_valid(share):
+    if not share:
         raise HTTPException(404, "分享链接不存在或已过期")
     name = html.escape(share["name"])
     size = f"{int(share['size']) / 1024 / 1024:.1f} MB"
@@ -169,9 +155,9 @@ async def share_download(
     storage: TelegramStorage = Depends(get_storage),
 ) -> Response:
     share = db.get_share(token)
-    if not share or not share_is_valid(share):
+    if not share:
         raise HTTPException(404, "分享链接不存在或已过期")
     item = db.get_item(share["item_id"])
     if not item:
         raise HTTPException(404, "文件不存在")
-    return await stream_item(request, item, db, storage, public=True)
+    return await stream_item(request, item, db, storage)

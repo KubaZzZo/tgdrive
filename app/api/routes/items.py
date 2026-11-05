@@ -11,7 +11,7 @@ from app.api.deps import get_db, get_storage
 from app.auth import require_auth
 from app.categories import Category
 from app.db import Database
-from app.schemas import FolderBody, ShareBody, UpdateItemBody
+from app.schemas import FolderBody, RevokeShareBody, ShareBody, UpdateItemBody
 from app.storage import TelegramStorage
 
 logger = logging.getLogger("tgdrive.items")
@@ -119,6 +119,22 @@ async def delete_item(
     return {"ok": True, "deleted": result["deleted"], "warning": warning}
 
 
+def ensure_shareable_file(db: Database, item_id: str) -> None:
+    item = db.get_item(item_id)
+    if not item:
+        raise HTTPException(404, "文件不存在")
+    if item["kind"] != "file":
+        raise HTTPException(400, "目前只支持分享文件")
+
+
+def share_record(request: Request, token: str, expires_at: str | None) -> dict[str, Any]:
+    return {
+        "token": token,
+        "url": f"{str(request.base_url).rstrip('/')}/s/{token}",
+        "expires_at": expires_at,
+    }
+
+
 @router.post("/items/{item_id}/share")
 async def create_share(
     item_id: str,
@@ -126,18 +142,31 @@ async def create_share(
     request: Request,
     db: Database = Depends(get_db),
 ) -> dict[str, Any]:
-    item = db.get_item(item_id)
-    if not item:
-        raise HTTPException(404, "文件不存在")
-    if item["kind"] != "file":
-        raise HTTPException(400, "目前只支持分享文件")
+    ensure_shareable_file(db, item_id)
     token = secrets.token_urlsafe(24)
     expires_at = None
     if body.expires_hours:
         expires_at = (datetime.now(UTC) + timedelta(hours=body.expires_hours)).isoformat()
     db.create_share(item_id, token, expires_at)
+    return share_record(request, token, expires_at)
+
+
+@router.get("/items/{item_id}/share")
+async def list_shares(
+    item_id: str, request: Request, db: Database = Depends(get_db)
+) -> dict[str, Any]:
+    ensure_shareable_file(db, item_id)
     return {
-        "token": token,
-        "url": f"{str(request.base_url).rstrip('/')}/s/{token}",
-        "expires_at": expires_at,
+        "shares": [
+            share_record(request, share["token"], share["expires_at"])
+            for share in db.list_shares(item_id)
+        ]
     }
+
+
+@router.post("/items/{item_id}/share/revoke")
+async def revoke_share(
+    item_id: str, body: RevokeShareBody, db: Database = Depends(get_db)
+) -> dict[str, bool]:
+    db.delete_share(item_id, body.token)
+    return {"ok": True}

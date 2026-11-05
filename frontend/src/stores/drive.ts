@@ -152,16 +152,6 @@ export const useDriveStore = defineStore('drive', () => {
     }
   }
 
-  async function share(item: DriveItem): Promise<string> {
-    try {
-      const result = await api.createShare(item.id)
-      return result.url
-    } catch (cause) {
-      useToastStore().error(cause instanceof Error ? cause.message : '创建分享链接失败')
-      throw cause
-    }
-  }
-
   return {
     view,
     query,
@@ -187,6 +177,5 @@ export const useDriveStore = defineStore('drive', () => {
     createFolder,
     rename,
     remove,
-    share,
   }
 })

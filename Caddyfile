@@ -11,11 +11,11 @@ level ERROR
 
 {$DOMAIN} {
 # 单文件上限 2GB(普通)/4GB(Premium)，这里给 4.5GB 余量
-request_body { max_size 4.5GB }
+request_body {
+max_size 4.5GB
+}
 
 reverse_proxy app:8787 {
-request_buffering off
-response_buffering off
 flush_interval -1
 header_up X-Real-IP {remote_host}
 transport http {
@@ -27,7 +27,7 @@ keepalive_idle_conns 32
 
 # 只压缩 JSON/文本，绝不压媒体流（否则 Range 语义失效）
 @compressible {
-not path /api/files/*
+not path /api/files/* /s/*
 not header Content-Type video/*
 not header Content-Type audio/*
 not header Content-Type image/*
@@ -48,8 +48,10 @@ Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
 -Server
 }
 
-@notNoisy not path /api/meta /api/health/live /api/health/ready
-log @notNoisy {
+# 分享路径包含访问令牌，避免进入代理访问日志。
+@skipAccessLog path /s/* /api/meta /api/health/live /api/health/ready
+log_skip @skipAccessLog
+log {
 output stdout
 format json
 level INFO

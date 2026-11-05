@@ -4,7 +4,6 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { api } from '@/api/client'
 import type { DriveItem, FileAction, FileCategory } from '@/api/types'
 import { useDriveStore } from '@/stores/drive'
-import { useToastStore } from '@/stores/toast'
 import { useUploadStore } from '@/stores/uploads'
 import { formatBytes, previewKind } from '@/utils/format'
 import AppIcon from './AppIcon.vue'
@@ -13,10 +12,10 @@ import ConfirmDialog from './ConfirmDialog.vue'
 import FileTable from './FileTable.vue'
 import PreviewModal from './PreviewModal.vue'
 import PromptDialog from './PromptDialog.vue'
+import ShareModal from './ShareModal.vue'
 
 const drive = useDriveStore()
 const uploads = useUploadStore()
-const toast = useToastStore()
 
 const classificationHelp = ref(false)
 let searchTimer: ReturnType<typeof setTimeout>
@@ -45,7 +44,7 @@ function breadcrumb(id: string | null): void {
 }
 function onAction(action: FileAction, item: DriveItem): void {
   if (action === 'download') download(item)
-  if (action === 'share') void share(item)
+  if (action === 'share') shareTarget.value = item
   if (action === 'rename') renameTarget.value = item
   if (action === 'remove') deleteTarget.value = item
 }
@@ -66,6 +65,7 @@ const dragging = ref(false)
 const folderDialog = ref(false)
 const renameTarget = ref<DriveItem | null>(null)
 const deleteTarget = ref<DriveItem | null>(null)
+const shareTarget = ref<DriveItem | null>(null)
 const previewTarget = ref<DriveItem | null>(null)
 const previewOpen = ref(false)
 
@@ -91,20 +91,6 @@ function previewItem(item: DriveItem): void {
 
 function download(item: DriveItem): void {
   window.location.assign(api.downloadUrl(item.id, true))
-}
-
-async function share(item: DriveItem): Promise<void> {
-  try {
-    const url = await drive.share(item)
-    try {
-      await navigator.clipboard.writeText(url)
-      toast.success('分享链接已复制')
-    } catch {
-      window.prompt('分享链接', url)
-    }
-  } catch {
-    // The drive store already reports the error.
-  }
 }
 
 async function confirmCreateFolder(name: string): Promise<void> {
@@ -428,6 +414,7 @@ function closePreview(): void {
       @close="closePreview"
       @download="download"
     />
+    <ShareModal v-if="shareTarget" :key="shareTarget.id" :item="shareTarget" @close="shareTarget = null" />
     <BaseModal
       :open="classificationHelp"
       title="文件会如何自动分类？"

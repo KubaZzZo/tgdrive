@@ -171,6 +171,7 @@ def test_resumable_upload_download_share_and_delete(authenticated_client):
     shared_download = client.get(f"/s/{token}/download")
     assert shared_download.status_code == 200
     assert shared_download.content == b"helloworld"
+    assert shared_download.headers["cache-control"] == "no-store"
 
     client.post("/api/login", json={"password": PASSWORD})
     deleted = client.delete(f"/api/items/{item['id']}")
@@ -191,6 +192,75 @@ def test_upload_rejects_wrong_chunk_size(authenticated_client):
         content=b"123456789",
     )
     assert response.status_code == 413
+
+
+def test_share_management_revokes_downloads_and_redacts_tokens(authenticated_client, caplog):
+    client, app, storage = authenticated_client
+    db = app.state.db
+    storage.files[101] = b"hello"
+    item = db.create_file(
+        "hello.txt",
+        None,
+        5,
+        "text/plain",
+        None,
+        str(storage.chat),
+        [{"part_index": 0, "tg_message_id": 101, "size": 5}],
+    )
+    other = db.create_file("other.txt", None, 5, "text/plain", None, str(storage.chat), [])
+    manage = f"/api/items/{item['id']}/share"
+    share = client.post(manage, json={"expires_hours": 1}).json()
+    token = share["token"]
+    url = f"/s/{token}"
+    db.create_share(
+        item["id"], "expired-token", (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    )
+    assert client.get(manage).json() == {"shares": [share]}
+    assert client.get(manage).headers["cache-control"] == "no-store"
+    assert client.get("/s/expired-token").status_code == 404
+    expired = client.get("/s/expired-token/download", headers={"Range": "bytes=1-2"})
+    assert expired.status_code == 404
+    assert expired.headers["cache-control"] == "no-store"
+    db.create_share(item["id"], "existing-permanent-token", None)
+    assert {link["token"] for link in client.get(manage).json()["shares"]} == {
+        token,
+        "existing-permanent-token",
+    }
+
+    assert (
+        client.post(f"/api/items/{other['id']}/share/revoke", json={"token": token}).status_code
+        == 200
+    )
+    assert client.post("/api/logout").status_code == 200
+    assert client.get(manage).status_code == 401
+    assert client.post(f"{manage}/revoke", json={"token": token}).status_code == 401
+    for method, path, status in [
+        ("GET", url, 200),
+        ("GET", f"{url}/download", 206),
+        ("HEAD", f"{url}/download", 206),
+    ]:
+        response = client.request(method, path, headers={"Range": "bytes=1-2"})
+        assert response.status_code == status
+        assert response.headers["cache-control"] == "no-store"
+        if status == 206:
+            assert response.headers["content-range"] == "bytes 1-2/5"
+            assert response.content == (b"el" if method == "GET" else b"")
+    assert any(
+        getattr(record, "path", None) == "/s/[redacted]/download" for record in caplog.records
+    )
+    assert token not in caplog.text
+
+    assert client.post("/api/login", json={"password": PASSWORD}).status_code == 200
+    for _ in range(2):
+        assert client.post(f"{manage}/revoke", json={"token": token}).status_code == 200
+    assert [link["token"] for link in client.get(manage).json()["shares"]] == [
+        "existing-permanent-token"
+    ]
+    assert client.get("/s/existing-permanent-token").status_code == 200
+    for method, path in [("GET", url), ("GET", f"{url}/download"), ("HEAD", f"{url}/download")]:
+        response = client.request(method, path, headers={"Range": "bytes=1-2"})
+        assert response.status_code == 404
+        assert response.headers["cache-control"] == "no-store"
 
 
 def test_recover_interrupted_upload(workdir):

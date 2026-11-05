@@ -8,7 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.core.logging import request_id_ctx
+from app.core.logging import request_id_ctx, request_log_path
 
 logger = logging.getLogger("tgdrive.http")
 
@@ -20,6 +20,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         request_id = request.headers.get("X-Request-ID", "").strip()[:64] or uuid.uuid4().hex
         token = request_id_ctx.set(request_id)
         request.state.request_id = request_id
+        path = request.url.path
         started = time.perf_counter()
         status_code = 500
         try:
@@ -29,7 +30,9 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             response.headers.setdefault("X-Content-Type-Options", "nosniff")
             response.headers.setdefault("Referrer-Policy", "no-referrer")
             response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
-            if request.url.path.startswith("/api/"):
+            if path.startswith("/s/"):
+                response.headers["Cache-Control"] = "no-store"
+            elif path.startswith("/api/"):
                 response.headers.setdefault("Cache-Control", "no-store")
             response.headers.setdefault(
                 "Content-Security-Policy",
@@ -40,16 +43,17 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-            if not request.url.path.startswith(("/static/", "/assets/")):
+            if not path.startswith(("/static/", "/assets/")):
+                log_path = request_log_path(path)
                 logger.info(
                     "%s %s %s %.1fms",
                     request.method,
-                    request.url.path,
+                    log_path,
                     status_code,
                     elapsed_ms,
                     extra={
                         "method": request.method,
-                        "path": request.url.path,
+                        "path": log_path,
                         "status": status_code,
                         "duration_ms": elapsed_ms,
                         "client_ip": request.client.host if request.client else None,

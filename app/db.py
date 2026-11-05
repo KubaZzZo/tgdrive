@@ -783,6 +783,8 @@ class Database:
 
     # ---------- shares ----------
 
+    _active_share = "(expires_at IS NULL OR julianday(expires_at) > julianday('now'))"
+
     def create_share(self, item_id: str, token: str, expires_at: str | None) -> dict[str, Any]:
         with self._lock, self.conn:
             self.conn.execute(
@@ -795,14 +797,27 @@ class Database:
         with self._lock:
             row = self.conn.execute(
                 "SELECT s.*, i.name, i.kind, i.size, i.mime, i.parent_id "
-                "FROM shares s JOIN items i ON i.id = s.item_id WHERE s.token = ?",
+                "FROM shares s JOIN items i ON i.id = s.item_id WHERE s.token = ? AND "
+                + self._active_share,
                 (token,),
             ).fetchone()
         return self._dict(row)
 
-    def delete_share(self, token: str) -> None:
+    def list_shares(self, item_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT token, expires_at FROM shares WHERE item_id = ? AND "
+                + self._active_share
+                + " ORDER BY created_at DESC, token",
+                (item_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_share(self, item_id: str, token: str) -> None:
         with self._lock, self.conn:
-            self.conn.execute("DELETE FROM shares WHERE token = ?", (token,))
+            self.conn.execute(
+                "DELETE FROM shares WHERE item_id = ? AND token = ?", (item_id, token)
+            )
 
     # ---------- stats ----------
 

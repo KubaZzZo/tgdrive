@@ -172,6 +172,12 @@ export const api = {
     jsonRequest<ShareRecord>('POST', `/api/items/${encodeURIComponent(itemId)}/share`, {
       expires_hours: expiresHours,
     }),
+  listShares: (itemId: string) =>
+    request<{ shares: ShareRecord[] }>(`/api/items/${encodeURIComponent(itemId)}/share`),
+  revokeShare: (itemId: string, token: string) =>
+    jsonRequest<{ ok: boolean }>('POST', `/api/items/${encodeURIComponent(itemId)}/share/revoke`, {
+      token,
+    }),
 
   createUpload: (body: {
     name: string
