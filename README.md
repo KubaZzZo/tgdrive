@@ -1,51 +1,100 @@
 # TG Drive
 
-自用的 Telegram 网盘：浏览器上传/下载、文件夹、分享链接、视频在线播放。文件实际保存在 Telegram 私有频道，服务端只保存元数据。
+**把 Telegram 私有频道变成可以整理、同步和播放的个人网盘。**
 
-> 当前定位是**单用户、个人私有部署的 MVP+**，不是多租户对象存储。重要数据请保留第二份独立备份。
+[![CI](https://github.com/KubaZzZo/tgdrive/actions/workflows/ci.yml/badge.svg)](https://github.com/KubaZzZo/tgdrive/actions/workflows/ci.yml)
 
-## 技术栈
+在浏览器上传文件，也可以直接往 Telegram 频道发送媒体。TG Drive 会自动收录、分类，并提供文件夹、搜索、分享和视频在线播放。
 
-| 层 | 技术 |
-|---|---|
-| 后端 | Python 3.12、FastAPI、Pydantic、Telethon |
-| 数据 | SQLite WAL、显式 schema 版本迁移 |
-| 前端 | Vue 3、TypeScript、Pinia、Vite |
-| 质量 | Ruff、Pytest、Vue TSC、GitHub Actions |
-| 部署 | Docker 多阶段构建、Caddy 自动 HTTPS、systemd |
+文件内容保存在 Telegram；VPS 保存元数据、登录会话和上传临时文件，并转发下载流量。主动开启的视频缓存写入当前手机或电脑，不写入 VPS 磁盘。
 
-## 已实现
+> 面向单用户、个人私有部署。支持切换 Telegram 账号和频道，但不提供多用户权限管理。重要文件请保留独立备份。
 
-- 频道同步：直接发到存储频道的照片、视频、音频和文件自动收录；支持历史导入、断线补同步和去重
-- 视频/音频播放器：进度拖动、倍速、快进快退、播放位置记忆、全屏和浏览器画中画
-- iPhone 分片视频兼容播放、Telegram 视频封面与本机视频缓存；缓存写入当前手机或电脑，VPS 不保存视频缓存
-- 频道视频优先用文字简介命名，编辑简介后自动更新；网盘内手动重命名的文件保留自定义名称
+[功能概览](#功能概览) · [系统架构](#系统架构) · [快速开始](#快速开始) · [使用指南](#使用指南) · [配置参考](#配置参考) · [开发与测试](#开发与测试) · [更多文档](#更多文档)
 
-- 自动分类：图片、视频、音频、文档、压缩包、代码、安装包和其他；电脑/手机网页上传共用服务端规则
-- 分类导航、分类数量与体积、搜索、排序、分页、列表/网格视图及移动端文件操作菜单
-- 历史文件自动补齐分类，保留原有文件夹；支持 PDF 和常见媒体预览，无法预览时提示下载
+## 功能概览
 
-- 单用户密码登录，登录失败滑动窗口限流
-- 文件夹树、重命名、移动、删除
-- 浏览器分片上传、暂停/继续、断点续传、网络失败指数退避
-- 上传队列去重、批量暂停/继续、批量重试、按文件大小加权的总进度
-- Telegram 写入并发限制、运行期间每 5 分钟清理过期临时文件
-- Telegram MTProto 上传，大文件按 `TG_SEGMENT_SIZE` 切分为多个消息
-- 上传失败时尽力清理已写入的 Telegram 分段
-- 服务重启后自动把中断的上传标记为可重试
-- 超时未完成上传的临时文件自动清理
-- HTTP Range 下载，支持视频拖动进度条
-- 分享链接和过期时间
-- 图片/音频/视频在线预览
-- Bot / 用户账号两种 Telegram 登录模式
-- 结构化日志、请求 ID、统一错误响应
-- `/api/health/live`、`/api/health/ready` 健康检查
-- Vue 组件化前端、上传队列、自定义对话框、响应式移动端布局
-- CI：后端 lint/test、前端类型检查/构建、镜像构建
+| 能力 | 说明 |
+| --- | --- |
+| 文件管理 | 文件夹、重命名、移动、删除、搜索、排序、分页，支持列表和网格视图 |
+| 自动分类 | 图片、视频、音频、文档、压缩包、代码、安装包及其他；分类视图覆盖所有目录 |
+| 分片上传 | 暂停与继续、断点续传、失败重试、队列去重；大文件按配置拆分为 Telegram 消息 |
+| 频道同步 | 导入频道历史，监听新消息、编辑、删除和相册事件，并定时补同步 |
+| 视频命名 | 优先使用视频简介；视频没有文字时读取同组相册的共用说明，保留手动名称 |
+| 媒体播放 | 视频、音频、图片和 PDF 预览；支持倍速、跳转、全屏及浏览器支持的画中画 |
+| 视频封面 | 优先读取 Telegram 静态缩略图，缺失时尝试在浏览器提取首帧 |
+| 本机缓存 | 用户主动开启，支持进度、取消、清除及已完成缓存复用 |
+| 文件分享 | 生成无需登录的文件下载链接，可设置有效期 |
+| 账号与频道 | 网页扫码添加个人账号、两步验证、切换频道；各频道保留独立文件空间 |
+| 流量与运维 | 每日流量、额度提醒、健康检查、结构化日志、请求 ID 和 CI 检查 |
+
+## 系统架构
+
+```mermaid
+flowchart TB
+    subgraph device["用户手机 / 电脑"]
+        Web["浏览器界面<br/>Vue 3 + Pinia"]
+        Cache[("本机视频缓存<br/>浏览器 OPFS")]
+        Web <-->|"主动缓存 / 缓存播放"| Cache
+    end
+
+    subgraph server["自己的 VPS"]
+        Proxy["HTTPS 反向代理<br/>Caddy / 已有代理"]
+        API["FastAPI 应用<br/>文件、同步、账号管理"]
+        DB[("SQLite 元数据<br/>目录、消息映射<br/>分享与任务")]
+        Temp[("上传临时文件")]
+        Proxy --> API
+        API <--> DB
+        API <--> Temp
+    end
+
+    subgraph cloud["Telegram"]
+        Channel["私有存储频道<br/>文件与媒体消息"]
+    end
+
+    Web <-->|HTTPS| Proxy
+    API <-->|"Telethon / MTProto"| Channel
+```
+
+### 数据分别存在哪里？
+
+| 位置 | 保存的内容 | 需要注意 |
+| --- | --- | --- |
+| Telegram 私有频道 | 原始文件、照片、视频及网页上传的大文件分段 | 频道内容与网盘文件相互关联，删除网盘文件会尝试删除对应消息 |
+| VPS 的 `DATA_DIR` | SQLite 数据库、账号会话、频道连接配置 | 必须备份；会话文件等同于登录凭证 |
+| VPS 的 `TEMP_DIR` | 浏览器上传的临时文件 | 需要可用磁盘空间；成功写入 Telegram 后清理，未完成任务按过期配置清理 |
+| 当前浏览器 | 播放进度、续传映射、用户主动开启的视频缓存 | 不会自动同步到其他设备；浏览器清理网站数据后可能丢失 |
+
+下载与首次缓存的路径是 **Telegram → VPS → 用户设备**，视频不会绕过 VPS 直连 Telegram。按入站与出站合计，转发 1 GB 内容约产生 2 GB VPS 流量，另有协议及重传开销。
 
 ## 快速开始
 
-### 1. 安装后端
+### 1. 准备环境与安装依赖
+
+- Python **3.12**。
+- Node.js **22.15+** 和 npm，用于前端构建及测试；CI 使用 Node 22。
+- 一个 Telegram 账号、可访问的私有频道，以及自己申请的 [Telegram API 凭据](https://my.telegram.org)。
+- VPS 部署请使用 Docker Compose v2，并参考 [部署指南](DEPLOY.md)。
+
+```bash
+git clone https://github.com/KubaZzZo/tgdrive.git
+cd tgdrive
+```
+
+<details open>
+<summary>Linux / macOS</summary>
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+cp .env.example .env
+```
+
+</details>
+
+<details>
+<summary>Windows PowerShell</summary>
 
 ```powershell
 python -m venv .venv
@@ -54,250 +103,243 @@ python -m pip install -r requirements-dev.txt
 Copy-Item .env.example .env
 ```
 
-至少修改 `.env`：
+</details>
+
+修改 `.env` 中的以下配置。这里的值仅为占位示例，密码与密钥请自行生成：
 
 ```dotenv
-APP_PASSWORD=你的强密码
-APP_SECRET=至少32位随机字符串
+APP_PASSWORD=your-own-long-password
+APP_SECRET=replace-with-your-own-random-secret-at-least-32-characters
+TG_MODE=user
+TG_API_ID=123456
+TG_API_HASH=your-api-hash
+TG_CHAT_ID=-1001234567890
 ```
 
-### 2. 构建前端
+**检查代理配置：** `.env.example` 自带 `TG_PROXY=socks5://127.0.0.1:7892` 示例。请改成实际代理地址，不使用它时删除该行；程序还会尝试读取系统或环境代理。服务器需要能够访问 Telegram。
 
-```powershell
+### 2. 登录 Telegram 并选择存储频道
+
+```bash
+python scripts/login_qr.py
+python scripts/chat_id.py
+```
+
+按脚本提示，在 Telegram 的“设置 → 设备 → 连接桌面设备”扫描二维码。`chat_id.py` 会列出频道信息，将目标频道 ID 写入 `.env` 的 `TG_CHAT_ID`。账号应有该频道发送和删除消息的权限。
+
+脚本会生成本地会话文件。不要在服务运行时，用同一份会话同时启动另一套应用或登录脚本。启用两步验证时按登录脚本提示操作；网页内添加账号则可直接在界面输入密码。
+
+### 3. 构建并启动
+
+```bash
 cd frontend
 npm ci
 npm run build
 cd ..
-```
-
-构建产物输出到 `static/dist/`。生产环境由 Docker 自动完成这一步。
-
-### 3. 配置 Telegram
-
-获取 `api_id` / `api_hash`：
-
-1. 打开 https://my.telegram.org
-2. 进入 `API development tools`
-3. 创建应用并写入 `.env`：
-
-```dotenv
-TG_MODE=user
-TG_API_ID=123456
-TG_API_HASH=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-扫码登录并生成 session：
-
-```powershell
-python scripts/login_qr.py
-```
-
-创建私有频道、发一条消息，然后获取频道 ID：
-
-```powershell
-python scripts/chat_id.py
-```
-
-把频道 ID 写入 `.env`：
-
-```dotenv
-TG_CHAT_ID=-100xxxxxxxxxx
-```
-
-### 4. 启动
-
-```powershell
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8787
 ```
 
-打开 http://127.0.0.1:8787 。
+打开 [本地网盘](http://127.0.0.1:8787)，输入 `APP_PASSWORD` 登录。启动后会自动扫描存储频道；也可以点击“频道同步 → 重新扫描历史”。
 
-## 前端开发模式
+[存活检查](http://127.0.0.1:8787/api/health/live) 验证进程状态，[就绪检查](http://127.0.0.1:8787/api/health/ready) 同时验证数据库与 Telegram 连接；就绪检查返回 503 时，可据响应内容排查连接配置。
 
-后端：
+生产部署由 Docker 多阶段构建前端，无需在 VPS 宿主机安装 Node.js。域名、HTTPS、数据卷、备份与升级步骤见 [DEPLOY.md](DEPLOY.md)。使用已有反向代理的服务器，应按实际编排接入，避免重复占用 80/443 端口。
 
-```powershell
-python -m uvicorn app.main:app --host 127.0.0.1 --port 8787 --reload
+## 使用指南
+
+### 上传文件与断点续传
+
+拖入文件或使用上传按钮，文件会保存到当前目录；从分类页面上传时保存到根目录，并按实际类型归类。
+
+```mermaid
+sequenceDiagram
+    participant B as 浏览器
+    participant A as FastAPI
+    participant D as SQLite
+    participant F as VPS 临时文件
+    participant T as Telegram 频道
+
+    B->>A: 创建上传任务
+    A->>D: 登记任务与已接收位置
+    loop 按分片上传，可暂停与继续
+        B->>A: 发送分片与 Upload-Offset
+        A->>F: 写入临时文件
+        A->>D: 更新已接收位置
+        A-->>B: 返回已提交的 offset
+    end
+    B->>A: 提交完成
+    A->>F: 读取文件并计算哈希
+    A->>T: 后台上传，必要时拆成多条消息
+    T-->>A: 返回消息 ID
+    A->>D: 保存文件及分段映射
+    A->>F: 清理成功任务的临时文件
+    B->>A: 查询状态并刷新文件列表
 ```
 
-前端：
+- 暂停只影响浏览器传输；已经开始写入 Telegram 的后台任务会继续，不能暂停或取消。
+- 刷新页面后需要重新选择原文件，系统会查询服务端 offset 后续传；浏览器不会保留本地文件读取权限。
+- 服务端重启后，中断的 Telegram 上传会标记为可重试，不支持从已上传的 Telegram 分段中间接续。
+- 未完成任务默认保留 72 小时；运行期间每 5 分钟清理，暂停任务也受保留时间限制。
 
-```powershell
+### 频道同步与视频名称
+
+直接把照片、视频、音频或文档发送到存储频道，就会收录到网盘根目录。相册中的每条媒体分别收录；纯文字、链接预览和网盘自己生成的 `tgdrive:v1:` 文件分段不会重复导入。
+
+```mermaid
+flowchart TD
+    Start["视频 / 相册 / 编辑<br/>或历史扫描"] --> Manual{"已手动<br/>重命名？"}
+    Manual -->|是| Keep["保留自定义名称"]
+    Manual -->|否| Own{"视频有<br/>有效说明？"}
+    Own -->|是| Title["使用说明的首个有效段落"]
+    Own -->|否| Album{"同组有唯一<br/>共用说明？"}
+    Album -->|是| Title
+    Album -->|否| Original["保留 Telegram 原文件名"]
+    Title --> Clean["合并多行，清理字符<br/>保留后缀，最多 255 字符"]
+```
+
+相册按 Telegram 的 `grouped_id` 关联。例如，一组“封面图片 + 视频”的概述写在图片消息上，视频也能使用这段概述命名；不会借用相邻独立消息的文字。独立链接和标签行会跳过，多个不同的相册说明不会被强行合并。
+
+启动时完整扫描，平时默认每 30 秒补同步新增消息；网页每 5 秒检查同步变化。断线期间的编辑和删除，可通过“重新扫描历史”补齐。手动重命名后的文件保留自定义名称；替换整条消息里的媒体仍会更新对应文件信息。
+
+### 视频播放、封面与本机缓存
+
+点击视频或音频打开播放器，支持 0.5–2 倍速、前后跳转 10 秒、音量、全屏及可用时的画中画。Chrome、Edge 和 iPhone 的兼容播放按浏览器能力选择接口；不进行服务端转码，实际支持的编码仍由设备决定。
+
+```mermaid
+flowchart TB
+    T["Telegram 文件"] -->|按需读取| V["VPS 转发<br/>不落盘缓存视频"]
+    V -->|HTTP Range| P["浏览器边接收边播放"]
+    V -->|"主动缓存 / 并行分段下载"| C[("当前设备的完整视频缓存")]
+    C --> Check["重新打开时<br/>验证访问权限"]
+    Check --> L["从本机读取播放"]
+```
+
+| 项目 | 当前行为 |
+| --- | --- |
+| 普通媒体 | 使用原生播放器；在当前浏览器保存最多 100 个文件的播放位置 |
+| H.264/AAC 分片 MP4 | 使用 MediaSource 或 iPhone 的 ManagedMediaSource；从头播放，只能拖到已缓冲范围 |
+| 预缓冲 | 默认提前缓冲 60 秒视频，可选 120 秒；iPhone 还遵守系统缓冲窗口，不代表需要先等满 60 秒 |
+| 视频封面 | 优先使用 Telegram 缩略图；缺失时尝试浏览器首帧，提取最多并发两个任务 |
+| 缓存到本机 | 浏览器支持 OPFS 与 Web Locks 时可用，三个并发分段请求写入当前设备，保留最近一部完整视频 |
+| 缓存限制 | 首次仍经 VPS 转发；关闭播放器会取消未完成缓存，空间不足或清除网站数据会影响可用性 |
+
+关闭播放器会停止播放并释放连接。键盘支持空格播放/暂停、方向键跳转、M 静音、F 全屏。详细行为见 [视频播放与本机缓存指南](docs/video-playback.md)。
+
+### 账号、频道与文件分享
+
+- 点击“Telegram 账号”（手机上为“账号”）扫码添加个人账号，完成两步验证后选择频道；最多保存 10 个账号/频道组合。
+- 每个频道保留独立的目录、分享、上传任务和同步记录，切回即可恢复。两步验证密码不会通过网页登录流程落盘。
+- 正在写入 Telegram 的上传完成前不能切换；未完成的浏览器上传留在原频道，切回后可续传。
+- 分享链接无需登录，可设有效期；对应频道未处于当前连接时，该频道的分享不可用。分享链接暂不支持密码保护。
+
+Bot 模式也可用于网页上传：设置 `TG_MODE=bot`、`TG_BOT_TOKEN`，同时保留 `TG_API_ID`、`TG_API_HASH` 和 `TG_CHAT_ID`，并将 Bot 设为频道管理员。Bot 模式受 Telegram 历史读取限制，不能保证完整频道历史导入。
+
+### VPS 每日流量
+
+顶部流量按钮显示今日用量、剩余额度和近 7 天记录。默认额度为 **100 GB/天**，按北京时间 00:00 重置，可在页面调整；达到 80% 和 100% 时提醒，不会自动中断传输。
+
+宿主机采集统计公网网卡的入站与出站，包含其他应用和网络重传；项目传输明细单独展示。需要按 [部署指南](DEPLOY.md) 安装采集服务，未安装时显示“流量待接入”。
+
+## 配置参考
+
+完整配置见 [.env.example](.env.example)，以下列出常用项：
+
+| 配置 | 默认值 / 示例 | 用途 |
+| --- | --- | --- |
+| `APP_PASSWORD` | 必须自行设置 | 网盘访问密码 |
+| `APP_SECRET` | 必须自行设置 | 会话签名密钥；生产环境至少 32 字符 |
+| `TG_MODE` | `user` | 用户账号或 `bot` 模式 |
+| `TG_API_ID` / `TG_API_HASH` | 自行申请 | Telegram API 凭据，两种模式都需要 |
+| `TG_CHAT_ID` | `-100…` | 当前默认存储频道 |
+| `TG_SESSION` | `data/tgdrive` | 默认会话路径，Telethon 自动添加 `.session` 后缀 |
+| `TG_PROXY` | 按网络设置 | 显式指定 Telegram 代理，优先于系统 / 环境代理 |
+| `TG_SEGMENT_SIZE` | `1800000000` | 网页上传时单条 Telegram 消息的分段大小，单位字节 |
+| `UPLOAD_CHUNK_SIZE` | `8388608` | 浏览器上传分片大小，默认 8 MiB |
+| `UPLOAD_CONCURRENCY` | `2` | 同时写入 Telegram 的后台任务数 |
+| `UPLOAD_STALE_HOURS` | `72` | 未完成上传保留时长；`0` 关闭自动过期清理 |
+| `MAX_FILE_SIZE` | `0` | 文件大小上限，单位字节；`0` 表示不设应用层上限 |
+| `CHANNEL_SYNC_ENABLED` | `true` | 是否启用频道同步 |
+| `CHANNEL_SYNC_INTERVAL` | `30` | 新增消息补同步间隔，单位秒，最小 5 秒 |
+| `COOKIE_SECURE` | 本地 `false`，Compose `true` | 生产环境使用 HTTPS；本地 HTTP 不应开启 |
+| `DOMAIN` / `ACME_EMAIL` | 生产部署时设置 | 默认 Caddy 编排使用的域名和证书邮箱 |
+
+**部署约束：** 只运行一个应用进程 / Uvicorn worker。上传互斥锁、调度和账号切换在进程内协调，不能让多个进程共用同一临时目录或会话。
+
+## 开发与测试
+
+技术栈：**Vue 3 · TypeScript · Pinia · Vite · FastAPI · Telethon · SQLite WAL**。
+
+开发时分别启动后端和前端：
+
+```bash
+# 终端一：项目根目录，已激活 Python 虚拟环境
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8787 --reload
+
+# 终端二
 cd frontend
 npm run dev
 ```
 
-打开 http://127.0.0.1:5173 。Vite 会把 `/api` 和 `/s` 代理到 8787。
+打开 [前端开发页面](http://127.0.0.1:5173)。Vite 将 `/api` 和 `/s/` 请求代理到后端；开发环境可通过 [OpenAPI 页面](http://127.0.0.1:8787/api/docs) 查看接口。
 
-## Bot 模式
-
-1. 找 @BotFather 创建 Bot。
-2. 把 Bot 加入私有频道并设为管理员，允许发消息。
-3. 配置 `.env`：
-
-```dotenv
-TG_MODE=bot
-TG_API_ID=123456
-TG_API_HASH=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-TG_BOT_TOKEN=123456:ABC...
-TG_CHAT_ID=-100xxxxxxxxxx
-```
-
-Bot 模式仍使用 Telethon/MTProto，因此同样需要 `TG_API_ID` / `TG_API_HASH`。
-
-## 常用命令
-
-```powershell
-# 后端 lint + 测试
+```bash
+# 项目根目录
 python -m ruff check app tests
-python -m pytest
+python -m ruff format --check app tests
+python -m pytest --cov=app --cov-report=term-missing
 
-# 前端类型检查 + 生产构建
+# 前端目录
 cd frontend
-# 前端测试要求 Node.js 22.15+（CI 使用 Node 22）
 npm test
 npm run typecheck
 npm run build
 ```
 
-或使用 `make check`（Linux/macOS）。
+也可在支持 Make 的环境执行 `make check`。GitHub Actions 检查后端 lint / 格式 / 测试、前端测试与构建、宿主机采集脚本兼容性，以及 Docker 镜像构建。
 
-## 目录结构
+### 目录结构
 
 ```text
 app/
-  api/routes/         auth / items / uploads / files / system 路由
-  core/               日志、请求上下文、限流、异常处理
-  services/uploads.py 后台上传任务、临时文件清理
-  config.py           环境配置与校验
-  db.py               SQLite schema、版本迁移、查询
-  storage.py          Telegram 上传/下载/删除
-  main.py             FastAPI app factory
+├── api/routes/          # 认证、文件、上传、同步、账号及流量接口
+├── services/            # 上传任务、频道同步、账号切换、流量统计
+├── core/                # 日志、请求上下文、限流与异常处理
+├── categories.py        # 文件分类与 MIME 规则
+├── config.py            # 环境配置与校验
+├── db.py                # SQLite 查询与 schema 迁移
+├── storage.py           # Telegram 上传、下载及频道消息访问
+└── main.py              # FastAPI 应用入口
 frontend/
-  src/api/            API client 与类型
-  src/stores/         Pinia stores
-  src/components/     Vue 组件
-  src/styles/         全局设计系统
-tests/                API、数据库、Range 单元/集成测试
-static/dist/          前端构建产物（不提交）
-deploy/               Docker/Caddy/systemd 部署辅助
+├── src/components/      # 文件界面、播放器及配置面板
+├── src/stores/          # Pinia 状态与任务队列
+├── src/utils/           # 分片播放、本机缓存、封面提取等
+└── tests/               # 前端回归测试与浏览器缓存检查
+tests/                   # 后端单元与集成测试
+scripts/                 # Telegram 登录、频道 ID、宿主机流量采集
+deploy/                  # VPS、Caddy 与 systemd 部署辅助
+docs/                    # 架构、播放指南与历史验证记录
+static/dist/             # 前端构建产物，不提交到 Git
 ```
 
-详细说明见[架构文档](docs/ARCHITECTURE.md)与[视频播放和本机缓存指南](docs/video-playback.md)。历史验证记录：[频道同步与播放器](docs/CHANNEL_SYNC_AND_PLAYER_TEST.md)、[前端分类](docs/FRONTEND_CLASSIFICATION_TEST.md)、[真实传输](docs/LIVE_TRANSFER_TEST.md)。
+## 备份与已知限制
 
-## API 摘要
+- 备份 `.env` 与完整 `DATA_DIR`，包括主数据库、`accounts/` 会话和 `channels/` 数据库；使用命名卷部署时以实际卷路径为准。备份方法见 [DEPLOY.md](DEPLOY.md)。
+- 当前元数据 schema 为 **v7**。升级前备份；回退到只支持旧 schema 的镜像时，必须一并恢复匹配的数据备份。
+- 会话文件和 `.env` 包含敏感凭据，不应提交 Git、公开分享或传给他人。网页扫码添加账号不会把两步验证密码写入磁盘。
+- 支持大文件分段，不等于无限容量或无限带宽；仍受 Telegram 接口、账号限制及 VPS 资源影响。
+- 不提供服务端转码、秒传、多用户权限管理或 Telegram 分段级上传续传。浏览器不支持的编码需要下载后使用本地播放器。
+- Telegram 云端聊天不是端到端加密存储；敏感文件请自行加密。不要将该项目当作公共 CDN，重要文件请另存独立副本。
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/api/meta` | 应用和 Telegram 状态 |
-| POST | `/api/login` | 登录 |
-| POST | `/api/logout` | 退出 |
-| GET | `/api/items` | 文件列表 |
-| POST | `/api/folders` | 新建文件夹 |
-| PATCH | `/api/items/{id}` | 重命名/移动 |
-| DELETE | `/api/items/{id}` | 删除 |
-| POST | `/api/items/{id}/share` | 创建分享 |
-| POST | `/api/uploads` | 创建上传任务 |
-| PATCH | `/api/uploads/{id}` | 上传分片 |
-| POST | `/api/uploads/{id}/complete` | 提交到 Telegram |
-| GET | `/api/files/{id}/download` | 下载/Range 流 |
-| GET | `/api/files/{id}/thumbnail` | 需要登录的视频封面，缺少缩略图时返回 404 |
-| GET | `/api/health/live` | 进程存活 |
-| GET | `/api/health/ready` | DB + Telegram 就绪 |
+## 更多文档
 
-开发环境可访问 `/api/docs` 查看 OpenAPI。
+| 文档 | 内容 |
+| --- | --- |
+| [VPS 部署与运维](DEPLOY.md) | HTTPS、数据卷、流量采集、备份、升级与故障排查 |
+| [架构说明](docs/ARCHITECTURE.md) | 后端与前端分层、状态机、频道空间和请求生命周期 |
+| [视频播放与本机缓存](docs/video-playback.md) | iPhone 兼容播放、缓存边界、封面和简介命名 |
+| [更新记录](CHANGELOG.md) | 已完成的功能与修复 |
+| [历史验证记录](docs/CHANNEL_SYNC_AND_PLAYER_TEST.md) | 频道同步与播放器的阶段性验证 |
+| [分类验证记录](docs/FRONTEND_CLASSIFICATION_TEST.md) | 文件分类、分页与前端交互 |
+| [传输验证记录](docs/LIVE_TRANSFER_TEST.md) | 真实文件传输的阶段性测试 |
 
-## 工程约定
-
-- 业务接口错误统一返回 `{"detail": "...", "request_id": "..."}`。
-- 每个响应带 `X-Request-ID`，日志可通过该 ID 追踪。
-- 上传接口不会把服务端临时文件路径返回给浏览器。
-- SQLite 使用 WAL、`busy_timeout` 和 schema 版本号。
-- 生产环境强制校验非默认密码和至少 32 位 `APP_SECRET`。
-- 上传临时文件只通过 `TEMP_DIR` 管理，失败和过期任务会清理。
-- 前端严格 TypeScript，组件、状态、API 层分离。
-
-## 已知限制
-
-- 单用户，没有多租户隔离和权限系统。
-- 没有服务端转码或秒传；视频封面使用 Telegram 缩略图或浏览器首帧。
-- 分享链接没有密码保护。
-- 上传中断后的分段级续传还没有实现。
-- Telegram 不是专业对象存储，没有 SLA，请务必保留独立备份。
-
-## 安全提示
-
-- `session` 文件等同于 Telegram 账号登录凭证，不能提交到 Git 或发给他人。
-- 不要公开传播文件，不要做公共 CDN，不要高并发刷上传/下载。
-- 优先使用专用 Telegram 账号；更看重账号安全时优先 Bot 模式。
-- 云端聊天不是端到端加密，敏感文件请自行加密后上传。
-
-## 传输控制
-
-- 上传队列可暂停浏览器传输，继续时会读取服务器已提交的 offset。正在写入 Telegram 的任务会继续保存，不能暂停或取消。
-- 同一文件（目录、名称、大小、修改时间相同）不会重复加入活动队列。
-- 刷新页面后，重新选择原文件可续传；如果任务已在 Telegram 保存中或已完成，会直接接回原任务状态。
-- 暂停保留在当前页面中；刷新后需要重新选择原文件。浏览器不会在刷新后保留本地文件读取权限。
-- `UPLOAD_CONCURRENCY=2` 控制服务端同时写入 Telegram 的任务数，多余任务等待空位。浏览器同时运行最多 2 个上传任务。
-- `UPLOAD_STALE_HOURS=72` 控制未完成上传的保留时间；启动时和运行期间每 5 分钟清理，设为 `0` 可关闭自动清理。暂停任务同样受此时长限制。
-- 当前部署使用单个 Uvicorn worker；同一临时目录请勿启动多个应用进程，上传互斥锁和并发限制位于进程内。
-
-## 文件分类与页面使用
-
-- 文件完成上传后，服务端根据扩展名和 MIME 类型自动分类。手机常见 HEIC/HEIF、MOV、录音和通用 MIME 文件都纳入同一规则。
-- 分类是覆盖所有目录的聚合视图；文件仍保留在上传时选择的文件夹中。分类页面上传的文件保存到根目录，并按实际格式归类。
-- “我的文件”展示目录结构；根目录搜索覆盖所有目录，进入文件夹后的搜索限定当前目录。各分类中的搜索限定当前分类。
-- 支持最新/最早上传、名称、大小排序，每页 60 个项目。列表和网格视图共用搜索与分页状态。
-- 修改扩展名后会重新分类；分类不是内容分析，也不会转换文件格式。HEIC 等格式的预览取决于浏览器支持，无法预览时可下载。
-- 元数据 schema 升级到 v2，为已有文件补齐分类和通用 MIME 信息。迁移采用事务，失败后可重新执行。升级部署前应按既有备份流程保存 SQLite 元数据。
-
-## Telegram 频道同步
-
-默认启用 `CHANNEL_SYNC_ENABLED=true`。使用当前用户 session 连接存储频道后，服务会在后台扫描历史，并监听新消息、编辑和删除事件；每 `CHANNEL_SYNC_INTERVAL=30` 秒补同步新增记录。网页每 5 秒检查同步变化并更新当前列表，不需要手动刷新页面。
-
-手机或电脑 Telegram 直接发送到频道的照片、视频、音频和文件，会显示在网盘根目录并自动分类。相册中的每条媒体消息分别收录，压缩照片采用 Telegram 保存的图片版本。聊天文字、链接预览以及网盘自己发送的 `tgdrive:v1:` 文件分段不会导入。
-
-右上角“频道同步”可查看收录数量、扫描进度和异常，支持“立即同步”与“重新扫描历史”。历史扫描完整成功后才会清理已从频道删除的同步文件；断线期间的编辑或删除可通过启动扫描/手动历史扫描补齐。单纯修改消息说明不会覆盖网盘中自定义的文件名。
-
-同步仅登记文件元数据，不将整个频道下载到服务器。删除网盘文件仍沿用原有行为：同时删除对应 Telegram 消息。删除记录会保留同步标记，避免清理失败或历史重扫把它重新导入。
-
-完整历史扫描以用户账号模式验证；Bot 模式受 Telegram 历史读取接口限制，可能无法扫描历史，但不影响原有网页上传功能。
-
-## 视频与音频播放
-
-点击视频/音频文件打开播放器。支持原生播放控制、进度拖动、0.5–2 倍速、前后跳转 10 秒、音量、全屏，以及浏览器支持时的画中画。
-
-普通媒体在当前浏览器记录最多 100 个文件的播放位置，重新打开会恢复进度，也可选择从头播放。关闭弹窗会停止播放并释放传输连接。聚焦播放器后，可使用空格播放/暂停、左右方向键快进快退、M 静音、F 全屏。
-
-文件直接通过 HTTP Range 从 Telegram 流式读取，无需先下载完整视频。实际可播放的容器、视频和音频编码由浏览器决定；播放器不执行服务端转码，不支持的编码会提示下载到本地播放。
-
-对于 H.264/AAC 分片 MP4，支持 MediaSource 或 ManagedMediaSource 的浏览器会使用兼容流式播放器，避免原生播放器先扫描整段视频。此模式从头播放，支持在已缓冲范围内拖动进度；默认预缓冲 60 秒，可选择 120 秒，iPhone 还会遵守系统缓冲窗口。普通播放单次在途请求最多 2 MiB，关闭弹窗立即取消读取。其他文件或浏览器使用原生播放。
-
-需要完整缓存时，在播放器点击“缓存到本机”；缓存保存在当前设备，首次传输仍经 VPS 转发。操作和限制见[视频播放与本机缓存](docs/video-playback.md)。
-## VPS 每日流量
-
-登录后点击顶部的流量按钮，可查看每天入站＋出站总量、剩余额度和近 7 天记录。
-默认额度为 **100 GB/天**（100,000,000,000 字节），按北京时间 00:00 重置，额度可在页面修改。
-达到 80% 和 100% 会提示；此功能不自动中断传输。
-
-VPS 用量读取**宿主机公网网卡**，包括 Telegram、网页分享、其他程序和网络重传。
-项目有效载荷另列明细，不代替 VPS 用量。未安装宿主机服务时显示“流量待接入”。
-已有部署请参考 [DEPLOY.md](DEPLOY.md) 的流量采集安装步骤。
-## 切换 Telegram 账号与存储频道
-
-登录网盘后，点击顶部 **Telegram 账号**（手机上显示“账号”），选择“扫码添加账号与频道”。
-用目标账号的 Telegram 在“设置 → 设备 → 连接桌面设备”扫码；如启用两步验证，在页面输入 Telegram 密码。
-登录成功后选择已加入的频道，也可输入频道 ID 或 `@用户名`，再确认切换。
-新账号必须拥有该频道发送和删除消息的管理员权限。
-
-- 每个频道独立保存文件目录、分享、上传任务和同步记录；切回原频道可恢复原内容。
-- 分享链接仅在对应频道处于当前连接时可用，切换期间其他频道的分享返回不存在。
-- 已保存的账号/频道组合可再次切换，无需重复扫码；最多保存 10 个组合。
-- 正在写入 Telegram 的上传完成前不能切换；请先暂停浏览器上传队列。未完成上传留在原频道，可切回续传。
-- 已开始的下载继续使用原连接；若该连接尚未释放，立即切回时会提示稍后重试。
-- 网页连接配置持久化到主数据库，重启后自动恢复。VPS 流量统计与额度保持全局累计。
-- 登录任务 10 分钟后失效；取消或过期会清理临时会话。两步验证密码不落盘。
-
-此功能使用 `.env` 中已有的 `TG_API_ID/TG_API_HASH`，支持个人账号扫码；原 `.env` 用户或 Bot 连接作为默认连接保留。
-新增会话位于 `DATA_DIR/accounts/`，频道数据库位于 `DATA_DIR/channels/`，都必须和主数据库一起备份。
-仅运行一个应用进程；账号切换与上传任务调度在进程内协调。
+历史验证记录反映当时版本，当前行为以代码和现行指南为准。
