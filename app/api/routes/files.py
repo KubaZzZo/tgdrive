@@ -108,6 +108,28 @@ async def download_file(
     return await stream_item(request, item, db, storage)
 
 
+@auth_router.get("/files/{item_id}/thumbnail")
+async def file_thumbnail(
+    item_id: str,
+    db: Database = Depends(get_db),
+    storage: TelegramStorage = Depends(get_storage),
+) -> Response:
+    item = db.get_item(item_id)
+    if not item or item.get("category") != "video":
+        raise HTTPException(404, "视频不存在")
+    parts = db.get_parts(item_id)
+    if not parts:
+        raise HTTPException(404, "没有封面")
+    data = await storage.thumbnail(int(parts[0]["tg_message_id"]))
+    if not data:
+        raise HTTPException(404, "Telegram 未提供封面")
+    return Response(
+        data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"},
+    )
+
+
 def share_is_valid(share: dict[str, Any]) -> bool:
     expires_at = share.get("expires_at")
     if not expires_at:

@@ -333,6 +333,23 @@ class TelegramStorage:
     def invalidate_message(self, message_id: int) -> None:
         self._message_cache.pop((str(self.chat), message_id), None)
 
+    async def thumbnail(self, message_id: int) -> bytes | None:
+        """Fetch a static Telegram thumbnail into memory, never onto the VPS disk."""
+        message = await self._get_message(message_id)
+        sizes = getattr(getattr(message, "document", None), "thumbs", None) or []
+        # Do not accidentally download an animated/video thumbnail.
+        sizes = [
+            s
+            for s in sizes
+            if type(s).__name__ in {"PhotoSize", "PhotoCachedSize", "PhotoSizeProgressive"}
+        ]
+        if not sizes:
+            return None
+        data = await self.require_client().download_media(message, bytes, thumb=sizes[-1])
+        if self.traffic and data:
+            self.traffic.record("telegram", inbound=len(data))
+        return data or None
+
     async def latest_channel_message_id(self) -> int:
         messages = await self.require_client().get_messages(self.chat, limit=1)
         return int(messages[0].id) if messages else 0
