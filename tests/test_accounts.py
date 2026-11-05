@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 from conftest import FakeTelegramStorage, make_settings
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from telethon import utils
+from telethon import functions, types, utils
 from telethon.errors import PasswordHashInvalidError, SessionPasswordNeededError
 from telethon.tl.types import Channel, ChatPhotoEmpty
 
@@ -33,14 +33,19 @@ class Client:
     two_factor = False
     fail_connect = False
     lookup_miss = True
+    migrate = False
+    fast_first_expiry = False
 
     def __init__(self, *args, **kwargs):
         self.instances.append(self)
-        self.event = asyncio.Event()
+        self.scanned = False
+        self.scan_handler = None
+        self.migrated = False
         self.disconnected = False
         self.revoked = False
-        self.refreshes = 0
-        self.waits = 0
+        self.exports = 0
+        self.identity_reads = 0
+        self.user = SimpleNamespace(id=42, username="second", first_name="Second", bot=False)
 
     async def connect(self):
         if self.fail_connect:
@@ -56,26 +61,47 @@ class Client:
         return True
 
     async def get_me(self):
-        return SimpleNamespace(id=42, username="second", first_name="Second", bot=False)
+        self.identity_reads += 1
+        return self.user
 
-    async def qr_login(self):
-        return SimpleNamespace(url="tg://login?token=test", wait=self.wait, recreate=self.recreate)
+    def add_event_handler(self, handler, _event):
+        self.scan_handler = handler
 
-    async def wait(self, **kwargs):
-        self.waits += 1
-        if self.waits == 1:
-            raise TimeoutError
-        await self.event.wait()
+    def remove_event_handler(self, _handler):
+        self.scan_handler = None
+
+    async def scan(self, notify=True):
+        self.scanned = True
+        if notify:
+            await self.scan_handler(None)
+
+    async def __call__(self, request):
+        if isinstance(request, functions.auth.ExportLoginTokenRequest):
+            self.exports += 1
+            if not self.scanned:
+                ttl = 0 if self.fast_first_expiry and self.exports == 1 else 45
+                expires = datetime.now(UTC) + timedelta(seconds=ttl)
+                return types.auth.LoginToken(expires, b"test-token")
+            if self.migrate and not self.migrated:
+                return types.auth.LoginTokenMigrateTo(2, b"migration-token")
+        else:
+            assert isinstance(request, functions.auth.ImportLoginTokenRequest)
+            assert self.migrated and request.token == b"migration-token"
         if self.two_factor:
             raise SessionPasswordNeededError(None)
-        return await self.get_me()
+        return types.auth.LoginTokenSuccess(SimpleNamespace(user=self.user))
 
-    async def recreate(self):
-        self.refreshes += 1
+    async def _switch_dc(self, dc):
+        assert dc == 2
+        self.migrated = True
+
+    async def _on_login(self, user):
+        assert user.id == 42
 
     async def sign_in(self, password):
         if password != " correct password ":
             raise PasswordHashInvalidError(None)
+        return self.user
 
     async def iter_dialogs(self, **kwargs):
         yield SimpleNamespace(entity=channel(), name="Channel 222")
@@ -139,6 +165,8 @@ def fake_telegram(monkeypatch):
     Client.two_factor = False
     Client.fail_connect = False
     Client.lookup_miss = True
+    Client.migrate = False
+    Client.fast_first_expiry = False
     monkeypatch.setattr(module, "TelegramClient", Client)
     monkeypatch.setattr(module, "ChannelSyncService", Sync)
 
@@ -164,18 +192,22 @@ def test_qr_refresh_2fa_channel_permissions_and_activation(workdir, fake_telegra
         app.state.storage.started = True
         await manager.start()
         Client.two_factor = True
+        Client.migrate = True
+        Client.fast_first_expiry = True
         login = await manager.begin()
         await until(lambda: manager.pending["state"] == "waiting")
         client = Client.instances[-1]
-        await until(lambda: client.refreshes == 1)
+        await until(lambda: client.exports == 2 and manager.pending["state"] == "waiting")
         assert manager.login_status(login["id"])["qr_image"].startswith("data:image/png;base64,")
         assert "client" not in manager.login_status(login["id"])
-        client.event.set()
+        await client.scan()
         await until(lambda: manager.pending["state"] == "password")
+        assert client.migrated
         with pytest.raises(HTTPException, match="400"):
             await manager.password(login["id"], "wrong")
         result = await manager.password(login["id"], " correct password ")
         assert result["state"] == "ready"
+        assert client.identity_reads == 0
         choices = await manager.channels(login["id"])
         assert [c["writable"] for c in choices] == [True, False]
         with pytest.raises(HTTPException, match="400"):
@@ -290,7 +322,7 @@ def test_cancelled_login_disconnects_and_removes_only_pending_session(workdir, f
         login = await manager.begin()
         await until(lambda: manager.pending["state"] == "waiting")
         client = Client.instances[-1]
-        client.event.set()
+        await client.scan()
         await until(lambda: manager.pending["state"] == "ready")
         path = manager.settings.data_dir / "accounts" / (login["id"] + ".session")
         path.write_text("fake-pending-session")
@@ -377,7 +409,7 @@ def test_authenticated_api_flow_keeps_traffic_settings_global(workdir, fake_tele
         deadline = time.monotonic() + 2
         while client.get(f"/api/telegram/login/{job_id}").json()["state"] != "waiting":
             assert time.monotonic() < deadline
-        client.portal.call(Client.instances[-1].event.set)
+        client.portal.call(Client.instances[-1].scan)
         while client.get(f"/api/telegram/login/{job_id}").json()["state"] != "ready":
             assert time.monotonic() < deadline
         channels = client.get(f"/api/telegram/login/{job_id}/channels").json()["channels"]
@@ -391,6 +423,37 @@ def test_authenticated_api_flow_keeps_traffic_settings_global(workdir, fake_tele
         assert app.state.accounts.control.traffic_config()["quota_bytes"] == 80_000_000_000
         assert app.state.db.traffic_config()["quota_bytes"] == 100_000_000_000
         assert client.get(f"/api/telegram/login/{job_id}").status_code == 404
+
+
+def test_manual_scan_check_recovers_two_factor_without_update(workdir, fake_telegram):
+    import time
+
+    Client.two_factor = True
+    app = create_app(make_settings(workdir), storage=Storage(-100111))
+    with TestClient(app) as client:
+        client.post("/api/login", json={"password": "correct-horse-battery-staple"})
+        job_id = client.post("/api/telegram/login").json()["id"]
+        path = f"/api/telegram/login/{job_id}"
+
+        def wait_for(state):
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                job = client.get(path).json()
+                if job["state"] == state:
+                    return job
+                time.sleep(0.01)
+            pytest.fail(f"Login did not reach {state}")
+
+        wait_for("waiting")
+        assert client.post(f"{path}/password", json={"password": "not-yet"}).status_code == 409
+        client.portal.call(Client.instances[-1].scan, False)
+        assert client.post(f"{path}/check").status_code == 202
+        assert wait_for("password")["qr_image"] is None
+        assert client.post(f"{path}/password", json={"password": "wrong"}).status_code == 400
+        assert client.get(path).json()["state"] == "password"
+        verified = client.post(f"{path}/password", json={"password": " correct password "})
+        assert verified.status_code == 200 and verified.json()["state"] == "ready"
+        assert client.get(f"{path}/channels").json()["channels"]
 
 
 def test_expired_login_and_network_failure_leave_current_connection(workdir, fake_telegram):

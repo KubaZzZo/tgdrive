@@ -6,7 +6,7 @@ export interface TelegramAccountStatus {
   can_login: boolean; switching: boolean; profiles: TelegramProfile[]
 }
 export interface TelegramLogin {
-  id: string; state: 'connecting' | 'waiting' | 'password' | 'ready' | 'error' | 'expired' | 'canceled'
+  id: string; state: 'connecting' | 'waiting' | 'checking' | 'password' | 'ready' | 'error' | 'expired' | 'canceled'
   qr_image: string | null; error: string | null; account: TelegramIdentity | null
 }
 export interface TelegramChannel { id: string; title: string; writable: boolean }
