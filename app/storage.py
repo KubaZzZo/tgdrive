@@ -149,17 +149,14 @@ class TelegramStorage:
                     **kwargs,
                 )
                 await self.client.connect()
-                if not await self.client.is_user_authorized():
-                    self.invalidate_session()
-                    return
 
-            # Validate that the configured chat is actually reachable.
-            entity = await self.client.get_entity(self.chat)
-            self.chat = utils.get_peer_id(entity)
             me = await self.client.get_me()
             if not me:
                 self.invalidate_session()
                 return
+            # Validate that the configured chat is actually reachable.
+            entity = await self.client.get_entity(self.chat)
+            self.chat = utils.get_peer_id(entity)
             self.auth_required = False
             self.error = None
             self._started = True

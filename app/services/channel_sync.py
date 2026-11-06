@@ -3,12 +3,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
 import uuid
 from collections import OrderedDict
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
+from functools import partial
+from math import ceil
 from pathlib import PurePath
-from typing import Any
+from typing import Any, TypeVar
 
+from telethon.errors import FloodWaitError
 from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 
 from app.categories import effective_mime
@@ -17,6 +22,7 @@ from app.db import Database
 from app.storage import SESSION_AUTH_ERRORS, TelegramStorage
 
 logger = logging.getLogger("tgdrive.sync")
+T = TypeVar("T")
 
 
 def clean_channel_name(name: str, extension: str = "") -> str:
@@ -140,6 +146,8 @@ class ChannelSyncService:
         self.state = "disabled" if not settings.channel_sync_enabled else "unavailable"
         self.running = False
         self.scanned = 0
+        self.progress: int | None = None
+        self._retry_at = 0.0
         self.imported = 0
         self.revision = 0
         self.last_error: str | None = None
@@ -216,6 +224,10 @@ class ChannelSyncService:
             members = await self.album_context(message)
             for member in members:
                 self.ingest(member, album_messages=members)
+        except FloodWaitError as exc:
+            if self.state != "auth_required":
+                self._defer_rpc(exc)
+                self.request_scan(full=True)
         except Exception as exc:
             if self.state == "auth_required":
                 return
@@ -247,26 +259,56 @@ class ChannelSyncService:
             self._full = True
             self._wake.set()
 
+    def _defer_rpc(self, exc: FloodWaitError) -> None:
+        self._retry_at = max(self._retry_at, time.monotonic() + max(1, exc.seconds))
+
+    async def _wait_for_rate_limit(self) -> None:
+        while (remaining := self._retry_at - time.monotonic()) > 0:
+            self.state = "rate_limited"
+            await asyncio.sleep(remaining)
+        self.state = "syncing"
+
+    async def _scan_rpc(self, operation: Callable[[], Awaitable[T]]) -> T:
+        while True:
+            await self._wait_for_rate_limit()
+            try:
+                return await operation()
+            except FloodWaitError as exc:
+                self._defer_rpc(exc)
+
+    async def _scan_history(self, cursor: int, max_id: int) -> AsyncIterator[Any]:
+        while True:
+            await self._wait_for_rate_limit()
+            try:
+                async for message in self.storage.iter_channel_messages(cursor, max_id):
+                    yield message
+                    cursor = int(message.id)
+                return
+            except FloodWaitError as exc:
+                self._defer_rpc(exc)
+
     async def scan(self, full: bool = False) -> None:
         self.running = True
         self.state = "syncing"
         self.scanned = 0
+        self.progress = None
         self.last_error = None
         generation = uuid.uuid4().hex if full else None
         try:
             max_id = max(
-                await self.storage.latest_channel_message_id(),
+                await self._scan_rpc(self.storage.latest_channel_message_id),
                 self.db.channel_cursor(self.chat_id),
                 self.db.channel_high_water(self.chat_id),
             )
             cursor = 0 if full else self.db.channel_cursor(self.chat_id)
+            self.progress = 0
             albums: OrderedDict[int, list[Any]] = OrderedDict()
-            async for message in self.storage.iter_channel_messages(cursor, max_id):
+            async for message in self._scan_history(cursor, max_id):
                 group = getattr(message, "grouped_id", None)
                 members = None
                 if group:
                     if group not in albums or group not in self._albums:
-                        albums[group] = await self.album_context(message)
+                        albums[group] = await self._scan_rpc(partial(self.album_context, message))
                         if len(albums) > 32:
                             albums.popitem(last=False)
                     members = self._albums.get(group, albums[group])
@@ -280,13 +322,17 @@ class ChannelSyncService:
                                 self.ingest(member, generation, members)
                 current = next((m for m in members or [] if m.id == message.id), message)
                 self.ingest(current, generation, members)
-                self.db.advance_channel_cursor(self.chat_id, int(message.id))
+                message_id = int(message.id)
+                self.db.advance_channel_cursor(self.chat_id, message_id)
                 self.scanned += 1
+                if max_id > cursor:
+                    self.progress = min(99, (message_id - cursor) * 100 // (max_id - cursor))
                 if self.scanned % 100 == 0:
                     await asyncio.sleep(0)
             if full:
                 self.revision += self.db.reconcile_channel(self.chat_id, generation, max_id)
             self.db.advance_channel_cursor(self.chat_id, max_id)
+            self.progress = 100
             self.last_success = datetime.now(UTC).isoformat()
             self.state = "idle"
         except SESSION_AUTH_ERRORS as exc:
@@ -340,6 +386,10 @@ class ChannelSyncService:
             "state": self.state,
             "running": self.running or self._wake.is_set(),
             "scanned": self.scanned,
+            "progress": self.progress,
+            "retry_after": max(0, ceil(self._retry_at - time.monotonic()))
+            if self.state == "rate_limited"
+            else None,
             "imported": self.imported,
             "files": self.db.channel_file_count(self.chat_id),
             "revision": self.revision,

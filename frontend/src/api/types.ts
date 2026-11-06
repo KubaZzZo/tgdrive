@@ -132,9 +132,11 @@ export interface ShareRecord {
 
 export interface SyncStatus {
   enabled: boolean
-  state: 'disabled' | 'unavailable' | 'idle' | 'syncing' | 'error' | 'auth_required' | 'stopped'
+  state: 'disabled' | 'unavailable' | 'idle' | 'syncing' | 'rate_limited' | 'error' | 'auth_required' | 'stopped'
   running: boolean
   scanned: number
+  progress: number | null
+  retry_after: number | null
   imported: number
   files: number
   revision: number
