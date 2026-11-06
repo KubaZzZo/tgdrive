@@ -12,6 +12,13 @@ from typing import Any
 
 import anyio
 from telethon import TelegramClient, events, utils
+from telethon.errors import (
+    AuthKeyDuplicatedError,
+    AuthKeyInvalidError,
+    AuthKeyUnregisteredError,
+    SessionExpiredError,
+    SessionRevokedError,
+)
 from telethon.tl.types import DocumentAttributeFilename
 
 from app.config import Settings
@@ -20,6 +27,13 @@ from app.network import get_proxy
 
 ProgressCallback = Callable[[int, int], Awaitable[None] | None]
 logger = logging.getLogger("tgdrive.storage")
+SESSION_AUTH_ERRORS = (
+    AuthKeyDuplicatedError,
+    AuthKeyInvalidError,
+    AuthKeyUnregisteredError,
+    SessionExpiredError,
+    SessionRevokedError,
+)
 
 
 class SegmentReader(io.RawIOBase):
@@ -72,6 +86,7 @@ class TelegramStorage:
         self.client: TelegramClient | None = None
         self.chat: int | str | None = None
         self.error: str | None = None
+        self.auth_required = False
         self._started = False
         self.traffic = None
         self._message_cache: OrderedDict[tuple[str, int], tuple[float, Any]] = OrderedDict()
@@ -135,28 +150,38 @@ class TelegramStorage:
                 )
                 await self.client.connect()
                 if not await self.client.is_user_authorized():
-                    self.error = "Telegram session 未登录，请先运行: python scripts/login_qr.py"
-                    await self.client.disconnect()
-                    self.client = None
+                    self.invalidate_session()
                     return
 
             # Validate that the configured chat is actually reachable.
             entity = await self.client.get_entity(self.chat)
             self.chat = utils.get_peer_id(entity)
             me = await self.client.get_me()
+            if not me:
+                self.invalidate_session()
+                return
+            self.auth_required = False
             self.error = None
             self._started = True
             print(
                 f"[telegram] connected mode={self.mode} account={getattr(me, 'username', None) or getattr(me, 'id', '?')}"
             )
+        except SESSION_AUTH_ERRORS:
+            self.invalidate_session()
         except Exception as exc:  # pragma: no cover - depends on live Telegram
             self.error = f"Telegram 连接失败: {exc}"
-            if self.client:
+        finally:
+            if self.client and not self._started:
                 try:
                     await self.client.disconnect()
                 except Exception:
                     pass
-            self.client = None
+                self.client = None
+
+    def invalidate_session(self) -> None:
+        self.auth_required = True
+        self._started = False
+        self.error = "Telegram 会话已失效，请在「Telegram 账号」中重新扫码并选择原存储频道。"
 
     async def stop(self) -> None:
         if self.client:
@@ -425,6 +450,7 @@ class TelegramStorage:
         return {
             "configured": self.configured,
             "connected": self._started,
+            "auth_required": self.auth_required,
             "mode": self.mode,
             "error": self.error,
             "chat_id": str(self.chat) if self.chat is not None else None,

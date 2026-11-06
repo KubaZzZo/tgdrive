@@ -87,6 +87,8 @@ async def request_sync(body: SyncBody, request: Request) -> dict:
     service = request.app.state.channel_sync
     if not service.settings.channel_sync_enabled:
         raise HTTPException(409, "频道同步已关闭")
+    if service.state == "auth_required":
+        raise HTTPException(409, service.last_error)
     if service.state in {"unavailable", "stopped"}:
         raise HTTPException(503, "Telegram 同步服务尚未就绪")
     service.request_scan(body.full)

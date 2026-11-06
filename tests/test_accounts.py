@@ -9,8 +9,13 @@ from conftest import FakeTelegramStorage, make_settings
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from telethon import functions, types, utils
-from telethon.errors import PasswordHashInvalidError, SessionPasswordNeededError
-from telethon.tl.types import Channel, ChatPhotoEmpty
+from telethon.errors import (
+    AuthKeyUnregisteredError,
+    PasswordHashInvalidError,
+    SessionPasswordNeededError,
+)
+from telethon.tl.functions.messages import GetHistoryRequest
+from telethon.tl.types import Channel, ChatPhotoEmpty, InputPeerSelf
 
 import app.services.accounts as module
 from app.main import create_app
@@ -395,6 +400,81 @@ def test_saved_connection_switch_reconnects_and_keeps_workspace(
             await manager.activate_saved("missing")
         await manager.shutdown()
 
+    asyncio.run(run())
+
+
+def test_revoked_history_session_requires_qr_login_and_recovers_same_workspace(
+    workdir, monkeypatch
+):
+    class HistoryClient(Client):
+        lookup_miss = False
+        reject_history = False
+        latest_id = 1
+
+        def add_event_handler(self, callback, builder):
+            if isinstance(builder, module.events.Raw):
+                super().add_event_handler(callback, builder)
+
+        def remove_event_handler(self, callback, builder=None):
+            if builder is None:
+                super().remove_event_handler(callback)
+
+        async def get_messages(self, chat, *, limit):
+            if self.reject_history:
+                request = GetHistoryRequest(InputPeerSelf(), 0, None, 0, limit, 0, 0, 0)
+                raise AuthKeyUnregisteredError(request)
+            return [SimpleNamespace(id=self.latest_id)]
+
+        async def iter_messages(self, chat, **kwargs):
+            for mid in range(kwargs["min_id"] + 1, kwargs["max_id"]):
+                yield SimpleNamespace(id=mid)
+
+    async def run():
+        chat_id = str(utils.get_peer_id(channel()))
+        settings = make_settings(workdir, tg_chat_id=chat_id)
+        app = create_app(settings)
+        manager = app.state.accounts
+        await manager.current.storage.start()
+        await manager.start()
+        await manager.current.sync.start()
+        try:
+            workspace = manager.current.db
+            folder = workspace.create_folder("Existing folder", None)
+            active_id = manager.status()["active_id"]
+            for index in range(9):
+                manager.control.save_telegram_profile(
+                    profile(-100333, f"{index:032x}"), "unused", activate=False
+                )
+            await until(lambda: manager.current.sync.last_success is not None)
+            assert manager.status()["connected"]
+            manager.current.storage.client.reject_history = True
+            assert manager.current.sync.request_scan(full=True)
+            await until(lambda: manager.current.sync.last_error is not None)
+            assert not manager.status()["connected"]
+            assert manager.current.sync.state == "auth_required"
+            assert "重新扫码" in manager.current.sync.last_error
+            assert not manager.current.sync.request_scan(full=True)
+            assert workspace.channel_cursor(chat_id) == 1
+            with pytest.raises(HTTPException, match="重新扫码"):
+                await manager.activate_saved(active_id)
+
+            login = await manager.begin()
+            await until(lambda: manager.pending["state"] == "waiting")
+            client = manager.pending["client"]
+            client.latest_id = 2
+            await client.scan()
+            await until(lambda: manager.pending["state"] == "ready")
+            result = await manager.activate_login(login["id"], chat_id)
+            assert result["connected"] and result["active_id"] == active_id
+            assert len(result["profiles"]) == 10
+            await until(lambda: manager.current.sync.last_success is not None)
+            assert manager.current.db is workspace and workspace.get_item(folder["id"])
+            assert workspace.channel_cursor(chat_id) == 2
+        finally:
+            await manager.shutdown()
+
+    monkeypatch.setattr("app.storage.TelegramClient", HistoryClient)
+    monkeypatch.setattr(module, "TelegramClient", HistoryClient)
     asyncio.run(run())
 
 
