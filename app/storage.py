@@ -113,6 +113,8 @@ class TelegramStorage:
     async def start(self) -> None:
         if self._started:
             return
+        if self.settings.tg_chat_id:
+            self.chat = self._normalize_chat(self.settings.tg_chat_id)
         if not self.settings.tg_api_id or not self.settings.tg_api_hash:
             self.error = "缺少 TG_API_ID / TG_API_HASH"
             return
@@ -120,7 +122,6 @@ class TelegramStorage:
             self.error = "缺少 TG_CHAT_ID（私有频道 ID）"
             return
 
-        self.chat = self._normalize_chat(self.settings.tg_chat_id)
         kwargs = {
             "connection_retries": 5,
             "request_retries": 5,

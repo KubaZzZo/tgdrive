@@ -137,6 +137,8 @@ export interface SyncStatus {
   scanned: number
   progress: number | null
   retry_after: number | null
+  bot_state: 'connecting' | 'listening' | 'error' | null
+  bot_error: string | null
   imported: number
   files: number
   revision: number

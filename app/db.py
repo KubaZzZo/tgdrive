@@ -10,7 +10,7 @@ from typing import Any
 
 from app.categories import CATEGORY_LABELS, classify_file, effective_mime
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def utcnow() -> str:
@@ -191,6 +191,15 @@ class Database:
                     # explicitly renamed locally; otherwise last automatic name.
                     self.conn.execute("ALTER TABLE channel_messages ADD COLUMN remote_name TEXT")
                     self.conn.execute("PRAGMA user_version=7")
+
+            if current < 8:
+                with self.conn:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    self.conn.execute("""CREATE TABLE IF NOT EXISTS channel_bot_files (
+                        item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+                        bot_id TEXT NOT NULL, file_id TEXT NOT NULL,
+                        remote_version TEXT NOT NULL, size INTEGER NOT NULL)""")
+                    self.conn.execute("PRAGMA user_version=8")
 
     def telegram_profiles(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -680,14 +689,20 @@ class Database:
                     return changed
                 if not seen["item_id"]:
                     return False
+                item = self.get_item(seen["item_id"])
+                same_post = (seen["media_key"] or "").startswith("bot:") and seen[
+                    "remote_version"
+                ] == file["remote_version"]
+                keep_name = same_post and item and item["name"] != seen["remote_name"]
+                name = item["name"] if keep_name else file["name"]
                 # A Telegram media replacement updates the file without resetting local renames for caption-only edits.
                 self.conn.execute(
                     "UPDATE items SET name=?,size=?,mime=?,category=?,updated_at=? WHERE id=? AND source='channel'",
                     (
-                        file["name"],
+                        name,
                         file["size"],
                         file["mime"],
-                        classify_file(file["name"], file["mime"]),
+                        classify_file(name, file["mime"]),
                         utcnow(),
                         seen["item_id"],
                     ),
@@ -697,7 +712,7 @@ class Database:
                 )
                 self.conn.execute(
                     "UPDATE channel_messages SET media_key=?,remote_name=? WHERE chat_id=? AND message_id=?",
-                    (file["media_key"], file["name"], chat_id, message_id),
+                    (file["media_key"], "" if keep_name else file["name"], chat_id, message_id),
                 )
                 return True
             existing = self.conn.execute(
@@ -743,6 +758,41 @@ class Database:
                 ),
             )
             return True
+
+    def import_bot_file(
+        self, chat_id: str, message_id: int, file: dict[str, Any], bot_id: str, file_id: str
+    ) -> bool:
+        with self._lock:
+            sql = "SELECT item_id, state, remote_version FROM channel_messages WHERE chat_id=? AND message_id=?"
+            params = (chat_id, message_id)
+            seen = self.conn.execute(sql, params).fetchone()
+            changed = False
+            if not seen:
+                changed = self.import_channel_file(chat_id, message_id, file)
+                seen = self.conn.execute(sql, params).fetchone()
+            if (
+                seen
+                and seen["item_id"]
+                and seen["state"] == "imported"
+                and seen["remote_version"] == file["remote_version"]
+            ):
+                with self.conn:
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO channel_bot_files VALUES (?,?,?,?,?)",
+                        (seen["item_id"], bot_id, file_id, file["remote_version"], file["size"]),
+                    )
+            return changed
+
+    def bot_file_id(self, item_id: str, bot_id: str) -> str | None:
+        with self._lock:
+            row = self.conn.execute(
+                """SELECT b.file_id FROM channel_bot_files b JOIN channel_messages m USING (item_id)
+                JOIN items i ON i.id=b.item_id
+                WHERE b.item_id=? AND b.bot_id=? AND m.state='imported'
+                AND b.remote_version=m.remote_version AND b.size=i.size""",
+                (item_id, bot_id),
+            ).fetchone()
+            return row[0] if row else None
 
     def remove_channel_messages(self, chat_id: str, message_ids: list[int]) -> int:
         removed = 0

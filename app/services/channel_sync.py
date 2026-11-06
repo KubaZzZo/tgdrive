@@ -19,6 +19,7 @@ from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 from app.categories import effective_mime
 from app.config import Settings
 from app.db import Database
+from app.services.telegram_bot import BotAPIError, TelegramBot
 from app.storage import SESSION_AUTH_ERRORS, TelegramStorage
 
 logger = logging.getLogger("tgdrive.sync")
@@ -134,6 +135,54 @@ def describe_message(
     }
 
 
+def describe_bot_post(post: dict) -> tuple[dict, str] | None:
+    caption = post.get("caption", "")
+    if caption.startswith("tgdrive:v1:"):
+        return None
+    media_types = {
+        "video": "video/mp4",
+        "animation": "video/mp4",
+        "audio": "audio/mpeg",
+        "voice": "audio/ogg",
+        "video_note": "video/mp4",
+        "document": "application/octet-stream",
+    }
+    for kind, mime_type in media_types.items():
+        if media := post.get(kind):
+            default_mime = mime_type
+            break
+    else:
+        photos = post.get("photo") or []
+        if not photos:
+            return None
+        media = photos[-1]
+        default_mime = "image/jpeg"
+
+    size, file_id = media.get("file_size"), media.get("file_id")
+    if not isinstance(size, int) or size <= 0 or not file_id:
+        return None
+    mid = post["message_id"]
+    suffix = {"video/mp4": ".mp4", "audio/mpeg": ".mp3", "audio/ogg": ".ogg", "image/jpeg": ".jpg"}
+    name = clean_channel_name(
+        media.get("file_name") or f"频道文件_{mid}{suffix.get(default_mime, '.bin')}", ""
+    )
+    name = name or f"频道文件_{mid}"
+    mime = effective_mime(name, media.get("mime_type") or default_mime)
+    title = caption_title(caption) if mime.startswith("video/") else ""
+    date = datetime.fromtimestamp(post["date"], UTC).isoformat()
+    return {
+        "name": clean_channel_name(title, PurePath(name).suffix or ".mp4") or name
+        if title
+        else name,
+        "original_name": name,
+        "size": size,
+        "mime": mime,
+        "media_key": f"bot:{media.get('file_unique_id') or file_id}",
+        "remote_version": date,
+        "created_at": date,
+    }, file_id
+
+
 class ChannelSyncService:
     def __init__(self, db: Database, storage: TelegramStorage, settings: Settings):
         self.db, self.storage, self.settings = db, storage, settings
@@ -143,6 +192,10 @@ class ChannelSyncService:
         self._unsubscribe = None
         self._album_lock = asyncio.Lock()
         self._albums: OrderedDict[int, list[Any]] = OrderedDict()
+        token = settings.tg_bot_fallback_token
+        self.bot = TelegramBot(token) if token else None
+        self.bot_state: str | None = None
+        self.bot_error: str | None = None
         self.state = "disabled" if not settings.channel_sync_enabled else "unavailable"
         self.running = False
         self.scanned = 0
@@ -164,8 +217,11 @@ class ChannelSyncService:
         if storage_status.get("auth_required"):
             self.state = "auth_required"
             self.last_error = storage_status["error"]
+            self._start_bot()
             return
         if not storage_status["connected"] or not hasattr(self.storage, "subscribe_channel"):
+            self.state = "unavailable"
+            self._start_bot()
             return
         self._unsubscribe = await self.storage.subscribe_channel(
             self.on_message, self.on_edit, self.on_delete
@@ -175,13 +231,60 @@ class ChannelSyncService:
         self._worker = asyncio.create_task(self._loop(), name="channel-sync")
 
     def request_scan(self, full: bool = False) -> bool:
-        if not self._worker or self._worker.done():
+        if self.bot_state or not self._worker or self._worker.done():
             return False
         if self.running and not full:
             return False
         self._full = self._full or full
         self._wake.set()
         return True
+
+    def _start_bot(self) -> None:
+        if self.bot:
+            self.bot_state = "connecting"
+            self._worker = asyncio.create_task(self._poll_bot(self.bot), name="channel-sync-bot")
+
+    async def _poll_bot(self, bot: TelegramBot) -> None:
+        self.bot_state = "connecting"
+        chat = self.storage.chat
+        if not isinstance(chat, int) or chat >= 0:
+            self.bot_state = "error"
+            self.bot_error = "备用 Bot 需要原存储频道的数字 ID，请检查 TG_CHAT_ID。"
+            return
+        offset = None
+        verified_until = 0.0
+        while True:
+            try:
+                if time.monotonic() >= verified_until:
+                    await bot.check_channel(chat)
+                    verified_until = time.monotonic() + 300
+                updates = await bot.updates(offset)
+                self.bot_state = "listening"
+                self.bot_error = None
+                offset = None  # The server has confirmed the previous batch.
+                for update in updates:
+                    post = update.get("channel_post") or {}
+                    if post.get("chat", {}).get("id") == chat:
+                        self._ingest_bot_post(bot, post)
+                    offset = update["update_id"] + 1
+            except BotAPIError as exc:
+                self.bot_state = "error"
+                self.bot_error = str(exc)
+                await asyncio.sleep(max(5, exc.retry_after))
+            except Exception as exc:
+                self.bot_state = "error"
+                self.bot_error = "备用 Bot 收录失败，稍后重试。"
+                logger.warning("Bot channel import failed (%s)", type(exc).__name__)
+                await asyncio.sleep(5)
+
+    def _ingest_bot_post(self, bot: TelegramBot, post: dict) -> None:
+        described = describe_bot_post(post)
+        if described:
+            file, file_id = described
+            mid = int(post["message_id"])
+            if self.db.import_bot_file(self.chat_id, mid, file, bot.id, file_id):
+                self.revision += 1
+                self.imported += 1
 
     def ingest(
         self, message: Any, scan_run: str | None = None, album_messages: list[Any] | None = None
@@ -368,6 +471,8 @@ class ChannelSyncService:
             except asyncio.CancelledError:
                 raise
             except SESSION_AUTH_ERRORS:
+                if self.bot:
+                    await self._poll_bot(self.bot)
                 return
             except Exception:
                 self._full = self._full or full
@@ -378,6 +483,8 @@ class ChannelSyncService:
         if self._worker:
             self._worker.cancel()
             await asyncio.gather(self._worker, return_exceptions=True)
+        self.bot_state = None
+        self.bot_error = None
         self.state = "stopped"
 
     def status(self) -> dict[str, Any]:
@@ -395,5 +502,7 @@ class ChannelSyncService:
             "revision": self.revision,
             "last_success": self.last_success,
             "error": self.last_error,
+            "bot_state": self.bot_state,
+            "bot_error": self.bot_error,
             "interval": self.settings.channel_sync_interval,
         }

@@ -15,6 +15,7 @@ from app.auth import require_auth
 from app.config import Settings
 from app.db import Database
 from app.ranges import parse_range
+from app.services.telegram_bot import MAX_BOT_DOWNLOAD, BotAPIError
 from app.storage import TelegramStorage
 
 router = APIRouter(tags=["files"])
@@ -63,9 +64,18 @@ async def stream_item(
 ) -> Response:
     if item["kind"] != "file":
         raise HTTPException(400, "只能下载文件")
-    if not storage.status()["connected"]:
-        raise HTTPException(503, storage.error or "Telegram 尚未连接")
     size = int(item["size"])
+    bot = None
+    bot_file_id = None
+    if not storage.status()["connected"]:
+        bot = getattr(request.state.telegram_runtime.sync, "bot", None)
+        if not bot:
+            raise HTTPException(503, storage.error or "Telegram 尚未连接")
+        bot_file_id = db.bot_file_id(item["id"], bot.id)
+        if not bot_file_id:
+            raise HTTPException(503, "此文件需要个人 Telegram 会话下载。")
+        if size > MAX_BOT_DOWNLOAD:
+            raise HTTPException(503, "此文件超过 Bot API 的 20 MB 下载上限，需要个人会话。")
     start, end, partial = parse_range(request.headers.get("range"), size)
     length = end - start
     mime = item.get("mime") or mimetypes.guess_type(item["name"])[0] or "application/octet-stream"
@@ -87,6 +97,13 @@ async def stream_item(
         headers["Content-Range"] = f"bytes {start}-{end - 1}/{size}"
     if request.method == "HEAD":
         return Response(status_code=206 if partial else 200, media_type=mime, headers=headers)
+    if bot and bot_file_id:
+        try:
+            data, received = await bot.read(bot_file_id, size, start, end)
+        except BotAPIError as exc:
+            raise HTTPException(502, str(exc)) from None
+        request.app.state.traffic.record("telegram", inbound=received)
+        return Response(data, status_code=206 if partial else 200, media_type=mime, headers=headers)
     return StreamingResponse(
         iter_item_range(db, storage, item, start, end),
         status_code=206 if partial else 200,
@@ -111,12 +128,17 @@ async def download_file(
 @auth_router.get("/files/{item_id}/thumbnail")
 async def file_thumbnail(
     item_id: str,
+    request: Request,
     db: Database = Depends(get_db),
     storage: TelegramStorage = Depends(get_storage),
 ) -> Response:
     item = db.get_item(item_id)
     if not item or item.get("category") != "video":
         raise HTTPException(404, "视频不存在")
+    if not storage.status()["connected"] and getattr(
+        request.state.telegram_runtime.sync, "bot", None
+    ):
+        raise HTTPException(404, "备用 Bot 暂无视频封面")
     parts = db.get_parts(item_id)
     if not parts:
         raise HTTPException(404, "没有封面")
