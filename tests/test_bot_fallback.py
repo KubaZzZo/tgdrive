@@ -17,8 +17,9 @@ from app.services.channel_sync import describe_bot_post
 
 
 @pytest.mark.parametrize("session_starts_connected", [False, True])
+@pytest.mark.parametrize("size", [5, telegram_bot.MAX_BOT_DOWNLOAD + 1])
 def test_bot_fallback_imports_once_and_serves_byte_ranges(
-    workdir, monkeypatch, session_starts_connected
+    workdir, monkeypatch, session_starts_connected, size
 ):
     class Storage(FakeTelegramStorage):
         async def start(self):
@@ -39,8 +40,14 @@ def test_bot_fallback_imports_once_and_serves_byte_ranges(
         "chat": {"id": storage.chat},
         "message_id": 5,
         "date": 1_780_000_000,
-        "document": {"file_id": "bot-file", "file_size": 5, "file_name": "example.txt"},
+        "video": {
+            "file_id": "bot-file",
+            "file_size": size,
+            "file_name": "example.mp4",
+            "cover": [{"file_id": "cover-file", "width": 320, "height": 180}],
+        },
     }
+    original = {**post, "video": {k: v for k, v in post["video"].items() if k != "cover"}}
     offsets = []
 
     async def telegram(request):
@@ -58,8 +65,8 @@ def test_bot_fallback_imports_once_and_serves_byte_ranges(
                 json={
                     "ok": True,
                     "result": [
-                        {"update_id": 1, "channel_post": post},
-                        {"update_id": 2, "channel_post": post},
+                        {"update_id": 1, "channel_post": original},
+                        {"update_id": 2, "channel_post": original},
                         {"update_id": 3, "channel_post": {**post, "chat": {"id": -10099}}},
                         {
                             "update_id": 4,
@@ -69,12 +76,22 @@ def test_bot_fallback_imports_once_and_serves_byte_ranges(
                                 "caption": "tgdrive:v1:upload:0",
                             },
                         },
+                        {
+                            "update_id": 5,
+                            "edited_channel_post": {**post, "edit_date": post["date"] + 1},
+                        },
                     ],
                 },
             )
         if method == "getFile":
+            if params == {"file_id": "cover-file"}:
+                return httpx.Response(
+                    200, json={"ok": True, "result": {"file_path": "photos/cover"}}
+                )
             assert params == {"file_id": "bot-file"}
             return httpx.Response(200, json={"ok": True, "result": {"file_path": "documents/test"}})
+        if method == "cover":
+            return httpx.Response(200, content=b"\xff\xd8\xffcover")
         assert request.headers["range"] == "bytes=1-2"
         return httpx.Response(200, content=b"hello")
 
@@ -94,13 +111,19 @@ def test_bot_fallback_imports_once_and_serves_byte_ranges(
         status = client.get("/api/sync").json()
         assert status["bot_state"] == "listening" and status["files"] == 1
         assert status["state"] == ("auth_required" if session_starts_connected else "unavailable")
-        assert offsets == [None, 5]
+        assert offsets == [None, 6]
         assert app.state.db.channel_cursor(str(storage.chat)) == 0
         ready = client.get("/api/health/ready")
         assert ready.status_code == 200 and ready.json()["checks"]["telegram"] == "bot_fallback"
         assert client.post("/api/sync", json={"full": True}).status_code == 409
         [item] = client.get("/api/items").json()["items"]
+        thumbnail = client.get(f"/api/files/{item['id']}/thumbnail")
+        assert thumbnail.status_code == 200 and thumbnail.content == b"\xff\xd8\xffcover"
+        assert thumbnail.headers["content-type"] == "image/jpeg"
         url = f"/api/files/{item['id']}/download"
+        if size > telegram_bot.MAX_BOT_DOWNLOAD:
+            assert client.get(url, headers={"Range": "bytes=1-2"}).status_code == 503
+            return
         assert client.head(url).headers["content-length"] == "5"
         response = client.get(url, headers={"Range": "bytes=1-2"})
         assert response.status_code == 206 and response.content == b"el"
@@ -109,7 +132,7 @@ def test_bot_fallback_imports_once_and_serves_byte_ranges(
 def test_bot_file_is_reconciled_by_primary_without_losing_the_local_name(workdir):
     db = Database(workdir / "bot.sqlite3")
     try:
-        descriptor, file_id = describe_bot_post(
+        descriptor, file_id, _cover_id = describe_bot_post(
             {
                 "message_id": 5,
                 "date": 1_780_000_000,

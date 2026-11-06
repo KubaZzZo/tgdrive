@@ -38,7 +38,7 @@ function open(item: DriveItem): void {
       </div>
       <button class="file-card-open" type="button" :title="item.name" @click="open(item)">
         <span class="file-art" :class="item.kind === 'folder' ? 'folder' : item.category"
-          ><VideoCover v-if="item.category === 'video'" :item="item" /><AppIcon v-else
+          ><VideoCover v-if="item.category === 'video'" :key="item.updated_at" :item="item" /><AppIcon v-else
             :name="item.kind === 'folder' ? 'folder' : (item.category ?? 'document')"
             :size="40"
         /></span>
@@ -68,7 +68,7 @@ function open(item: DriveItem): void {
               <span
                 class="file-art small"
                 :class="item.kind === 'folder' ? 'folder' : item.category"
-                ><VideoCover v-if="item.category === 'video'" :item="item" /><AppIcon v-else
+                ><VideoCover v-if="item.category === 'video'" :key="item.updated_at" :item="item" /><AppIcon v-else
                   :name="item.kind === 'folder' ? 'folder' : (item.category ?? 'document')"
                   :size="22"
               /></span>

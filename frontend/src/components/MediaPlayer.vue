@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { mediaFailure } from '@/api/client'
 import { mediaTime, playbackPosition, savePlayback } from '@/utils/playback'
 import { attachMedia, bufferedSeek, type MediaSession } from '@/utils/fragmentedMp4'
 import { cacheVideo, cachedVideo, clearVideoCache, deviceCacheAvailable } from '@/utils/deviceCache'
@@ -58,6 +59,7 @@ let disposed = false
 let session: MediaSession | undefined
 let setup: Promise<void> | undefined
 let controller = new AbortController()
+let failureCheck: AbortSignal | undefined
 const streaming = ref(false)
 const pipAvailable = computed(
   () =>
@@ -163,16 +165,29 @@ function failed(): void {
   if (disposed) return
   const code = player.value?.error?.code
   if (!code) return
-  loading.value = false
-  error.value =
+  reportFailure(
     code === 2
-      ? '视频传输中断，请重试加载。'
-      : '浏览器无法播放此文件的格式或编码，可以下载后使用本地播放器观看。'
+      ? '媒体传输中断，请重试加载。'
+      : '浏览器无法解码此文件，可以下载后使用本地播放器观看。',
+  )
+}
+function reportFailure(fallback: string): void {
+  const signal = controller.signal
+  if (signal.aborted || disposed) return
+  loading.value = false
+  if (localFile) { error.value = fallback; return }
+  if (failureCheck === signal) return
+  failureCheck = signal
+  error.value = '正在检查媒体来源…'
+  void mediaFailure(props.src, fallback, signal).then(message => {
+    if (!signal.aborted && !disposed) error.value = message
+  })
 }
 function start(): void {
   controller.abort()
   session?.dispose()
   controller = new AbortController()
+  error.value = ''
   const signal = controller.signal
   const media = player.value
   if (!media) return
@@ -190,15 +205,12 @@ function start(): void {
     return
   }
   setup = attachMedia(media, props.src, signal, () => {
-    if (!signal.aborted) {
-      loading.value = false
-      error.value = '视频流加载失败，请重试；若仍失败，可切换播放方式。'
-    }
+    if (!signal.aborted) reportFailure('视频流加载失败，请重试；若仍失败，可切换播放方式。')
   }, { file: localFile, bufferSeconds: () => bufferSeconds.value }).then(value => {
     if (signal.aborted) value.dispose()
     else { session = value; streaming.value = value.streaming }
   }).catch(() => {
-    if (!signal.aborted) { loading.value = false; error.value = '视频加载失败，请重试。' }
+    if (!signal.aborted) reportFailure('视频加载失败，请重试。')
   })
 }
 function retry(): void {

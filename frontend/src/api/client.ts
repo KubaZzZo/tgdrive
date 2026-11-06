@@ -44,6 +44,20 @@ function errorMessage(payload: unknown, fallback: string): string {
   return fallback
 }
 
+export async function mediaFailure(url: string, fallback: string, signal: AbortSignal): Promise<string> {
+  try {
+    const options = { signal, credentials: 'same-origin' as const, cache: 'no-store' as const }
+    const response = await fetch(url, { ...options, headers: { Range: 'bytes=0-0' } })
+    if (response.ok) {
+      void response.body?.cancel().catch(() => {})
+      return fallback
+    }
+    return errorMessage(await parsePayload(response), `媒体读取失败 (${response.status})`)
+  } catch {
+    return '无法连接媒体服务，请检查网络后重试。'
+  }
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers)
   headers.set('Accept', 'application/json')
@@ -136,7 +150,11 @@ export async function uploadChunk(
 }
 
 export const api = {
-  thumbnailUrl: (itemId: string) => `/api/files/${encodeURIComponent(itemId)}/thumbnail${workspaceId ? '?workspace_id=' + encodeURIComponent(workspaceId) : ''}`,
+  thumbnailUrl: (itemId: string, version: string) => {
+    const query = new URLSearchParams({ v: version })
+    if (workspaceId) query.set('workspace_id', workspaceId)
+    return `/api/files/${encodeURIComponent(itemId)}/thumbnail?${query}`
+  },
   telegramAccounts: () => request<TelegramAccountStatus>('/api/telegram'),
   telegramLogin: () => request<TelegramLogin>('/api/telegram/login', { method: 'POST' }),
   telegramLoginStatus: (id: string) => request<TelegramLogin>(`/api/telegram/login/${encodeURIComponent(id)}`),

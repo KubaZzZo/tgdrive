@@ -7,6 +7,7 @@ from urllib.parse import quote
 import httpx
 
 MAX_BOT_DOWNLOAD = 20 * 1024 * 1024
+MAX_BOT_COVER = 2 * 1024 * 1024
 BOT_API = "https://api.telegram.org"
 
 
@@ -48,23 +49,46 @@ class TelegramBot:
             raise BotAPIError("备用 Bot 未加入当前频道，请将它添加为频道管理员。")
 
     async def updates(self, offset: int | None) -> list[dict]:
-        params: dict[str, Any] = {"timeout": 20, "allowed_updates": ["channel_post"]}
+        params: dict[str, Any] = {
+            "timeout": 20,
+            "allowed_updates": ["channel_post", "edited_channel_post"],
+        }
         if offset is not None:
             params["offset"] = offset
         return await self.call("getUpdates", **params)
 
-    async def read(self, file_id: str, size: int, start: int, end: int) -> tuple[bytes, int]:
+    async def _file_url(self, file_id: str) -> str:
         file = await self.call("getFile", file_id=file_id)
         path = file.get("file_path")
         if not path:
             raise BotAPIError("Telegram 未提供备用下载地址。")
+        return f"{BOT_API}/file/bot{self._token}/{quote(path)}"
+
+    async def thumbnail(self, file_id: str) -> bytes:
+        url = await self._file_url(file_id)
+        try:
+            async with (
+                httpx.AsyncClient(timeout=15) as client,
+                client.stream("GET", url) as response,
+            ):
+                if response.status_code != 200:
+                    raise BotAPIError("Telegram Bot 封面读取失败。")
+                data = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(data) + len(chunk) > MAX_BOT_COVER:
+                        raise BotAPIError("Telegram Bot 封面超过大小限制。")
+                    data.extend(chunk)
+        except httpx.HTTPError:
+            raise BotAPIError("Telegram Bot 封面读取失败。") from None
+        return bytes(data)
+
+    async def read(self, file_id: str, size: int, start: int, end: int) -> tuple[bytes, int]:
+        url = await self._file_url(file_id)
         headers = {"Range": f"bytes={start}-{end - 1}"} if end - start < size else {}
         try:
             async with (
                 httpx.AsyncClient(timeout=30) as client,
-                client.stream(
-                    "GET", f"{BOT_API}/file/bot{self._token}/{quote(path)}", headers=headers
-                ) as response,
+                client.stream("GET", url, headers=headers) as response,
             ):
                 partial = response.status_code == 206
                 expected = end - start if partial else size

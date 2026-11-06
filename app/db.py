@@ -10,7 +10,7 @@ from typing import Any
 
 from app.categories import CATEGORY_LABELS, classify_file, effective_mime
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 
 def utcnow() -> str:
@@ -200,6 +200,14 @@ class Database:
                         bot_id TEXT NOT NULL, file_id TEXT NOT NULL,
                         remote_version TEXT NOT NULL, size INTEGER NOT NULL)""")
                     self.conn.execute("PRAGMA user_version=8")
+
+            if current < 9:
+                with self.conn:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    self.conn.execute("""CREATE TABLE IF NOT EXISTS channel_bot_covers (
+                        item_id TEXT PRIMARY KEY REFERENCES channel_bot_files(item_id) ON DELETE CASCADE,
+                        file_id TEXT NOT NULL)""")
+                    self.conn.execute("PRAGMA user_version=9")
 
     def telegram_profiles(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -760,14 +768,24 @@ class Database:
             return True
 
     def import_bot_file(
-        self, chat_id: str, message_id: int, file: dict[str, Any], bot_id: str, file_id: str
+        self,
+        chat_id: str,
+        message_id: int,
+        file: dict[str, Any],
+        bot_id: str,
+        file_id: str,
+        cover_id: str | None = None,
     ) -> bool:
         with self._lock:
-            sql = "SELECT item_id, state, remote_version FROM channel_messages WHERE chat_id=? AND message_id=?"
+            sql = "SELECT item_id, state, remote_version, media_key FROM channel_messages WHERE chat_id=? AND message_id=?"
             params = (chat_id, message_id)
             seen = self.conn.execute(sql, params).fetchone()
             changed = False
-            if not seen:
+            if not seen or (
+                seen["state"] == "imported"
+                and seen["media_key"] == file["media_key"]
+                and seen["remote_version"] < file["remote_version"]
+            ):
                 changed = self.import_channel_file(chat_id, message_id, file)
                 seen = self.conn.execute(sql, params).fetchone()
             if (
@@ -776,23 +794,37 @@ class Database:
                 and seen["state"] == "imported"
                 and seen["remote_version"] == file["remote_version"]
             ):
+                item_id = seen["item_id"]
+                old_cover = self.conn.execute(
+                    "SELECT file_id FROM channel_bot_covers WHERE item_id=?", (item_id,)
+                ).fetchone()
                 with self.conn:
                     self.conn.execute(
                         "INSERT OR REPLACE INTO channel_bot_files VALUES (?,?,?,?,?)",
-                        (seen["item_id"], bot_id, file_id, file["remote_version"], file["size"]),
+                        (item_id, bot_id, file_id, file["remote_version"], file["size"]),
                     )
+                    if cover_id:
+                        self.conn.execute(
+                            "INSERT INTO channel_bot_covers VALUES (?,?)", (item_id, cover_id)
+                        )
+                    if cover_id != (old_cover[0] if old_cover else None):
+                        self.conn.execute(
+                            "UPDATE items SET updated_at=? WHERE id=?", (utcnow(), item_id)
+                        )
+                        changed = True
             return changed
 
-    def bot_file_id(self, item_id: str, bot_id: str) -> str | None:
+    def bot_file_id(self, item_id: str, bot_id: str, *, cover: bool = False) -> str | None:
         with self._lock:
             row = self.conn.execute(
-                """SELECT b.file_id FROM channel_bot_files b JOIN channel_messages m USING (item_id)
+                """SELECT b.file_id, c.file_id FROM channel_bot_files b JOIN channel_messages m USING (item_id)
                 JOIN items i ON i.id=b.item_id
+                LEFT JOIN channel_bot_covers c ON c.item_id=b.item_id
                 WHERE b.item_id=? AND b.bot_id=? AND m.state='imported'
                 AND b.remote_version=m.remote_version AND b.size=i.size""",
                 (item_id, bot_id),
             ).fetchone()
-            return row[0] if row else None
+            return row[1 if cover else 0] if row else None
 
     def remove_channel_messages(self, chat_id: str, message_ids: list[int]) -> int:
         removed = 0

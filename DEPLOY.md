@@ -200,4 +200,4 @@ ExecStart=/usr/bin/python3 /opt/tgdrive/scripts/traffic_collector.py --state /op
 
 Bot 备用通道只处理新帖。能够下载已收录且取得 Bot 文件标识的文件，大小上限为 20 MB。历史回扫和网页上传需要个人会话。不要让另一个服务同时轮询这个 Bot 或为它设置 webhook。
 
-本次升级新增 SQLite schema v8，用于保存 Bot 文件标识。升级前按第 6 节备份数据；旧程序拒绝打开 schema v8。
+SQLite schema v8 保存 Bot 文件标识，v9 增加 Bot 视频封面。升级前按第 6 节备份数据；旧程序拒绝打开更高版本的数据库。

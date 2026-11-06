@@ -135,19 +135,33 @@ async def file_thumbnail(
     item = db.get_item(item_id)
     if not item or item.get("category") != "video":
         raise HTTPException(404, "视频不存在")
-    if not storage.status()["connected"] and getattr(
-        request.state.telegram_runtime.sync, "bot", None
-    ):
-        raise HTTPException(404, "备用 Bot 暂无视频封面")
-    parts = db.get_parts(item_id)
-    if not parts:
-        raise HTTPException(404, "没有封面")
-    data = await storage.thumbnail(int(parts[0]["tg_message_id"]))
+    bot = getattr(request.state.telegram_runtime.sync, "bot", None)
+    cover_id = db.bot_file_id(item_id, bot.id, cover=True) if bot else None
+    data = None
+    mime = "image/jpeg"
+    connected = storage.status()["connected"]
+    if bot and cover_id:
+        try:
+            cover = await bot.thumbnail(cover_id)
+            request.app.state.traffic.record("telegram", inbound=len(cover))
+            if cover.startswith(b"\xff\xd8\xff"):
+                data = cover
+            elif cover.startswith(b"\x89PNG\r\n\x1a\n"):
+                data, mime = cover, "image/png"
+            elif cover.startswith(b"RIFF") and cover[8:12] == b"WEBP":
+                data, mime = cover, "image/webp"
+        except BotAPIError as exc:
+            if not connected:
+                raise HTTPException(502, str(exc)) from None
+    if not data and connected:
+        parts = db.get_parts(item_id)
+        if parts:
+            data = await storage.thumbnail(int(parts[0]["tg_message_id"]))
     if not data:
         raise HTTPException(404, "Telegram 未提供封面")
     return Response(
         data,
-        media_type="image/jpeg",
+        media_type=mime,
         headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"},
     )
 

@@ -19,7 +19,7 @@ from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 from app.categories import effective_mime
 from app.config import Settings
 from app.db import Database
-from app.services.telegram_bot import BotAPIError, TelegramBot
+from app.services.telegram_bot import MAX_BOT_COVER, BotAPIError, TelegramBot
 from app.storage import SESSION_AUTH_ERRORS, TelegramStorage
 
 logger = logging.getLogger("tgdrive.sync")
@@ -135,7 +135,7 @@ def describe_message(
     }
 
 
-def describe_bot_post(post: dict) -> tuple[dict, str] | None:
+def describe_bot_post(post: dict) -> tuple[dict, str, str | None] | None:
     caption = post.get("caption", "")
     if caption.startswith("tgdrive:v1:"):
         return None
@@ -170,17 +170,27 @@ def describe_bot_post(post: dict) -> tuple[dict, str] | None:
     mime = effective_mime(name, media.get("mime_type") or default_mime)
     title = caption_title(caption) if mime.startswith("video/") else ""
     date = datetime.fromtimestamp(post["date"], UTC).isoformat()
-    return {
-        "name": clean_channel_name(title, PurePath(name).suffix or ".mp4") or name
-        if title
-        else name,
-        "original_name": name,
-        "size": size,
-        "mime": mime,
-        "media_key": f"bot:{media.get('file_unique_id') or file_id}",
-        "remote_version": date,
-        "created_at": date,
-    }, file_id
+    version = datetime.fromtimestamp(post.get("edit_date") or post["date"], UTC).isoformat()
+    covers = [
+        photo for photo in media.get("cover", []) if (photo.get("file_size") or 0) <= MAX_BOT_COVER
+    ]
+    cover = min(covers, key=lambda photo: abs(photo.get("width", 320) - 320), default=None)
+    cover_id = (cover or media.get("thumbnail") or {}).get("file_id")
+    return (
+        {
+            "name": clean_channel_name(title, PurePath(name).suffix or ".mp4") or name
+            if title
+            else name,
+            "original_name": name,
+            "size": size,
+            "mime": mime,
+            "media_key": f"bot:{media.get('file_unique_id') or file_id}",
+            "remote_version": version,
+            "created_at": date,
+        },
+        file_id,
+        cover_id,
+    )
 
 
 class ChannelSyncService:
@@ -263,7 +273,7 @@ class ChannelSyncService:
                 self.bot_error = None
                 offset = None  # The server has confirmed the previous batch.
                 for update in updates:
-                    post = update.get("channel_post") or {}
+                    post = update.get("channel_post") or update.get("edited_channel_post") or {}
                     if post.get("chat", {}).get("id") == chat:
                         self._ingest_bot_post(bot, post)
                     offset = update["update_id"] + 1
@@ -280,9 +290,9 @@ class ChannelSyncService:
     def _ingest_bot_post(self, bot: TelegramBot, post: dict) -> None:
         described = describe_bot_post(post)
         if described:
-            file, file_id = described
+            file, file_id, cover_id = described
             mid = int(post["message_id"])
-            if self.db.import_bot_file(self.chat_id, mid, file, bot.id, file_id):
+            if self.db.import_bot_file(self.chat_id, mid, file, bot.id, file_id, cover_id):
                 self.revision += 1
                 self.imported += 1
 
