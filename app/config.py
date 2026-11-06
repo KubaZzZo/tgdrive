@@ -110,6 +110,17 @@ class Settings:
         return "请在 .env 配置 TG_API_ID、TG_API_HASH、TG_CHAT_ID，并运行 scripts/login_qr.py"
 
     @property
+    def telegram_login_error(self) -> str | None:
+        if self.tg_api_id in {4, 6}:
+            return (
+                "当前使用 Telegram Android 的共享 API ID。请在 my.telegram.org 申请自己的 "
+                "API ID 和 API Hash，更新 .env 中的 TG_API_ID 和 TG_API_HASH 后重启应用。"
+            )
+        if self.tg_api_id <= 0 or not self.tg_api_hash:
+            return "请先在 .env 配置 TG_API_ID 和 TG_API_HASH 后重启应用。"
+        return None
+
+    @property
     def index_file(self) -> Path:
         return self.frontend_dist / "index.html"
 

@@ -3,7 +3,7 @@ export interface TelegramIdentity { id: number; username: string | null; first_n
 export interface TelegramProfile { id: string; chat_id: string; user_id: number; username: string | null; first_name: string | null; title: string }
 export interface TelegramAccountStatus {
   active_id: string | null; account: TelegramIdentity | null; chat_id: string; connected: boolean
-  can_login: boolean; switching: boolean; profiles: TelegramProfile[]
+  can_login: boolean; login_error: string | null; switching: boolean; profiles: TelegramProfile[]
 }
 export interface TelegramLogin {
   id: string; state: 'connecting' | 'waiting' | 'checking' | 'password' | 'ready' | 'error' | 'expired' | 'canceled'

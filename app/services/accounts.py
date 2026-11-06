@@ -15,7 +15,13 @@ import qrcode
 from fastapi import HTTPException
 from starlette.responses import JSONResponse
 from telethon import TelegramClient, events, functions, types, utils
-from telethon.errors import FloodWaitError, PasswordHashInvalidError, SessionPasswordNeededError
+from telethon.errors import (
+    ApiIdInvalidError,
+    ApiIdPublishedFloodError,
+    FloodWaitError,
+    PasswordHashInvalidError,
+    SessionPasswordNeededError,
+)
 from telethon.tl.types import Channel
 
 from app.config import Settings
@@ -104,12 +110,14 @@ class AccountManager:
 
     def status(self) -> dict:
         active = self.control.active_telegram_profile()
+        login_error = self.settings.telegram_login_error
         return {
             "active_id": active["id"] if active else None,
             "account": self.identity,
             "chat_id": str(self.current.storage.chat or ""),
             "connected": self.current.storage.status()["connected"],
-            "can_login": bool(self.settings.tg_api_id and self.settings.tg_api_hash),
+            "can_login": login_error is None,
+            "login_error": login_error,
             "switching": self.switching,
             "profiles": [
                 {k: v for k, v in p.items() if k != "session_key"}
@@ -128,8 +136,8 @@ class AccountManager:
 
     async def begin(self) -> dict:
         async with self.lock:
-            if not self.settings.tg_api_id or not self.settings.tg_api_hash:
-                raise HTTPException(409, "请先配置 TG_API_ID 和 TG_API_HASH")
+            if error := self.settings.telegram_login_error:
+                raise HTTPException(409, error)
             at_limit = len(self.control.telegram_profiles()) >= 10
             if at_limit and not self.current.storage.status().get("auth_required"):
                 raise HTTPException(409, "最多保存 10 个账号/频道组合，请先使用已有连接")
@@ -218,6 +226,18 @@ class AccountManager:
                 job.update(state="checking", qr_image=None)
         except SessionPasswordNeededError:
             job.update(state="password", qr_image=None)
+        except ApiIdInvalidError:
+            job.update(
+                state="error",
+                qr_image=None,
+                error="Telegram 拒绝了应用凭据，请核对 TG_API_ID 和 TG_API_HASH 是否属于同一应用。",
+            )
+        except ApiIdPublishedFloodError:
+            job.update(
+                state="error",
+                qr_image=None,
+                error="Telegram 限制了公开的 API ID，请使用在 my.telegram.org 申请的应用凭据。",
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:

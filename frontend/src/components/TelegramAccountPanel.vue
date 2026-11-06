@@ -186,7 +186,7 @@ onBeforeUnmount(() => { generation++; clearTimeout(timer); password.value = '' }
         </div>
       </div>
       <button v-if="!loginActive" class="primary" :disabled="busy || !account?.can_login" @click="begin">{{ busy ? '连接中…' : authRequired ? '重新扫码登录' : account?.active_id && !connected ? '重新扫码连接' : '扫码添加账号与频道' }}</button>
-      <p v-if="account && !account.can_login" class="form-error">请先配置 TG_API_ID 和 TG_API_HASH 后重启应用。</p>
+      <p v-if="account?.login_error" class="form-error" role="alert">{{ account.login_error }}</p>
       <template v-if="job">
         <p v-if="job.state === 'connecting'" role="status">正在连接 Telegram…</p>
         <p v-if="job.state === 'checking'" role="status">正在检查扫码与验证状态…</p>
