@@ -24,7 +24,13 @@ async function firstFrame(): Promise<void> {
   if (controller) return
   controller = new AbortController()
   const signal = controller.signal
-  try { release = await acquireCoverSlot(signal); signal.throwIfAborted() }
+  const url = api.downloadUrl(props.item.id)
+  try {
+    release = await acquireCoverSlot(signal)
+    const response = await fetch(url, { method: 'HEAD', signal })
+    signal.throwIfAborted()
+    if (!response.ok) { stop(); return }
+  }
   catch { stop(); return }
   video = document.createElement('video')
   video.muted = true; video.playsInline = true; video.preload = 'auto'
@@ -41,7 +47,7 @@ async function firstFrame(): Promise<void> {
   }, { once: true })
   timer = setTimeout(stop, 20000)
   try {
-    const value = await attachMedia(video, api.downloadUrl(props.item.id), signal, stop)
+    const value = await attachMedia(video, url, signal, stop)
     if (signal.aborted) value.dispose()
     else session = value
   } catch { stop() }
@@ -49,7 +55,7 @@ async function firstFrame(): Promise<void> {
 onMounted(() => {
   observer = new IntersectionObserver(entries => {
     if (entries.some(entry => entry.isIntersecting)) {
-      image.value = api.thumbnailUrl(props.item.id)
+      image.value = api.thumbnailUrl(props.item.id, props.item.updated_at)
       observer?.disconnect()
     }
   })

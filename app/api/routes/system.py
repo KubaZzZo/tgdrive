@@ -53,19 +53,22 @@ async def health_live() -> dict[str, str]:
 
 @router.get("/health/ready")
 async def health_ready(
+    request: Request,
     db: Database = Depends(get_db),
     storage: TelegramStorage = Depends(get_storage),
 ) -> JSONResponse:
     db_ok = db.ping()
     storage_status = storage.status()
-    ready = db_ok and bool(storage_status.get("connected"))
+    bot_ready = getattr(request.state.telegram_runtime.sync, "bot_state", None) == "listening"
+    telegram = "ok" if storage_status.get("connected") else "bot_fallback" if bot_ready else "error"
+    ready = db_ok and telegram != "error"
     return JSONResponse(
         status_code=200 if ready else 503,
         content={
             "status": "ready" if ready else "degraded",
             "checks": {
                 "database": "ok" if db_ok else "error",
-                "telegram": "ok" if storage_status.get("connected") else "error",
+                "telegram": telegram,
             },
             "storage_error": storage_status.get("error"),
         },
@@ -79,14 +82,16 @@ class SyncBody(BaseModel):
 
 @router.get("/sync", dependencies=[Depends(require_auth)])
 async def sync_status(request: Request) -> dict:
-    return request.app.state.channel_sync.status()
+    return request.state.telegram_runtime.sync.status()
 
 
 @router.post("/sync", dependencies=[Depends(require_auth)], status_code=202)
 async def request_sync(body: SyncBody, request: Request) -> dict:
-    service = request.app.state.channel_sync
+    service = request.state.telegram_runtime.sync
     if not service.settings.channel_sync_enabled:
         raise HTTPException(409, "频道同步已关闭")
+    if service.bot_state:
+        raise HTTPException(409, "备用 Bot 会自动收录新频道消息，历史扫描需要个人会话。")
     if service.state == "auth_required":
         raise HTTPException(409, service.last_error)
     if service.state in {"unavailable", "stopped"}:

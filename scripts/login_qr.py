@@ -17,10 +17,8 @@ from app.network import get_proxy  # noqa: E402
 
 
 async def main() -> int:
-    if not settings.tg_api_id or not settings.tg_api_hash:
-        print("缺少 TG_API_ID / TG_API_HASH。")
-        print("请先到 https://my.telegram.org -> API development tools 创建应用，")
-        print("把 api_id 和 api_hash 写进项目根目录的 .env。")
+    if error := settings.telegram_login_error:
+        print(error)
         return 2
 
     session_path = str(settings.tg_session)

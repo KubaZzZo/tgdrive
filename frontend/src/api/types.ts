@@ -3,7 +3,7 @@ export interface TelegramIdentity { id: number; username: string | null; first_n
 export interface TelegramProfile { id: string; chat_id: string; user_id: number; username: string | null; first_name: string | null; title: string }
 export interface TelegramAccountStatus {
   active_id: string | null; account: TelegramIdentity | null; chat_id: string; connected: boolean
-  can_login: boolean; switching: boolean; profiles: TelegramProfile[]
+  can_login: boolean; login_error: string | null; switching: boolean; profiles: TelegramProfile[]
 }
 export interface TelegramLogin {
   id: string; state: 'connecting' | 'waiting' | 'checking' | 'password' | 'ready' | 'error' | 'expired' | 'canceled'
@@ -142,9 +142,13 @@ export interface ShareRecord {
 
 export interface SyncStatus {
   enabled: boolean
-  state: 'disabled' | 'unavailable' | 'idle' | 'syncing' | 'error' | 'auth_required' | 'stopped'
+  state: 'disabled' | 'unavailable' | 'idle' | 'syncing' | 'rate_limited' | 'error' | 'auth_required' | 'stopped'
   running: boolean
   scanned: number
+  progress: number | null
+  retry_after: number | null
+  bot_state: 'connecting' | 'listening' | 'error' | null
+  bot_error: string | null
   imported: number
   files: number
   revision: number

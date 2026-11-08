@@ -207,3 +207,11 @@ ExecStart=/usr/bin/python3 /opt/tgdrive/scripts/traffic_collector.py --state /op
 必须同时保存整个 `/data` 卷，包括 `accounts/*.session`、`channels/*.sqlite3` 和初始 session，另备份宿主机 `data/traffic/` 和 `.env`。
 为得到一致的完整备份，应先停止应用，再归档整个数据卷；恢复时也应整组恢复，不能混用不同备份中的映射和频道数据库。
 会话文件等同登录凭证，备份需加密保存，不能提交 Git。切换功能使用单应用进程部署。
+
+## 可选的 Bot 备用同步
+
+将专用于 TG Drive 的 Bot 加入存储频道，在 VPS 的 `.env` 设置 `TG_BOT_FALLBACK_TOKEN`，然后重建应用容器。首次以 Bot 启动时使用频道数字 ID。备用通道通过 HTTP Bot API 长轮询收录新帖子，个人会话恢复后继续完整历史同步。Bot Token 应留在服务器配置中。
+
+Bot 备用通道只处理新帖。能够下载已收录且取得 Bot 文件标识的文件，大小上限为 20 MB。历史回扫和网页上传需要个人会话。不要让另一个服务同时轮询这个 Bot 或为它设置 webhook。
+
+SQLite schema v8 保存 Bot 文件标识，v9 增加 Bot 视频封面。升级前按第 6 节备份数据；旧程序拒绝打开更高版本的数据库。

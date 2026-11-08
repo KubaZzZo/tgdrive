@@ -190,6 +190,20 @@ def test_accounts_require_auth_and_password_validation_does_not_echo(app_client)
     assert "input" not in response.json()["errors"][0]
 
 
+@pytest.mark.parametrize("shared_id", [4, 6])
+def test_qr_login_refuses_shared_android_api_id(workdir, shared_id):
+    app = create_app(make_settings(workdir, tg_api_id=shared_id), storage=FakeTelegramStorage())
+    with TestClient(app) as client:
+        client.post("/api/login", json={"password": "correct-horse-battery-staple"})
+        status = client.get("/api/telegram").json()
+        assert status["can_login"] is False
+        assert "my.telegram.org" in status["login_error"]
+        response = client.post("/api/telegram/login")
+        assert response.status_code == 409
+        assert response.json()["detail"] == status["login_error"]
+        assert app.state.accounts.pending is None
+
+
 def test_qr_refresh_2fa_channel_permissions_and_activation(workdir, fake_telegram):
     async def run():
         app = create_app(make_settings(workdir), storage=FakeTelegramStorage())
@@ -412,10 +426,12 @@ def test_revoked_history_session_requires_qr_login_and_recovers_same_workspace(
         latest_id = 1
 
         def add_event_handler(self, callback, builder):
-            self.scan_handler = callback
+            if isinstance(builder, module.events.Raw):
+                super().add_event_handler(callback, builder)
 
         def remove_event_handler(self, callback, builder=None):
-            self.scan_handler = None
+            if builder is None:
+                super().remove_event_handler(callback)
 
         async def get_messages(self, chat, *, limit):
             if self.reject_history:
@@ -458,8 +474,9 @@ def test_revoked_history_session_requires_qr_login_and_recovers_same_workspace(
 
             login = await manager.begin()
             await until(lambda: manager.pending["state"] == "waiting")
-            await manager.pending["client"].scan()
-            manager.pending["client"].latest_id = 2
+            client = manager.pending["client"]
+            client.latest_id = 2
+            await client.scan()
             await until(lambda: manager.pending["state"] == "ready")
             result = await manager.activate_login(login["id"], chat_id)
             assert result["connected"] and result["active_id"] == active_id
