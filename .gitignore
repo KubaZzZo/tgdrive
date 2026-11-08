@@ -20,6 +20,8 @@ data-*.tgz
 data/
 tmp/
 output/
+# Private deployment notes belong here, never in public documentation.
+docs/local/
 # Python
 __pycache__/
 *.py[cod]

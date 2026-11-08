@@ -25,6 +25,8 @@ sudo bash deploy/bootstrap-ubuntu.sh \
 
 Docker 镜像采用多阶段构建，会自动执行前端 `npm ci && npm run build`，无需在宿主机安装 Node。
 
+接入网站 CDN 或多 CDN 地域调度前，请阅读 [CDN 接入指南](docs/cdn.md)，确认私有接口缓存、视频 Range、流式缓冲和证书设置。实际部署记录与测速产物请保存在已忽略的 `docs/local/` 或 `output/`，不要提交凭据、个人域名或服务器信息。
+
 首次启动后：
 
 ```bash
