@@ -30,3 +30,23 @@ static/dist/
 # 本地浏览器检查产物
 .playwright-cli/
 output/playwright/
+
+# Private runtime files and local deployment records
+.env.*
+!.env.example
+*.session-*
+*.sqlite*
+*.db
+*.db-*
+*.pem
+*.key
+2fa.txt
+login_qr*.png
+compose.vps.yml
+compose.local.yml
+docker-compose.override.yml
+DEPLOYMENT.json
+*-rollback-*.tar.gz
+data-*.tgz
+output/
+docs/local/

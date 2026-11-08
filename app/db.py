@@ -10,7 +10,7 @@ from typing import Any
 
 from app.categories import CATEGORY_LABELS, classify_file, effective_mime
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 
 def utcnow() -> str:
@@ -191,6 +191,46 @@ class Database:
                     # explicitly renamed locally; otherwise last automatic name.
                     self.conn.execute("ALTER TABLE channel_messages ADD COLUMN remote_name TEXT")
                     self.conn.execute("PRAGMA user_version=7")
+
+            if current < 8:
+                with self.conn:
+                    self.conn.execute("""CREATE TABLE IF NOT EXISTS cdn_usage (
+                        uuid TEXT NOT NULL, period TEXT NOT NULL,
+                        charged INTEGER NOT NULL, PRIMARY KEY(uuid, period))""")
+                    self.conn.execute("PRAGMA user_version=8")
+
+    def cdn_observe(self, rows: list[tuple[str, str, int]]) -> None:
+        with self._lock, self.conn:
+            self.conn.executemany(
+                """INSERT INTO cdn_usage VALUES (?,?,?) ON CONFLICT(uuid,period)
+                DO UPDATE SET charged=MAX(charged,excluded.charged)""",
+                rows,
+            )
+
+    def cdn_totals(self) -> dict[tuple[str, str], int]:
+        with self._lock:
+            return {
+                (r["uuid"], r["period"]): r["charged"]
+                for r in self.conn.execute("SELECT * FROM cdn_usage")
+            }
+
+    def cdn_charge(self, limits: list[tuple[str, str, int]], size: int) -> bool:
+        # One transaction protects concurrent streams and separate application workers.
+        with self._lock, self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            for uuid, period, ceiling in limits:
+                row = self.conn.execute(
+                    "SELECT charged FROM cdn_usage WHERE uuid=? AND period=?",
+                    (uuid, period),
+                ).fetchone()
+                if row is None or row[0] + size > ceiling:
+                    return False
+            for uuid, period, _ in limits:
+                self.conn.execute(
+                    "UPDATE cdn_usage SET charged=charged+? WHERE uuid=? AND period=?",
+                    (size, uuid, period),
+                )
+            return True
 
     def telegram_profiles(self) -> list[dict[str, Any]]:
         with self._lock:

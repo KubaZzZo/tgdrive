@@ -196,7 +196,7 @@ function start(): void {
       loading.value = false
       error.value = '视频流加载失败，请重试；若仍失败，可切换播放方式。'
     }
-  }, { file: localFile, bufferSeconds: () => bufferSeconds.value }).then(value => {
+  }, { file: localFile, bufferSeconds: () => bufferSeconds.value, version: props.version }).then(value => {
     if (signal.aborted) value.dispose()
     else { session = value; streaming.value = value.streaming }
   }).catch(() => {

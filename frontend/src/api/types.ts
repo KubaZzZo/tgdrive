@@ -11,7 +11,17 @@ export interface TelegramLogin {
 }
 export interface TelegramChannel { id: string; title: string; writable: boolean }
 export interface TrafficTotals { inbound: number; outbound: number }
+export interface CDNStatus {
+  configured: boolean; available: boolean; stale: boolean; blocked: boolean; warning: boolean
+  error: string | null; updated_at: string | null; warning_percent: number; stop_percent: number
+  subscriptions: {
+    id: string; name: string; period: string; quota_bytes: number | null
+    provider_used: number; used: number; remaining: number | null; percent: number | null
+    usage_updated_at: string; stale: boolean; warning: boolean; blocked: boolean
+  }[]
+}
 export interface TrafficStatus {
+  cdn?: CDNStatus | null
   day: string
   timezone: string
   quota_bytes: number
@@ -132,7 +142,7 @@ export interface ShareRecord {
 
 export interface SyncStatus {
   enabled: boolean
-  state: 'disabled' | 'unavailable' | 'idle' | 'syncing' | 'error' | 'stopped'
+  state: 'disabled' | 'unavailable' | 'idle' | 'syncing' | 'error' | 'auth_required' | 'stopped'
   running: boolean
   scanned: number
   imported: number

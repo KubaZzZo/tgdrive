@@ -6,12 +6,14 @@ import AppIcon from './AppIcon.vue'
 import BaseModal from './BaseModal.vue'
 const sync = useSyncStore()
 const open = ref(false)
+const authRequired = computed(() => sync.status?.state === 'auth_required')
 const label = computed(() =>
-  sync.busy ? '正在同步' : sync.status?.state === 'error' ? '同步异常' : '频道同步',
+  authRequired.value ? '同步需登录' : sync.busy ? '正在同步' : sync.status?.state === 'error' ? '同步异常' : '频道同步',
 )
 const unavailable = computed(
   () =>
     !sync.status?.enabled ||
+    authRequired.value ||
     ['unavailable', 'stopped', 'disabled'].includes(sync.status?.state ?? 'unavailable'),
 )
 function show(): void {
@@ -45,7 +47,7 @@ function show(): void {
       <p v-if="sync.error || sync.status?.error" class="form-error" role="alert">
         {{ sync.error || sync.status?.error }}
       </p>
-      <p v-if="unavailable" class="muted">请确认 Telegram 已连接，且频道同步功能已启用。</p>
+      <p v-if="unavailable && !authRequired" class="muted">请确认 Telegram 已连接，且频道同步功能已启用。</p>
       <p class="muted">
         新消息实时收录，断线后自动补同步。重新扫描历史会补齐遗漏，并更新频道中已删除或更换的文件；网盘自己上传的分段不会重复导入。
       </p>

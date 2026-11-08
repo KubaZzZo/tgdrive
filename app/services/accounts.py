@@ -129,7 +129,8 @@ class AccountManager:
         async with self.lock:
             if not self.settings.tg_api_id or not self.settings.tg_api_hash:
                 raise HTTPException(409, "请先配置 TG_API_ID 和 TG_API_HASH")
-            if len(self.control.telegram_profiles()) >= 10:
+            at_limit = len(self.control.telegram_profiles()) >= 10
+            if at_limit and not self.current.storage.status().get("auth_required"):
                 raise HTTPException(409, "最多保存 10 个账号/频道组合，请先使用已有连接")
             await self._cancel()
             key = uuid.uuid4().hex
@@ -321,10 +322,22 @@ class AccountManager:
             except Exception:
                 raise HTTPException(502, "无法验证频道，请检查频道 ID 和账号权限") from None
             account = job["account"]
+            target_chat_id = str(utils.get_peer_id(entity))
+            active = self.control.active_telegram_profile()
+            replace_active = (
+                active is not None
+                and self.current.storage.status().get("auth_required")
+                and active["chat_id"] == target_chat_id
+                and active["user_id"] in {0, account["id"]}
+            )
+            if not replace_active and len(self.control.telegram_profiles()) >= 10:
+                raise HTTPException(
+                    409, "已达到连接数量上限，请使用原 Telegram 账号并选择原存储频道"
+                )
             profile = {
-                "id": job_id,
+                "id": active["id"] if replace_active else job_id,
                 "session_key": job_id,
-                "chat_id": str(utils.get_peer_id(entity)),
+                "chat_id": target_chat_id,
                 "user_id": account["id"],
                 "username": account["username"],
                 "first_name": account["first_name"],
@@ -353,8 +366,12 @@ class AccountManager:
             if not profile:
                 raise HTTPException(404, "保存的连接不存在")
             active = self.control.active_telegram_profile()
-            if active and active["id"] == profile_id and self.current.storage.status()["connected"]:
-                return self.status()
+            if active and active["id"] == profile_id:
+                storage_status = self.current.storage.status()
+                if storage_status["connected"]:
+                    return self.status()
+                if storage_status.get("auth_required"):
+                    raise HTTPException(409, storage_status["error"])
             settings = account_settings(self.settings, profile)
             if any(
                 getattr(runtime.storage, "settings", None)

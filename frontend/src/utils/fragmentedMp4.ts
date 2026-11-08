@@ -71,6 +71,17 @@ function isBuffered(buffered: TimeRanges, target: number): boolean {
 
 interface Fragment { offset: number; time: number; sync: boolean }
 
+const recentSeekPoints = new Map<string, Map<number, Fragment>>()
+
+function seekPoints(key: string | undefined): Map<number, Fragment> {
+  if (key === undefined) return new Map()
+  const points = recentSeekPoints.get(key) ?? new Map<number, Fragment>()
+  recentSeekPoints.delete(key)
+  recentSeekPoints.set(key, points)
+  if (recentSeekPoints.size > 8) recentSeekPoints.delete(recentSeekPoints.keys().next().value!)
+  return points
+}
+
 function seekTrack(bytes: Uint8Array) {
   const moov = boxes(bytes, 0, bytes.length).find(box => box.type === 'moov')
   if (!moov) return
@@ -98,6 +109,45 @@ function seekTrack(bytes: Uint8Array) {
 }
 
 type SeekTrack = NonNullable<ReturnType<typeof seekTrack>>
+
+interface SegmentIndex { start: number; end: number; keyframes: Fragment[] }
+
+function segmentIndexes(bytes: Uint8Array, track: SeekTrack, size: number): SegmentIndex[] {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const result: SegmentIndex[] = []
+  for (const box of boxes(bytes, 0, bytes.length)) {
+    if (box.type !== 'sidx') continue
+    const version = bytes[box.data]
+    if (version !== 0 && version !== 1) continue
+    const countOffset = box.data + (version === 1 ? 30 : 22)
+    if (countOffset + 2 > box.end || view.getUint32(box.data + 4) !== track.id) continue
+    const scale = view.getUint32(box.data + 8)
+    const count = view.getUint16(countOffset)
+    if (!scale || !count || countOffset + 2 + count * 12 !== box.end) continue
+    const start = version === 1 ? Number(view.getBigUint64(box.data + 12)) : view.getUint32(box.data + 12)
+    let offset = box.end + (version === 1 ? Number(view.getBigUint64(box.data + 20)) : view.getUint32(box.data + 16))
+    let time = start
+    const keyframes: Fragment[] = []
+    let valid = offset >= track.start && offset < size && Number.isSafeInteger(start)
+    for (let entry = countOffset + 2; valid && entry < box.end; entry += 12) {
+      const reference = view.getUint32(entry)
+      const length = reference & 0x7fffffff
+      const duration = view.getUint32(entry + 4)
+      const access = view.getUint32(entry + 8)
+      // Indirect indexes require an extra lookup. Use only direct references.
+      valid = !(reference >>> 31) && length > 0 && duration > 0 && offset + length <= size &&
+        Number.isSafeInteger(time + duration)
+      // FFmpeg can set starts_with_SAP while leaving the type unspecified.
+      const accessType = access >>> 28
+      if (accessType >= 8 && accessType <= 10 && (access & 0x0fffffff) === 0)
+        keyframes.push({ offset, time: time / scale, sync: true })
+      offset += length
+      time += duration
+    }
+    if (valid && keyframes.length) result.push({ start: start / scale, end: time / scale, keyframes })
+  }
+  return result
+}
 
 function fragments(bytes: Uint8Array, offset: number, track: SeekTrack): Fragment[] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
@@ -145,12 +195,22 @@ function fragments(bytes: Uint8Array, offset: number, track: SeekTrack): Fragmen
 
 async function seekOffset(
   target: number, duration: number, size: number, track: SeekTrack, known: Map<number, Fragment>,
+  indexes: SegmentIndex[],
   read: (start: number, end: number) => Promise<Uint8Array>,
 ): Promise<number> {
   // Start a little before the requested frame so separately stored audio and
   // video fragments can both cover it.
   const goal = target - 4
   if (goal <= 6) return track.start
+  for (const index of indexes) {
+    if (goal < index.start || goal >= index.end) continue
+    for (let i = index.keyframes.length - 1; i >= 0; i--) {
+      const frame = index.keyframes[i]!
+      if (frame.time > goal) continue
+      if (goal - frame.time <= 45) return frame.offset
+      break
+    }
+  }
   let best: Fragment = { offset: track.start, time: 0, sync: true }
   let low = best, high = { offset: size, time: duration }
   function bracket(fragment: Fragment) {
@@ -159,6 +219,11 @@ async function seekOffset(
       if (fragment.sync && fragment.time > best.time) best = fragment
     } else if (fragment.offset < high.offset) high = fragment
   }
+  function remember(fragment: Fragment) {
+    known.delete(fragment.offset)
+    known.set(fragment.offset, fragment)
+    if (known.size > 256) known.delete(known.keys().next().value!)
+  }
   known.forEach(bracket)
   let limit = high.offset
   const window = 512 * 1024
@@ -166,7 +231,11 @@ async function seekOffset(
     const span = limit - low.offset
     const fraction = (goal - low.time) / (high.time - low.time)
     const estimate = (high.offset - low.offset) * fraction
-    const start = low.offset + Math.max(1, Math.floor(Math.max(span / 8, Math.min(span * 7 / 8, estimate))))
+    // Keep the estimate close to the expected time even when the byte bracket
+    // is wide. Periodically bisect to make progress on irregular bitrates.
+    const guard = Math.min(window, span / 8)
+    const step = probe % 4 === 3 ? span / 2 : Math.max(guard, Math.min(span - guard, estimate))
+    const start = low.offset + Math.max(1, Math.floor(step))
     let found: Fragment[] = []
     let bytes = new Uint8Array(0)
     // Large fragments may need a wider probe to reach the next video header.
@@ -183,20 +252,28 @@ async function seekOffset(
     }
     if (!found.length) { limit = start; continue }
     for (const fragment of found) {
-      known.set(fragment.offset, fragment)
+      remember(fragment)
       bracket(fragment)
     }
     limit = high.offset
   }
   if (goal - best.time > 45) throw new Error('No nearby random-access fragment')
+  remember(best)
   return best.offset
 }
 
 export interface MediaSession { streaming: boolean; dispose: () => void }
 
+// Aim for four seconds per request; bound both round trips and transient memory.
+export function mediaChunkSize(size: number, duration: number): number {
+  const alignment = 64 * 1024
+  const estimate = Number.isFinite(duration) && duration > 0 ? size / duration * 4 : 2 * 1024 * 1024
+  return Math.min(4 * 1024 * 1024, Math.max(512 * 1024, Math.ceil(estimate / alignment) * alignment))
+}
+
 export async function attachMedia(
   media: HTMLMediaElement, url: string, signal: AbortSignal, onError: () => void,
-  options: { file?: Blob; bufferSeconds?: () => number } = {},
+  options: { file?: Blob; bufferSeconds?: () => number; version?: string } = {},
 ): Promise<MediaSession> {
   const native = () => {
     const objectUrl = options.file ? URL.createObjectURL(options.file) : null
@@ -209,10 +286,13 @@ export async function attachMedia(
   }).ManagedMediaSource
   const Source = ManagedSource ?? (typeof MediaSource !== 'undefined' ? MediaSource : undefined)
   if (!Source) return native()
+  let rangeVersion: string | null = null
   const range = async (start: number, end: number, requestSignal = signal) => {
     requestSignal.throwIfAborted()
     if (options.file) return { reader: options.file.slice(start, end + 1).stream().getReader(), size: options.file.size }
-    const response = await fetch(url, { headers: { Range: `bytes=${start}-${end}` }, signal: requestSignal })
+    const headers: Record<string, string> = { Range: `bytes=${start}-${end}` }
+    if (rangeVersion) headers['If-Range'] = rangeVersion
+    const response = await fetch(url, { headers, signal: requestSignal })
     if (response.status !== 206 || !response.body) {
       await response.body?.cancel()
       throw new Error('Byte ranges unavailable')
@@ -221,6 +301,11 @@ export async function attachMedia(
     if (!match || Number(match[1]) !== start || Number(match[2]) !== Math.min(end, Number(match[3]) - 1)) {
       await response.body.cancel(); throw new Error('Invalid media range')
     }
+    const version = response.headers.get('ETag')
+    if (rangeVersion && version !== rangeVersion) {
+      await response.body.cancel(); throw new Error('Media changed during playback')
+    }
+    rangeVersion = version
     return { reader: response.body.getReader(), size: Number(match[3]) }
   }
   let first: Uint8Array, size: number
@@ -237,6 +322,7 @@ export async function attachMedia(
         chunks.push(value)
       }
     } finally { await initial.reader.cancel() }
+    if (length !== Math.min(65536, size)) throw new Error('Incomplete media header')
     first = new Uint8Array(length); let cursor = 0
     for (const chunk of chunks) { first.set(chunk, cursor); cursor += chunk.length }
   } catch { return native() }
@@ -301,6 +387,19 @@ export async function attachMedia(
       buffer.addEventListener('updateend', done, { once: true }); buffer.addEventListener('error', failed, { once: true }); signal.addEventListener('abort', failed, { once: true })
       try { operation() } catch (error) { clean(); reject(error) }
     })
+    const append = async (bytes: Uint8Array) => {
+      try { await change(() => buffer.appendBuffer(bytes as Uint8Array<ArrayBuffer>)) }
+      catch (error) {
+        // A quota error rejects before consuming these bytes. Evict old playback
+        // data and retry the same bytes once, without refetching the range.
+        if (!(error instanceof DOMException) || error.name !== 'QuotaExceededError' || media.currentTime <= 10)
+          throw error
+        const cutoff = media.currentTime - 10
+        if (!buffer.buffered.length || buffer.buffered.start(0) >= cutoff) throw error
+        await change(() => buffer.remove(0, cutoff))
+        await change(() => buffer.appendBuffer(bytes as Uint8Array<ArrayBuffer>))
+      }
+    }
     // MMS can suspend downloads even while playing. Respect the browser's
     // startstreaming/endstreaming state instead of filling its mobile buffer.
     const streamingWindow = async (requestSignal = signal) => {
@@ -308,7 +407,9 @@ export async function attachMedia(
       requestSignal.throwIfAborted()
     }
     const track = seekTrack(first)
-    const known = new Map<number, Fragment>()
+    const indexes = track ? segmentIndexes(first, track, size) : []
+    const known = seekPoints(track && options.version !== undefined
+      ? JSON.stringify([url, options.version, size]) : undefined)
     let target: number | undefined
     const seek = () => {
       if (!track || !Number.isFinite(media.duration)) return
@@ -319,7 +420,7 @@ export async function attachMedia(
     if (track) media.addEventListener('seeking', seek)
     try {
       await streamingWindow()
-      await change(() => buffer.appendBuffer(first as Uint8Array<ArrayBuffer>))
+      await append(first)
       let offset = first.length
       while (!signal.aborted) {
         request = new AbortController()
@@ -327,7 +428,7 @@ export async function attachMedia(
         let failures = 0
         try {
           if (target !== undefined && track && !isBuffered(media.buffered, target)) {
-            const start = await seekOffset(target, media.duration, size, track, known,
+            const start = await seekOffset(target, media.duration, size, track, known, indexes,
               (from, to) => readProbe(from, to, requestSignal))
             requestSignal.throwIfAborted()
             reopen()
@@ -344,7 +445,7 @@ export async function attachMedia(
             if (media.currentTime > 90 && buffer.buffered.length && buffer.buffered.start(0) < media.currentTime - 60)
               await change(() => buffer.remove(0, media.currentTime - 60))
             try {
-              const end = Math.min(size - 1, offset + 2 * 1024 * 1024 - 1)
+              const end = Math.min(size - 1, offset + mediaChunkSize(size, media.duration) - 1)
               const { reader, size: total } = await range(offset, end, requestSignal)
               try {
                 if (total !== size) throw new Error('Media changed during playback')
@@ -353,7 +454,7 @@ export async function attachMedia(
                   const { done, value } = await reader.read()
                   if (done) break
                   if (offset + value.length > end + 1) throw new Error('Oversized media segment')
-                  await change(() => buffer.appendBuffer(value as Uint8Array<ArrayBuffer>))
+                  await append(value)
                   offset += value.length
                 }
                 if (offset !== end + 1) throw new Error('Incomplete media segment')

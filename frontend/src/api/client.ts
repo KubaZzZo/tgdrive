@@ -69,7 +69,8 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
     const requestId = response.headers.get('X-Request-ID')
     throw new ApiError(
-      errorMessage(payload, `请求失败 (${response.status})`),
+      errorMessage(payload, response.status === 429 && path.includes('/download')
+        ? 'CDN 流量保护已开启，请查看流量面板的余量和数据状态' : `请求失败 (${response.status})`),
       response.status,
       requestId,
     )
@@ -193,6 +194,8 @@ export const api = {
     ),
   cancelUpload: (uploadId: string) =>
     request<{ ok: boolean }>(`/api/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' }),
+
+  checkDownload: (url: string) => request<void>(url, { method: 'HEAD' }),
 
   downloadUrl: (itemId: string, download = false) => {
     const query = new URLSearchParams()
