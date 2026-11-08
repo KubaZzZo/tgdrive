@@ -1,57 +1,60 @@
-# TG Drive 反向代理（自动 HTTPS）
-# 关键：关闭缓冲 + flush_interval -1 + 只压缩 JSON，否则视频拖不动进度条
+# TG Drive 反向代理；可放在 Cloudflare 橙云后，SSL 使用 Full (strict)。
 {
-email {$ACME_EMAIL}
-log {
-output stdout
-format console
-level ERROR
-}
+	email {$ACME_EMAIL}
+	log {
+		output stdout
+		format console
+		level ERROR
+	}
 }
 
 {$DOMAIN} {
-# 单文件上限 2GB(普通)/4GB(Premium)，这里给 4.5GB 余量
-request_body { max_size 4.5GB }
+	# 兼容直连上传；Cloudflare 仍有独立的单请求大小限制。
+	request_body {
+		max_size 4.5GB
+	}
 
-reverse_proxy app:8787 {
-request_buffering off
-response_buffering off
-flush_interval -1
-header_up X-Real-IP {remote_host}
-transport http {
-dial_timeout 10s
-response_header_timeout 300s
-keepalive_idle_conns 32
-}
-}
+	reverse_proxy app:8787 {
+		# Caddy 默认不缓冲完整请求/响应；即时转发 Range 媒体流。
+		flush_interval -1
+		header_up X-Real-IP {remote_host}
+		transport http {
+			dial_timeout 10s
+			response_header_timeout 300s
+			keepalive_idle_conns 32
+		}
+	}
 
-# 只压缩 JSON/文本，绝不压媒体流（否则 Range 语义失效）
-@compressible {
-not path /api/files/*
-not header Content-Type video/*
-not header Content-Type audio/*
-not header Content-Type image/*
-not header Content-Type application/octet-stream
-}
-encode @compressible zstd gzip
+	# encode 默认按响应 MIME 筛选；媒体路径额外排除以保留 Range 语义。
+	@compressible {
+		not path /api/files/* /s/*
+	}
+	encode @compressible zstd gzip
 
-# Vite 产物文件名带内容哈希，可长期缓存
-@assets path /assets/*
-header @assets Cache-Control "public, max-age=31536000, immutable"
+	# Vite 产物文件名带内容哈希，可长期缓存。
+	@assets path /assets/*
+	header @assets Cache-Control "public, max-age=31536000, immutable"
 
-header {
-Strict-Transport-Security "max-age=31536000; includeSubDomains"
-X-Content-Type-Options "nosniff"
-Referrer-Policy "no-referrer"
-X-Frame-Options "SAMEORIGIN"
-Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
--Server
-}
+	# 分享撤销/过期必须回源检查。defer 覆盖上游的 public 缓存头。
+	@private path /api /api/* /s /s/*
+	header @private {
+		Cache-Control "private, no-store"
+		Cloudflare-CDN-Cache-Control "no-store"
+		defer
+	}
 
-@notNoisy not path /api/meta /api/health/live /api/health/ready
-log @notNoisy {
-output stdout
-format json
-level INFO
-}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "SAMEORIGIN"
+		Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=()"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+		level INFO
+	}
 }
