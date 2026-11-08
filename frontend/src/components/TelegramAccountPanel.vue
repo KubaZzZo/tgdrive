@@ -3,13 +3,17 @@ import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { api, ApiError } from '@/api/client'
 import type { TelegramAccountStatus, TelegramChannel, TelegramLogin } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
+import { useSyncStore } from '@/stores/sync'
 import { useUploadStore } from '@/stores/uploads'
 import BaseModal from './BaseModal.vue'
 
 const auth = useAuthStore()
+const sync = useSyncStore()
 const uploads = useUploadStore()
 const open = ref(false)
 const account = ref<TelegramAccountStatus | null>(null)
+const authRequired = computed(() => sync.status?.state === 'auth_required')
+const connected = computed(() => !authRequired.value && (account.value?.connected ?? auth.storage?.connected))
 const job = ref<TelegramLogin | null>(null)
 const channels = ref<TelegramChannel[]>([])
 const chatId = ref('')
@@ -165,23 +169,23 @@ onBeforeUnmount(() => { generation++; clearTimeout(timer); password.value = '' }
 </script>
 
 <template>
-  <button class="ghost telegram-button" :class="{ 'telegram-offline': !auth.storage?.connected }" @click="show">
-    <span class="telegram-status-dot" :class="{ online: auth.storage?.connected }" />
+  <button class="ghost telegram-button" :class="{ 'telegram-offline': !connected }" @click="show">
+    <span class="telegram-status-dot" :class="{ online: connected }" />
     <span class="telegram-label-desktop">Telegram 账号</span><span class="telegram-label-mobile">账号</span>
   </button>
   <BaseModal :open="open" title="Telegram 账号与存储频道" wide @close="close">
     <div class="telegram-panel">
-      <p v-if="account"><strong>{{ account.account?.first_name || account.account?.username || '当前账号' }}</strong> · {{ account.connected ? '已连接' : '未连接' }}<br /><span class="muted">存储频道：{{ account.chat_id || '尚未配置' }}</span></p>
+      <p v-if="account"><strong>{{ account.account?.first_name || account.account?.username || '当前账号' }}</strong> · {{ authRequired ? '需要重新登录' : connected ? '已连接' : '未连接' }}<br /><span class="muted">存储频道：{{ account.chat_id || '尚未配置' }}</span></p>
       <p class="muted">每个频道独立保存目录、上传任务和同步记录；切回原频道可继续访问原文件及分享链接。VPS 流量用量始终全局累计。</p>
       <p v-if="error || job?.error" class="form-error" role="alert">{{ error || job?.error }}</p>
       <div v-if="!loginActive && account?.profiles.length" class="telegram-profiles">
         <h3>已保存的连接</h3>
         <div v-for="profile in account.profiles" :key="profile.id" class="telegram-profile">
           <div><strong>{{ profile.first_name || profile.username || 'Telegram 账号' }}</strong><span v-if="profile.username"> @{{ profile.username }}</span><p>{{ profile.title }} <small class="muted">{{ profile.chat_id }}</small></p></div>
-          <button class="ghost" :disabled="busy || (account.active_id === profile.id && account.connected)" @click="activate(profile.id)">{{ account.active_id === profile.id && account.connected ? '当前连接' : '切换' }}</button>
+          <button class="ghost" :disabled="busy || (account.active_id === profile.id && (connected || authRequired))" @click="activate(profile.id)">{{ account.active_id === profile.id && (connected || authRequired) ? '当前连接' : '切换' }}</button>
         </div>
       </div>
-      <button v-if="!loginActive" class="primary" :disabled="busy || !account?.can_login" @click="begin">{{ busy ? '连接中…' : account?.active_id && !account.connected ? '重新扫码连接' : '扫码添加账号与频道' }}</button>
+      <button v-if="!loginActive" class="primary" :disabled="busy || !account?.can_login" @click="begin">{{ busy ? '连接中…' : authRequired ? '重新扫码登录' : account?.active_id && !account.connected ? '重新扫码连接' : '扫码添加账号与频道' }}</button>
       <p v-if="account && !account.can_login" class="form-error">请先配置 TG_API_ID 和 TG_API_HASH 后重启应用。</p>
       <template v-if="job">
         <p v-if="job.state === 'connecting'" role="status">正在连接 Telegram…</p>

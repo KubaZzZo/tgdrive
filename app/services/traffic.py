@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.db import Database
+from app.services.cdn import CDNMonitor
 
 logger = logging.getLogger("tgdrive.traffic")
 
@@ -27,6 +28,7 @@ class TrafficMonitor:
         self._pending: dict[tuple[str, str], list[int]] = defaultdict(lambda: [0, 0])
         self._bytes = 0
         self._last_flush = time.monotonic()
+        self.cdn: CDNMonitor | None = None
 
     def record(self, source: Literal["web", "telegram"], inbound: int = 0, outbound: int = 0):
         if not inbound and not outbound:
@@ -114,6 +116,7 @@ class TrafficMonitor:
             "started_at": config["started_at"],
             "sources": sources,
             "host": host,
+            "cdn": self.cdn.snapshot() if self.cdn else None,
         }
 
 

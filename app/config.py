@@ -52,6 +52,14 @@ class Settings:
     traffic_host_state: Path = field(
         default_factory=lambda: _env_path("TRAFFIC_HOST_STATE", "data/traffic/host.json")
     )
+    axisnow_api_token: str = field(
+        default_factory=lambda: os.getenv("AXISNOW_API_TOKEN", "").strip(), repr=False
+    )
+    axisnow_subscription_ids: str = field(
+        default_factory=lambda: os.getenv("AXISNOW_SUBSCRIPTION_IDS", "").strip()
+    )
+    cdn_warning_percent: int = field(default_factory=lambda: _env_int("CDN_WARNING_PERCENT", 80))
+    cdn_stop_percent: int = field(default_factory=lambda: _env_int("CDN_STOP_PERCENT", 95))
 
     app_password: str = field(default_factory=lambda: os.getenv("APP_PASSWORD", "change-me"))
     app_secret: str = field(
@@ -119,6 +127,8 @@ class Settings:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def validate(self) -> None:
+        if not 1 <= self.cdn_warning_percent < self.cdn_stop_percent <= 100:
+            raise RuntimeError("CDN 阈值必须满足 1 <= 预警比例 < 停止比例 <= 100")
         if self.channel_sync_interval < 5:
             raise RuntimeError("CHANNEL_SYNC_INTERVAL 必须至少为 5 秒")
         if self.tg_mode not in {"user", "bot"}:

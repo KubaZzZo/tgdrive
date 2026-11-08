@@ -19,6 +19,7 @@ from app.core.middleware import RequestContextMiddleware
 from app.core.security import LoginRateLimiter
 from app.db import Database
 from app.services.accounts import AccountManager, Runtime, WorkspaceMiddleware, account_settings
+from app.services.cdn import CDNMonitor
 from app.services.channel_sync import ChannelSyncService
 from app.services.traffic import TrafficMiddleware, TrafficMonitor
 from app.services.uploads import UploadService
@@ -50,6 +51,8 @@ def create_app(
             database = Database(cfg.data_dir / "channels" / f"{key}.sqlite3")
     telegram = storage or TelegramStorage(account_settings(cfg, profile))
     traffic = TrafficMonitor(control, cfg.traffic_host_state)
+    cdn = CDNMonitor(control, cfg)
+    traffic.cdn = cdn
     telegram.traffic = traffic
     upload_service = UploadService(
         database, telegram, cfg.upload_stale_hours, cfg.upload_concurrency
@@ -76,14 +79,16 @@ def create_app(
             cfg.is_configured,
         )
         try:
+            await cdn.start()
             yield
         finally:
+            await cdn.stop()
             await account_manager.shutdown()
             logger.info("TG Drive stopped")
 
     app = FastAPI(
         title=cfg.app_name,
-        version="2.0.0",
+        version="2.1.0",
         docs_url=None if cfg.is_production else "/api/docs",
         redoc_url=None,
         openapi_url=None if cfg.is_production else "/api/openapi.json",
@@ -93,6 +98,7 @@ def create_app(
     app.state.db = database
     app.state.storage = telegram
     app.state.traffic = traffic
+    app.state.cdn = cdn
     app.state.uploads = upload_service
     app.state.channel_sync = channel_sync
     app.state.login_limiter = LoginRateLimiter(cfg.login_max_attempts, cfg.login_window_seconds)

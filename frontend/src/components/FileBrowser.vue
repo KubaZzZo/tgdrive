@@ -89,8 +89,23 @@ function previewItem(item: DriveItem): void {
   openItem(item)
 }
 
-function download(item: DriveItem): void {
-  window.location.assign(api.downloadUrl(item.id, true))
+const pendingDownloads = new Set<string>()
+async function download(item: DriveItem): Promise<void> {
+  if (pendingDownloads.has(item.id)) return
+  pendingDownloads.add(item.id)
+  const url = api.downloadUrl(item.id, true)
+  try {
+    await api.checkDownload(url)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = item.name
+    document.body.append(link)
+    link.click()
+    link.remove()
+    toast.success('已交给浏览器下载，可在浏览器下载列表查看进度')
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : '下载失败，请重试')
+  } finally { pendingDownloads.delete(item.id) }
 }
 
 async function share(item: DriveItem): Promise<void> {

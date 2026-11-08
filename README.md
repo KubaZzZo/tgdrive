@@ -219,7 +219,7 @@ flowchart TB
 | 项目 | 当前行为 |
 | --- | --- |
 | 普通媒体 | 使用原生播放器；在当前浏览器保存最多 100 个文件的播放位置 |
-| H.264/AAC 分片 MP4 | 使用 MediaSource 或 iPhone 的 ManagedMediaSource；从头播放，只能拖到已缓冲范围 |
+| H.264/AAC 分片 MP4 | 使用 MediaSource 或 iPhone 的 ManagedMediaSource，跳转到未缓冲位置后从目标附近的关键帧开始缓冲 |
 | 预缓冲 | 默认提前缓冲 60 秒视频，可选 120 秒；iPhone 还遵守系统缓冲窗口，不代表需要先等满 60 秒 |
 | 视频封面 | 优先使用 Telegram 缩略图；缺失时尝试浏览器首帧，提取最多并发两个任务 |
 | 缓存到本机 | 浏览器支持 OPFS 与 Web Locks 时可用，三个并发分段请求写入当前设备，保留最近一部完整视频 |

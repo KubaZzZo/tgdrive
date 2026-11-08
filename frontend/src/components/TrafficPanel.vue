@@ -13,8 +13,12 @@ let timer: ReturnType<typeof setInterval> | undefined
 let version = 0
 let disposed = false
 const host = computed(() => data.value?.host)
+const cdn = computed(() => data.value?.cdn)
 const uncertain = computed(() => !host.value?.available || host.value.stale || host.value.incomplete)
 const label = computed(() => {
+  if (cdn.value?.configured && cdn.value.blocked) return 'CDN 传输保护中'
+  if (cdn.value?.configured && cdn.value.warning) return 'CDN 余量预警'
+  if (cdn.value?.configured && cdn.value.available) return 'CDN 流量正常'
   if (!host.value?.available) return '流量待接入'
   if (error.value || host.value.stale) return '流量数据过期'
   return `今日 ${gb(host.value.used ?? 0)} GB${host.value.incomplete ? '*' : ''}`
@@ -61,11 +65,28 @@ onBeforeUnmount(() => { disposed = true; version++; clearInterval(timer) })
 </script>
 
 <template>
-  <button class="ghost traffic-button" :class="{ 'traffic-alert': host?.warning || uncertain || error }" @click="show">
+  <button class="ghost traffic-button" :class="{ 'traffic-alert': cdn?.warning || host?.warning || uncertain || error }" @click="show">
     {{ label }}
   </button>
-  <BaseModal :open="open" title="VPS 每日流量" wide @close="open = false">
+  <BaseModal :open="open" title="CDN 与 VPS 流量" wide @close="open = false">
     <div class="traffic-panel">
+      <section v-if="cdn?.configured" class="traffic-panel" aria-label="CDN 套餐流量">
+        <h3>AxisNow CDN 月流量</h3>
+        <p class="muted">{{ cdn.warning_percent }}% 预警 · {{ cdn.stop_percent }}% 停止下载、分享下载和视频缓冲 · 每 60 秒同步</p>
+        <p v-if="cdn.blocked" class="form-error" role="alert">CDN 流量保护中：订阅余量不足或用量数据过期，大流量传输已暂停。补充额度或同步恢复后自动解除。</p>
+        <p v-else-if="cdn.warning" class="traffic-note" role="alert">部分 CDN 订阅已接近额度，请减少下载和本机缓存。</p>
+        <p v-if="cdn.error" class="form-error" role="alert">{{ cdn.error }}</p>
+        <div v-for="sub in cdn.subscriptions" :key="sub.id" class="traffic-panel">
+          <strong>{{ sub.name }} · {{ sub.period }}{{ sub.stale ? ' · 数据过期' : '' }}</strong>
+          <p>平台已用 {{ gb(sub.provider_used) }} GB · 保护估算 {{ gb(sub.used) }} GB / {{ sub.quota_bytes === null ? '不限流量' : `${gb(sub.quota_bytes)} GB` }}</p>
+          <progress v-if="sub.percent !== null" class="traffic-progress" :class="{ danger: sub.warning }" :value="Math.min(100, sub.percent)" max="100" :aria-label="`${sub.name} 流量使用比例`" />
+          <p v-if="sub.remaining !== null">剩余 {{ gb(sub.remaining) }} GB · 已用 {{ sub.percent }}%</p>
+          <p class="muted">平台用量更新于 {{ timestamp(sub.usage_updated_at) }}</p>
+        </div>
+        <p class="muted">平台 MB 按 1024² 字节换算，页面 GB 按 10⁹ 字节展示。用量延迟期间会将本站传输计入每个受监控订阅，保守预留余额；估算可能高于平台用量。这里只能阻止本站回源传输，CDN 已缓存内容及其他站点的流量需在平台限制。</p>
+      </section>
+      <p v-else class="traffic-note">CDN 尚未接入：在服务端配置 AXISNOW_API_TOKEN 后启用套餐监控与传输保护。</p>
+      <h3>VPS 每日流量</h3>
       <p class="muted">入站＋出站合计 · 每天北京时间 00:00 重置 · 1 GB = 10⁹ 字节</p>
       <p v-if="error || host?.error" class="form-error" role="alert">{{ error || host?.error }}</p>
       <p v-if="!host?.available" class="traffic-note">尚未获得 VPS 网卡数据。请在宿主机安装采集服务；接入前不会将项目估算当作 VPS 实际用量。</p>

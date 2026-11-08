@@ -1,0 +1,116 @@
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+from conftest import make_settings
+
+from app.storage import TelegramStorage
+
+
+def make_file(app, storage, sizes=(4, 6)):
+    data = b"abcdefghij"
+    offset = 0
+    parts = []
+    for index, size in enumerate(sizes):
+        storage.files[201 + index] = data[offset : offset + size]
+        parts.append({"part_index": index, "tg_message_id": 201 + index, "size": size})
+        offset += size
+    return app.state.db.create_file(
+        "视频.mp4",
+        None,
+        len(data),
+        "video/mp4",
+        None,
+        str(storage.chat),
+        parts,
+    )
+
+
+def test_download_resume_across_parts_and_if_range(authenticated_client):
+    client, app, storage = authenticated_client
+    item = make_file(app, storage)
+    url = f"/api/files/{item['id']}/download?download=1"
+    head = client.head(url)
+    assert head.status_code == 200
+    assert head.content == b""
+    assert head.headers["content-length"] == "10"
+    assert "attachment;" in head.headers["content-disposition"]
+    assert "filename*=UTF-8''" in head.headers["content-disposition"]
+    etag = head.headers["etag"]
+    partial = client.get(url, headers={"Range": "bytes=2-7", "If-Range": etag})
+    assert partial.status_code == 206
+    assert partial.content == b"cdefgh"
+    assert partial.headers["content-range"] == "bytes 2-7/10"
+    assert client.get(url, headers={"Range": "bytes=-3"}).content == b"hij"
+    for stale in ('"stale"', "W/" + etag):
+        response = client.get(url, headers={"Range": "bytes=2-7", "If-Range": stale})
+        assert response.status_code == 200
+        assert response.content == b"abcdefghij"
+        assert "content-range" not in response.headers
+
+
+def test_incomplete_part_mapping_rejected_before_streaming(authenticated_client):
+    client, app, storage = authenticated_client
+    item = make_file(app, storage, (4,))
+    url = f"/api/files/{item['id']}/download"
+    assert client.head(url).status_code == 503
+    assert client.get(url).status_code == 503
+
+
+@pytest.mark.parametrize("failure", [ConnectionError, TimeoutError, OSError])
+def test_interrupted_download_retries_from_delivered_offset(workdir, failure):
+    async def run():
+        data = bytes(range(256)) * 4096
+        calls = []
+
+        class Stream:
+            def __init__(self, offset, chunk_size):
+                self.offset, self.chunk_size = offset, chunk_size
+                self.closed = False
+
+            async def __aiter__(self):
+                yield data[self.offset : self.offset + self.chunk_size]
+                if len(calls) == 1:
+                    raise failure("connection interrupted")
+                yield data[self.offset + self.chunk_size : self.offset + 2 * self.chunk_size]
+
+            async def close(self):
+                self.closed = True
+
+        def download(message, **kwargs):
+            stream = Stream(kwargs["offset"], kwargs["chunk_size"])
+            calls.append(stream)
+            return stream
+
+        storage = TelegramStorage(make_settings(workdir))
+        storage.client = SimpleNamespace(iter_download=download)
+        storage.chat, storage._started = -100123, True
+        storage._get_message = AsyncMock(return_value=SimpleNamespace(document=True))
+        received = b"".join([chunk async for chunk in storage.iter_download(1, 17, 800_000)])
+        assert received == data[17:800_017]
+        assert len(calls) == 2
+        assert all(stream.closed for stream in calls)
+
+    asyncio.run(run())
+
+
+def test_download_retry_is_bounded(workdir):
+    async def run():
+        storage = TelegramStorage(make_settings(workdir))
+        calls = 0
+
+        async def fail(*args):
+            nonlocal calls
+            calls += 1
+            raise ConnectionError("offline")
+            yield  # make this an async generator
+
+        storage._iter_download_once = fail
+        with pytest.raises(ConnectionError):
+            await anext(storage.iter_download(1, 0, 10))
+        assert calls == 3
+
+    asyncio.run(run())

@@ -14,7 +14,7 @@ from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 from app.categories import effective_mime
 from app.config import Settings
 from app.db import Database
-from app.storage import TelegramStorage
+from app.storage import SESSION_AUTH_ERRORS, TelegramStorage
 
 logger = logging.getLogger("tgdrive.sync")
 
@@ -150,11 +150,14 @@ class ChannelSyncService:
         return str(self.storage.chat)
 
     async def start(self) -> None:
-        if (
-            not self.settings.channel_sync_enabled
-            or not self.storage.status()["connected"]
-            or not hasattr(self.storage, "subscribe_channel")
-        ):
+        if not self.settings.channel_sync_enabled:
+            return
+        storage_status = self.storage.status()
+        if storage_status.get("auth_required"):
+            self.state = "auth_required"
+            self.last_error = storage_status["error"]
+            return
+        if not storage_status["connected"] or not hasattr(self.storage, "subscribe_channel"):
             return
         self._unsubscribe = await self.storage.subscribe_channel(
             self.on_message, self.on_edit, self.on_delete
@@ -214,6 +217,8 @@ class ChannelSyncService:
             for member in members:
                 self.ingest(member, album_messages=members)
         except Exception as exc:
+            if self.state == "auth_required":
+                return
             logger.exception("Could not import channel message")
             self.last_error = str(exc)
             self._full = True
@@ -284,6 +289,16 @@ class ChannelSyncService:
             self.db.advance_channel_cursor(self.chat_id, max_id)
             self.last_success = datetime.now(UTC).isoformat()
             self.state = "idle"
+        except SESSION_AUTH_ERRORS as exc:
+            self.storage.invalidate_session()
+            self.state = "auth_required"
+            self.last_error = self.storage.error
+            self._wake.clear()
+            if self._unsubscribe:
+                self._unsubscribe()
+                self._unsubscribe = None
+            logger.warning("Telegram rejected the channel sync session: %s", exc)
+            raise
         except Exception as exc:
             self.state = "error"
             self.last_error = str(exc)
@@ -306,6 +321,8 @@ class ChannelSyncService:
                 await self.scan(full)
             except asyncio.CancelledError:
                 raise
+            except SESSION_AUTH_ERRORS:
+                return
             except Exception:
                 self._full = self._full or full
 
