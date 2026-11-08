@@ -88,7 +88,7 @@ def create_app(
 
     app = FastAPI(
         title=cfg.app_name,
-        version="2.1.0",
+        version="2.1.1",
         docs_url=None if cfg.is_production else "/api/docs",
         redoc_url=None,
         openapi_url=None if cfg.is_production else "/api/openapi.json",

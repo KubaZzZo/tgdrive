@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from app.db import SCHEMA_VERSION, Database
 
 
@@ -55,4 +57,48 @@ def test_invalid_names_and_versions(workdir: Path):
         else:
             raise AssertionError(f"expected ValueError for {name!r}")
     assert db.ping() is True
+    db.close()
+
+
+@pytest.mark.parametrize("variant", ["schema7", "schema8-cdn", "schema8-bot", "schema9"])
+def test_reconcile_deployed_and_cdn_schema_variants_without_data_loss(workdir, variant):
+    path = workdir / "upgrade.sqlite3"
+    db = Database(path)
+    item = db.create_file(
+        "kept.bin",
+        None,
+        3,
+        None,
+        None,
+        "-100123",
+        [{"part_index": 0, "tg_message_id": 1, "size": 3}],
+    )
+    with db.conn:
+        db.conn.execute(
+            "INSERT INTO channel_bot_files VALUES (?,?,?,?,?)",
+            (item["id"], "123", "file-kept", "v1", 3),
+        )
+        db.conn.execute("INSERT INTO channel_bot_covers VALUES (?,?)", (item["id"], "cover-kept"))
+        db.conn.execute("INSERT INTO cdn_usage VALUES (?,?,?)", ("sub-kept", "2026-11", 456))
+        if variant != "schema8-cdn":
+            db.conn.execute("DROP TABLE cdn_usage")
+        if variant in {"schema7", "schema8-cdn", "schema8-bot"}:
+            db.conn.execute("DROP TABLE channel_bot_covers")
+        if variant in {"schema7", "schema8-cdn"}:
+            db.conn.execute("DROP TABLE channel_bot_files")
+        version = 7 if variant == "schema7" else 9 if variant == "schema9" else 8
+        db.conn.execute(f"PRAGMA user_version={version}")
+    db.close()
+    db = Database(path)
+    assert db.schema_version() == SCHEMA_VERSION == 10
+    assert db.get_item(item["id"])["name"] == "kept.bin"
+    assert db.get_parts(item["id"])[0]["size"] == 3
+    if variant in {"schema8-bot", "schema9"}:
+        assert db.conn.execute("SELECT file_id FROM channel_bot_files").fetchone()[0] == "file-kept"
+    if variant == "schema9":
+        assert (
+            db.conn.execute("SELECT file_id FROM channel_bot_covers").fetchone()[0] == "cover-kept"
+        )
+    if variant == "schema8-cdn":
+        assert db.cdn_totals()[("sub-kept", "2026-11")] == 456
     db.close()

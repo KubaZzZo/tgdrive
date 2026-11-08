@@ -17,6 +17,7 @@ from app.config import Settings
 from app.db import Database
 from app.ranges import parse_range
 from app.services.cdn import CDNMonitor
+from app.services.telegram_bot import MAX_BOT_DOWNLOAD, BotAPIError
 from app.storage import TelegramStorage
 
 router = APIRouter(tags=["files"])
@@ -69,15 +70,28 @@ async def stream_item(
 ) -> Response:
     if item["kind"] != "file":
         raise HTTPException(400, "只能下载文件")
-    cdn = request.app.state.cdn
-    if not storage.status()["connected"]:
-        raise HTTPException(503, storage.error or "Telegram 尚未连接")
     size = int(item["size"])
+    bot = None
+    bot_file_id = None
+    if not storage.status()["connected"]:
+        bot = getattr(request.state.telegram_runtime.sync, "bot", None)
+        if not bot:
+            raise HTTPException(503, storage.error or "Telegram 尚未连接")
+        bot_file_id = db.bot_file_id(item["id"], bot.id)
+        if not bot_file_id:
+            raise HTTPException(503, "此文件需要个人 Telegram 会话下载。")
+        if size > MAX_BOT_DOWNLOAD:
+            raise HTTPException(503, "此文件超过 Bot API 的 20 MB 下载上限，需要个人会话。")
+    cdn = request.app.state.cdn
     parts = db.get_parts(item["id"])
-    if size and (
-        not parts
-        or any(int(p["size"]) <= 0 for p in parts)
-        or sum(int(p["size"]) for p in parts) != size
+    if (
+        not bot
+        and size
+        and (
+            not parts
+            or any(int(p["size"]) <= 0 for p in parts)
+            or sum(int(p["size"]) for p in parts) != size
+        )
     ):
         raise HTTPException(503, "文件分段记录不完整，请重新同步频道后重试")
     # Include the message mapping: channel edits can replace content at the same URL.
@@ -85,6 +99,7 @@ async def stream_item(
         (
             item["id"],
             item.get("sha256"),
+            bot_file_id,
             item.get("updated_at"),
             size,
             [(p["tg_message_id"], p["size"]) for p in parts],
@@ -118,6 +133,14 @@ async def stream_item(
         headers["Content-Range"] = f"bytes {start}-{end - 1}/{size}"
     if request.method == "HEAD":
         return Response(status_code=206 if partial else 200, media_type=mime, headers=headers)
+    if bot and bot_file_id:
+        try:
+            data, received = await bot.read(bot_file_id, size, start, end)
+        except BotAPIError as exc:
+            raise HTTPException(502, str(exc)) from None
+        request.app.state.traffic.record("telegram", inbound=received)
+        await cdn.charge(len(data))
+        return Response(data, status_code=206 if partial else 200, media_type=mime, headers=headers)
     return StreamingResponse(
         iter_item_range(db, storage, item, start, end, parts, cdn) if length else iter(()),
         status_code=206 if partial else 200,
@@ -149,17 +172,35 @@ async def file_thumbnail(
     item = db.get_item(item_id)
     if not item or item.get("category") != "video":
         raise HTTPException(404, "视频不存在")
-    parts = db.get_parts(item_id)
-    if not parts:
-        raise HTTPException(404, "没有封面")
     await request.app.state.cdn.check()
-    data = await storage.thumbnail(int(parts[0]["tg_message_id"]))
+    bot = getattr(request.state.telegram_runtime.sync, "bot", None)
+    cover_id = db.bot_file_id(item_id, bot.id, cover=True) if bot else None
+    data = None
+    mime = "image/jpeg"
+    connected = storage.status()["connected"]
+    if bot and cover_id:
+        try:
+            cover = await bot.thumbnail(cover_id)
+            request.app.state.traffic.record("telegram", inbound=len(cover))
+            if cover.startswith(b"\xff\xd8\xff"):
+                data = cover
+            elif cover.startswith(b"\x89PNG\r\n\x1a\n"):
+                data, mime = cover, "image/png"
+            elif cover.startswith(b"RIFF") and cover[8:12] == b"WEBP":
+                data, mime = cover, "image/webp"
+        except BotAPIError as exc:
+            if not connected:
+                raise HTTPException(502, str(exc)) from None
+    if not data and connected:
+        parts = db.get_parts(item_id)
+        if parts:
+            data = await storage.thumbnail(int(parts[0]["tg_message_id"]))
     if not data:
         raise HTTPException(404, "Telegram 未提供封面")
     await request.app.state.cdn.charge(len(data))
     return Response(
         data,
-        media_type="image/jpeg",
+        media_type=mime,
         headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"},
     )
 

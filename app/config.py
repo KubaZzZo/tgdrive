@@ -77,6 +77,9 @@ class Settings:
     tg_api_id: int = field(default_factory=lambda: _env_int("TG_API_ID", 0))
     tg_api_hash: str = field(default_factory=lambda: os.getenv("TG_API_HASH", "").strip())
     tg_bot_token: str = field(default_factory=lambda: os.getenv("TG_BOT_TOKEN", "").strip())
+    tg_bot_fallback_token: str = field(
+        default_factory=lambda: os.getenv("TG_BOT_FALLBACK_TOKEN", "").strip(), repr=False
+    )
     tg_session: Path = field(default_factory=lambda: _env_path("TG_SESSION", "data/tgdrive"))
     tg_chat_id: str = field(default_factory=lambda: os.getenv("TG_CHAT_ID", "").strip())
     tg_proxy: str = field(default_factory=lambda: os.getenv("TG_PROXY", "").strip())
@@ -116,6 +119,17 @@ class Settings:
         if self.tg_mode == "bot":
             return "请在 .env 配置 TG_API_ID、TG_API_HASH、TG_BOT_TOKEN、TG_CHAT_ID"
         return "请在 .env 配置 TG_API_ID、TG_API_HASH、TG_CHAT_ID，并运行 scripts/login_qr.py"
+
+    @property
+    def telegram_login_error(self) -> str | None:
+        if self.tg_api_id in {4, 6}:
+            return (
+                "当前使用 Telegram Android 的共享 API ID。请在 my.telegram.org 申请自己的 "
+                "API ID 和 API Hash，更新 .env 中的 TG_API_ID 和 TG_API_HASH 后重启应用。"
+            )
+        if self.tg_api_id <= 0 or not self.tg_api_hash:
+            return "请先在 .env 配置 TG_API_ID 和 TG_API_HASH 后重启应用。"
+        return None
 
     @property
     def index_file(self) -> Path:

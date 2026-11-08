@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 from conftest import FakeTelegramStorage, make_settings
+from telethon.errors import FloodWaitError
 from telethon.tl import types
 
 from app.db import Database
@@ -296,5 +297,52 @@ def test_full_rescan_requested_during_scan_is_not_lost(workdir):
         await service.shutdown()
         assert not service.request_scan(True)
         db.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("limited_call", ["history", "album"])
+def test_scan_preserves_progress_and_resumes_after_flood_wait(workdir, limited_call):
+    class LimitedStorage(ChannelStorage):
+        limited = False
+        starts = []
+
+        async def iter_channel_messages(self, after_id, max_id):
+            self.starts.append(after_id)
+            async for msg in super().iter_channel_messages(after_id, max_id):
+                if limited_call == "history" and msg.id == 10 and not self.limited:
+                    self.limited = True
+                    raise FloodWaitError(None, capture=1)
+                yield msg
+
+        async def get_album_messages(self, msg):
+            if not self.limited:
+                self.limited = True
+                raise FloodWaitError(None, capture=1)
+            return [msg]
+
+    async def run():
+        db = Database(workdir / "limit.sqlite3")
+        storage = LimitedStorage()
+        storage.history = [message(4), message(10)]
+        if limited_call == "album":
+            storage.history[-1].grouped_id = 17
+        service = ChannelSyncService(db, storage, make_settings(workdir))
+        task = asyncio.create_task(service.scan(full=True))
+        try:
+            await asyncio.sleep(0)
+            status = service.status()
+            assert status["state"] == "rate_limited" and status["running"]
+            assert status["retry_after"] == 1
+            assert status["progress"] == 40 and status["scanned"] == 1
+            await asyncio.wait_for(task, 3)
+            status = service.status()
+            assert status["state"] == "idle" and status["progress"] == 100
+            assert status["retry_after"] is None and status["scanned"] == 2
+            assert status["files"] == 2
+            assert storage.starts == ([0, 4] if limited_call == "history" else [0])
+        finally:
+            await asyncio.gather(task, return_exceptions=True)
+            db.close()
 
     asyncio.run(run())
