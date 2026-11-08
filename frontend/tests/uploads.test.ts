@@ -27,6 +27,27 @@ async function until(predicate: () => boolean) {
 }
 beforeEach(() => { memory.clear(); setActivePinia(createPinia()) })
 
+test('image host uploads preserve publication intent and cannot resume a private upload', async () => {
+  const image = new File(['pngbytes'], 'photo.png', { lastModified: 123 })
+  memory.set('tgdrive_resume_v2', JSON.stringify({ '|photo.png|8|123': 'private-upload' }))
+  const bodies: Record<string, unknown>[] = []
+  globalThis.fetch = async (url, init) => {
+    assert.ok(!String(url).includes('private-upload'))
+    if (url === '/api/uploads') {
+      bodies.push(JSON.parse(String(init?.body)))
+      return json({ id: 'public-upload', offset: 8, chunk_size: 8, size: 8 })
+    }
+    if (init?.method === 'POST') return json({ ok: true }, 202)
+    return json({ id: 'public-upload', state: 'done', image_host: 1 })
+  }
+  const store = useUploadStore()
+  assert.equal(store.enqueue([image], null, true), 1)
+  await until(() => store.jobs[0]?.state === 'done')
+  assert.equal(bodies[0]?.image_host, true)
+  assert.equal(JSON.parse(memory.get('tgdrive_resume_v2')!)['|photo.png|8|123'], 'private-upload')
+  assert.equal(store.enqueue([new File(['svg'], 'evil.svg')], null, true), 0)
+})
+
 test('switching channels isolates resume IDs and preserves the original channel resume map', async () => {
   memory.set('tgdrive_resume_v2', JSON.stringify({ '|data.bin|8|123': 'original-upload' }))
   const auth = useAuthStore()

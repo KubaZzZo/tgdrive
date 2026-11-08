@@ -79,6 +79,8 @@ def test_schema6_caption_backfill_preserves_legacy_manual_names(workdir):
     ids = {row["message_id"]: row["item_id"] for row in rows}
     db.rename_item(ids[2], "黑丝.mp4")
     db.conn.execute("ALTER TABLE channel_messages DROP COLUMN remote_name")
+    db.conn.execute("DROP TABLE image_hosts")
+    db.conn.execute("ALTER TABLE uploads DROP COLUMN image_host")
     db.conn.execute("PRAGMA user_version=6")
     db.conn.commit()
     db.close()

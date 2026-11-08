@@ -27,7 +27,7 @@
 
 	# encode 默认按响应 MIME 筛选；媒体路径额外排除以保留 Range 语义。
 	@compressible {
-		not path /api/files/* /s/*
+		not path /api/files/* /s/* /i/*
 	}
 	encode @compressible zstd gzip
 
@@ -36,7 +36,7 @@
 	header @assets Cache-Control "public, max-age=31536000, immutable"
 
 	# 分享撤销/过期必须回源检查。defer 覆盖上游的 public 缓存头。
-	@private path /api /api/* /s /s/*
+	@private path /api /api/* /s /s/* /i/*
 	header @private {
 		Cache-Control "private, no-store"
 		Cloudflare-CDN-Cache-Control "no-store"

@@ -31,6 +31,9 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
             if request.url.path.startswith("/api/"):
                 response.headers.setdefault("Cache-Control", "no-store")
+            if request.url.path.startswith("/i/"):
+                response.headers["Cache-Control"] = "private, no-store"
+                response.headers["Cloudflare-CDN-Cache-Control"] = "no-store"
             response.headers.setdefault(
                 "Content-Security-Policy",
                 "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "

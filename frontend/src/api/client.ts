@@ -1,5 +1,6 @@
 import type {
   DriveItem,
+  HostedImage,
   ItemListResponse,
   ItemQuery,
   Meta,
@@ -151,6 +152,10 @@ export async function uploadChunk(
 }
 
 export const api = {
+  listImages: (q = '', offset = 0) => request<{ images: HostedImage[]; total: number }>(
+    `/api/images?${new URLSearchParams({ q, offset: String(offset), limit: '24' })}`),
+  publishImage: (id: string) => request<{ url: string }>(`/api/images/${encodeURIComponent(id)}`, { method: 'POST' }),
+  unpublishImage: (id: string) => request<{ ok: boolean }>(`/api/images/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   thumbnailUrl: (itemId: string, version: string) => {
     const query = new URLSearchParams({ v: version })
     if (workspaceId) query.set('workspace_id', workspaceId)
@@ -194,6 +199,7 @@ export const api = {
     }),
 
   createUpload: (body: {
+    image_host?: boolean
     name: string
     size: number
     mime: string
