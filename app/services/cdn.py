@@ -32,7 +32,13 @@ def subscription_rows(token: str) -> list[dict]:
             API_URL,
             method="POST",
             data=json.dumps({"page": page, "per_page": 100}).encode(),
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                # The API edge rejects urllib's default Python client signature.
+                "User-Agent": "TGDrive/2.1",
+                "Accept": "application/json",
+            },
         )
         with opener.open(request, timeout=10) as response:
             raw = response.read(2 * 1024 * 1024 + 1)

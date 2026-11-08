@@ -258,4 +258,6 @@ def test_filter_pagination_and_credentials_stay_on_api_host():
         for r in requests
     )
     assert all(r.get_header("Authorization") == "Bearer fake-token" for r in requests)
+    assert all(r.get_header("User-agent") == "TGDrive/2.1" for r in requests)
+    assert all(r.get_header("Accept") == "application/json" for r in requests)
     assert json.loads(requests[1].data)["page"] == 2
