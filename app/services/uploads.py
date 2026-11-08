@@ -12,6 +12,7 @@ from typing import Any
 from weakref import WeakValueDictionary
 
 from app.db import Database
+from app.services.image_host import MAX_IMAGE_SIZE, image_mime
 from app.storage import TelegramStorage
 
 logger = logging.getLogger("tgdrive.uploads")
@@ -111,6 +112,11 @@ class UploadService:
         try:
             if path.stat().st_size != int(upload["size"]):
                 raise ValueError("临时文件大小不匹配，请取消后重新上传")
+            if upload["image_host"]:
+                if int(upload["size"]) > MAX_IMAGE_SIZE:
+                    raise ValueError("图床单张图片不能超过 20 MiB")
+                with path.open("rb") as source:
+                    upload["mime"] = image_mime(source.read(32))
             parent = self.db.get_item(upload["parent_id"]) if upload["parent_id"] else None
             if upload["parent_id"] and (not parent or parent["kind"] != "folder"):
                 raise ValueError("目标文件夹已删除，请取消后重新选择上传目录")
@@ -130,6 +136,7 @@ class UploadService:
                 sha256=sha256,
                 chat_id=str(self.storage.chat),
                 parts=parts,
+                hosted_mime=upload["mime"] if upload["image_host"] else None,
             )
             committed = True
             self.db.update_upload(

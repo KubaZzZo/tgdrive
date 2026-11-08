@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import sqlite3
 import threading
 import uuid
@@ -10,7 +11,7 @@ from typing import Any
 
 from app.categories import CATEGORY_LABELS, classify_file, effective_mime
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def utcnow() -> str:
@@ -209,6 +210,60 @@ class Database:
                         uuid TEXT NOT NULL, period TEXT NOT NULL,
                         charged INTEGER NOT NULL, PRIMARY KEY(uuid, period))""")
                     self.conn.execute("PRAGMA user_version=10")
+
+            if current < 11:
+                with self._lock, self.conn:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    self.conn.execute(
+                        "ALTER TABLE uploads ADD COLUMN image_host INTEGER NOT NULL DEFAULT 0"
+                    )
+                    self.conn.execute("""CREATE TABLE image_hosts (
+                        item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+                        token TEXT NOT NULL UNIQUE, mime TEXT NOT NULL, created_at TEXT NOT NULL)""")
+                    self.conn.execute("PRAGMA user_version=11")
+
+    def publish_image(self, item_id: str, token: str, mime: str) -> dict[str, Any]:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO image_hosts VALUES (?,?,?,?)",
+                (item_id, token, mime, utcnow()),
+            )
+            return dict(
+                self.conn.execute(
+                    "SELECT * FROM image_hosts WHERE item_id=?", (item_id,)
+                ).fetchone()
+            )
+
+    def hosted_image(self, token: str) -> dict[str, Any] | None:
+        with self._lock:
+            return self._dict(
+                self.conn.execute("SELECT * FROM image_hosts WHERE token=?", (token,)).fetchone()
+            )
+
+    def list_hosted_images(self, query: str, limit: int, offset: int) -> tuple[list[dict], int]:
+        with self._lock:
+            where = " FROM image_hosts h JOIN items i ON i.id=h.item_id WHERE instr(lower(i.name),lower(?))>0"
+            total = self.conn.execute("SELECT COUNT(*)" + where, (query,)).fetchone()[0]
+            rows = self.conn.execute(
+                "SELECT i.*,h.token,h.mime AS hosted_mime,h.created_at AS published_at"
+                + where
+                + " ORDER BY h.created_at DESC,h.item_id LIMIT ? OFFSET ?",
+                (query, limit, offset),
+            ).fetchall()
+            return [dict(r) for r in rows], total
+
+    def unpublish_image(self, item_id: str) -> None:
+        with self._lock, self.conn:
+            self.conn.execute("DELETE FROM image_hosts WHERE item_id=?", (item_id,))
+
+    def revoke_web_images_for_message(self, chat_id: str, message_id: int) -> int:
+        with self._lock, self.conn:
+            return self.conn.execute(
+                """DELETE FROM image_hosts WHERE item_id IN (
+                    SELECT i.id FROM items i JOIN file_parts p ON p.item_id=i.id
+                    WHERE i.source='web' AND i.tg_chat_id=? AND p.tg_message_id=?)""",
+                (chat_id, message_id),
+            ).rowcount
 
     def cdn_observe(self, rows: list[tuple[str, str, int]]) -> None:
         with self._lock, self.conn:
@@ -467,6 +522,7 @@ class Database:
         sha256: str | None,
         chat_id: str,
         parts: Iterable[dict[str, Any]],
+        hosted_mime: str | None = None,
     ) -> dict[str, Any]:
         name = self._clean_name(name)
         mime = effective_mime(name, mime)
@@ -500,6 +556,12 @@ class Database:
                         int(part["tg_message_id"]),
                         int(part["size"]),
                     ),
+                )
+
+            if hosted_mime:
+                self.conn.execute(
+                    "INSERT INTO image_hosts VALUES (?,?,?,?)",
+                    (item_id, secrets.token_urlsafe(24), hosted_mime, now),
                 )
         return self.get_item(item_id)  # type: ignore[return-value]
 
@@ -587,6 +649,7 @@ class Database:
         mime: str | None,
         temp_path: str,
         chunk_size: int,
+        image_host: bool = False,
     ) -> dict[str, Any]:
         name = self._clean_name(name)
         if int(size) <= 0:
@@ -601,6 +664,9 @@ class Database:
                 "(id, parent_id, name, size, mime, temp_path, received, chunk_size, state, progress, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'uploading', 0, ?, ?)",
                 (upload_id, parent_id, name, int(size), mime, temp_path, int(chunk_size), now, now),
+            )
+            self.conn.execute(
+                "UPDATE uploads SET image_host=? WHERE id=?", (int(image_host), upload_id)
             )
         return self.get_upload(upload_id)  # type: ignore[return-value]
 
@@ -737,6 +803,10 @@ class Database:
                 ] == file["remote_version"]
                 keep_name = same_post and item and item["name"] != seen["remote_name"]
                 name = item["name"] if keep_name else file["name"]
+                # Publication consent belongs to the original media, not its message slot.
+                # Caption-only updates return above and preserve the public link.
+                if seen["media_key"] != file["media_key"]:
+                    self.conn.execute("DELETE FROM image_hosts WHERE item_id=?", (seen["item_id"],))
                 # A Telegram media replacement updates the file without resetting local renames for caption-only edits.
                 self.conn.execute(
                     "UPDATE items SET name=?,size=?,mime=?,category=?,updated_at=? WHERE id=? AND source='channel'",

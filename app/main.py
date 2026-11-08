@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.api.routes import accounts, auth, files, items, system, uploads
+from app.api.routes import accounts, auth, files, images, items, system, uploads
 from app.config import Settings
 from app.config import settings as default_settings
 from app.core.errors import install_exception_handlers
@@ -124,6 +124,8 @@ def create_app(
     app.include_router(auth.router)
     app.include_router(items.router)
     app.include_router(uploads.router)
+    app.include_router(images.router)
+    app.include_router(images.public_router)
     app.include_router(files.auth_router)
     app.include_router(files.router)
 

@@ -13,6 +13,7 @@ from app.auth import require_auth
 from app.config import Settings
 from app.db import Database
 from app.schemas import UploadCreateBody
+from app.services.image_host import MAX_IMAGE_SIZE
 from app.services.uploads import UploadService
 from app.storage import TelegramStorage
 
@@ -31,6 +32,8 @@ async def create_upload(
     settings: Settings = Depends(get_settings),
     storage: TelegramStorage = Depends(require_storage),
 ) -> dict[str, Any]:
+    if body.image_host and body.size > MAX_IMAGE_SIZE:
+        raise HTTPException(413, "图床单张图片不能超过 20 MiB")
     if body.parent_id:
         parent = db.get_item(body.parent_id)
         if not parent:
@@ -49,6 +52,7 @@ async def create_upload(
             mime=body.mime,
             temp_path=str(temp_path),
             chunk_size=settings.upload_chunk_size,
+            image_host=body.image_host,
         )
     except ValueError as exc:
         temp_path.unlink(missing_ok=True)

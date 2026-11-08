@@ -10,6 +10,7 @@ import { useToastStore } from './toast'
 export type JobState = 'queued' | 'paused' | 'uploading' | 'processing' | 'done' | 'error' | 'canceling' | 'canceled'
 
 export interface UploadJob {
+  imageHost: boolean
   key: string
   file: File
   parentId: string | null
@@ -53,8 +54,8 @@ function saveResume(key: string, id: string | null): void {
   }
 }
 
-function fingerprint(parentId: string | null, file: File): string {
-  return [parentId ?? '', file.name, file.size, file.lastModified || 0].join('|')
+function fingerprint(parentId: string | null, file: File, imageHost = false): string {
+  return [parentId ?? '', file.name, file.size, file.lastModified || 0].join('|') + (imageHost ? '|image-host' : '')
 }
 
 function retryable(cause: unknown): boolean {
@@ -75,22 +76,26 @@ export const useUploadStore = defineStore('uploads', () => {
   })
   const stopped = (job: UploadJob): boolean => job.canceled || job.state === 'paused' || job.state === 'queued'
 
-  function enqueue(files: FileList | File[], parentId: string | null): number {
+  function enqueue(files: FileList | File[], parentId: string | null, imageHost = false): number {
     const toast = useToastStore()
     const limit = Number(useAuthStore().meta?.max_file_size ?? 0)
     let added = 0
     for (const file of Array.from(files)) {
+      if (imageHost && (file.size > 20 * 1024 * 1024 || !/\.(jpe?g|png|gif|webp)$/i.test(file.name))) {
+        toast.error(`${file.name}：请选择 20 MiB 以内的 JPEG、PNG、GIF 或 WebP 图片`)
+        continue
+      }
       if (!file.size || (limit > 0 && file.size > limit)) {
         toast.error(`${file.name}：文件为空或超过大小限制`)
         continue
       }
-      const key = fingerprint(parentId, file)
-      if (jobs.value.some((j) => !['done', 'canceled'].includes(j.state) && fingerprint(j.parentId, j.file) === key)) {
+      const key = fingerprint(parentId, file, imageHost)
+      if (jobs.value.some((j) => !['done', 'canceled'].includes(j.state) && fingerprint(j.parentId, j.file, j.imageHost) === key)) {
         toast.push(`${file.name} 已在上传队列中`)
         continue
       }
       jobs.value.push({
-        key: crypto.randomUUID(), file: markRaw(file), parentId, uploadId: null,
+        key: crypto.randomUUID(), file: markRaw(file), parentId, uploadId: null, imageHost,
         state: 'queued', progress: 0, received: 0, message: '等待上传', error: '',
         speed: null, eta: null, canceled: false, controller: null,
       })
@@ -124,12 +129,12 @@ export const useUploadStore = defineStore('uploads', () => {
   }
 
   async function ensureUpload(job: UploadJob): Promise<Pick<UploadRecord, 'id' | 'received' | 'chunk_size' | 'state'>> {
-    const key = fingerprint(job.parentId, job.file)
+    const key = fingerprint(job.parentId, job.file, job.imageHost)
     const known = job.uploadId ?? loadResumeMap()[key]
     if (known) {
       try {
         const info = await withRetry(() => api.getUpload(known))
-        if (Number(info.size) === job.file.size && info.name === job.file.name && info.parent_id === job.parentId) {
+        if (Number(info.size) === job.file.size && info.name === job.file.name && info.parent_id === job.parentId && Boolean(info.image_host) === job.imageHost) {
           job.uploadId = info.id
           return info
         }
@@ -142,7 +147,7 @@ export const useUploadStore = defineStore('uploads', () => {
     }
     // Creation is not retried automatically: a lost response may already have created a task.
     const created = await api.createUpload({ name: job.file.name, size: job.file.size,
-      mime: job.file.type || 'application/octet-stream', parent_id: job.parentId })
+      mime: job.file.type || 'application/octet-stream', parent_id: job.parentId, image_host: job.imageHost })
     job.uploadId = created.id
     saveResume(key, created.id)
     return { ...created, received: created.offset, state: 'uploading' }
@@ -220,7 +225,7 @@ export const useUploadStore = defineStore('uploads', () => {
           job.received = job.file.size
           job.progress = 100
           job.message = '完成'
-          saveResume(fingerprint(job.parentId, job.file), null)
+          saveResume(fingerprint(job.parentId, job.file, job.imageHost), null)
           completedCount.value += 1
           useToastStore().success(`${job.file.name} 上传完成`)
           return
@@ -281,7 +286,7 @@ export const useUploadStore = defineStore('uploads', () => {
         }
       }
     }
-    saveResume(fingerprint(job.parentId, job.file), null)
+    saveResume(fingerprint(job.parentId, job.file, job.imageHost), null)
     job.uploadId = null
     job.state = 'canceled'
     job.message = '已取消'

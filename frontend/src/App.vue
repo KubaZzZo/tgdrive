@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import AppHeader from '@/components/AppHeader.vue'
 import FileBrowser from '@/components/FileBrowser.vue'
+import ImageHost from '@/components/ImageHost.vue'
 import LoginView from '@/components/LoginView.vue'
 import StorageWarning from '@/components/StorageWarning.vue'
 import ToastHost from '@/components/ToastHost.vue'
@@ -19,6 +20,7 @@ const drive = useDriveStore()
 const uploads = useUploadStore()
 const toast = useToastStore()
 const entered = ref(false)
+const module = ref<'drive' | 'images'>('drive')
 
 async function enterApp(): Promise<void> {
   if (entered.value) return
@@ -70,10 +72,11 @@ onBeforeUnmount(() => {
 <template>
   <LoginView v-if="auth.ready && !auth.authenticated" />
   <div v-else-if="auth.authenticated" class="app-shell">
-    <AppHeader />
+    <AppHeader :module="module" @navigate="module = $event" />
     <StorageWarning :storage="auth.storage" />
     <main class="main" :class="{ 'has-transfers': uploads.hasJobs }">
-      <FileBrowser />
+      <FileBrowser v-if="module === 'drive'" />
+      <ImageHost v-else />
     </main>
     <UploadPanel />
   </div>

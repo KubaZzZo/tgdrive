@@ -119,6 +119,7 @@ export interface ItemListResponse {
 }
 
 export interface UploadRecord {
+  image_host?: number
   id: string
   parent_id: string | null
   name: string
@@ -132,6 +133,13 @@ export interface UploadRecord {
   error: string | null
   created_at: string
   updated_at: string
+}
+
+export interface HostedImage extends DriveItem {
+  token: string
+  url: string
+  published_at: string
+  hosted_mime: string
 }
 
 export interface ShareRecord {
