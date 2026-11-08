@@ -31,6 +31,11 @@ async def progress(job_id: str, request: Request):
     return request.app.state.accounts.login_status(job_id)
 
 
+@router.post("/login/{job_id}/check", status_code=202)
+async def check_scan(job_id: str, request: Request):
+    return request.app.state.accounts.check_scan(job_id)
+
+
 @router.delete("/login/{job_id}")
 async def cancel(job_id: str, request: Request):
     await request.app.state.accounts.cancel(job_id)

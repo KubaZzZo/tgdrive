@@ -12,8 +12,8 @@ def get_proxy() -> tuple[str, str, int, bool, str | None, str | None] | None:
     TG_PROXY wins. Otherwise try the operating system / environment proxy,
     which is what a local Telegram client commonly uses in restricted networks.
     Supported examples:
-      socks5://127.0.0.1:7892
-      http://127.0.0.1:7892
+      socks5://127.0.0.1:1080
+      http://127.0.0.1:8080
     """
     raw = settings.tg_proxy.strip()
     if not raw:

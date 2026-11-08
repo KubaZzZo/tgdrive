@@ -2,7 +2,7 @@
 # TG Drive 一键部署（Ubuntu 22.04 / 24.04）
 # 用法：
 #   sudo bash deploy/bootstrap-ubuntu.sh --domain drive.example.com --email you@example.com \
-#        --repo https://github.com/KubaZzZo/tgdrive.git
+#        --repo https://github.com/OWNER/tgdrive.git
 #   可选：--native（systemd 裸机，默认 docker）
 set -euo pipefail
 
@@ -54,7 +54,7 @@ TG_API_ID=
 TG_API_HASH=
 TG_CHAT_ID=
 TG_SESSION=$APP_DIR/data/tgdrive.session
-# 美国 VPS 一般不需要代理，留空
+# 如需代理，在此填写代理地址
 TG_PROXY=
 
 # ===== 应用 =====

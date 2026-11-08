@@ -7,13 +7,14 @@ import logging
 import re
 import uuid
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qs
 
 import qrcode
 from fastapi import HTTPException
 from starlette.responses import JSONResponse
-from telethon import TelegramClient, utils
+from telethon import TelegramClient, events, functions, types, utils
 from telethon.errors import FloodWaitError, PasswordHashInvalidError, SessionPasswordNeededError
 from telethon.tl.types import Channel
 
@@ -153,41 +154,79 @@ class AccountManager:
                 "qr_image": None,
                 "account": None,
                 "attempts": 0,
+                "check_scan": asyncio.Event(),
             }
             self.pending["worker"] = self.task(self._login(self.pending))
             self.pending["expiry"] = self.task(self._expire(self.pending))
             return self.login_status(key)
 
+    def check_scan(self, job_id: str) -> dict:
+        job = self.job(job_id)
+        if job["state"] == "waiting":
+            job.update(state="checking", qr_image=None)
+            job["check_scan"].set()
+        return self.login_status(job_id)
+
     async def _login(self, job: dict) -> None:
+        client = job["client"]
+        check_scan = job["check_scan"]
+
+        async def on_scan(_update) -> None:
+            check_scan.set()
+
+        client.add_event_handler(on_scan, events.Raw(types.UpdateLoginToken))
         try:
-            await asyncio.wait_for(job["client"].connect(), 30)
+            await asyncio.wait_for(client.connect(), 30)
             session_file = self.settings.data_dir / "accounts" / f"{job['id']}.session"
             if session_file.exists():
                 session_file.chmod(0o600)
-            qr = await asyncio.wait_for(job["client"].qr_login(), 30)
+            request = functions.auth.ExportLoginTokenRequest(
+                self.settings.tg_api_id, self.settings.tg_api_hash, []
+            )
             while True:
+                check_scan.clear()
+                # A Telegram update, a manual check and token expiry all use the
+                # same worker so that re-export and DC migration cannot race.
+                async with asyncio.timeout(30):
+                    result = await client(request)
+                    if isinstance(result, types.auth.LoginTokenMigrateTo):
+                        await client._switch_dc(result.dc_id)
+                        result = await client(functions.auth.ImportLoginTokenRequest(result.token))
+                    if isinstance(result, types.auth.LoginTokenSuccess):
+                        # Initialize Telethon's update state, as QRLogin.wait does.
+                        user = result.authorization.user
+                        await client._on_login(user)
+                        self._ready(job, user)
+                        return
+                if not isinstance(result, types.auth.LoginToken):
+                    raise RuntimeError("Unexpected Telegram QR login response")
+                token = base64.urlsafe_b64encode(result.token).decode().rstrip("=")
                 buffer = io.BytesIO()
-                qrcode.make(qr.url).save(buffer, format="PNG")
+                qrcode.make(f"tg://login?token={token}").save(buffer, format="PNG")
                 job.update(
                     state="waiting",
                     qr_image="data:image/png;base64,"
                     + base64.b64encode(buffer.getvalue()).decode(),
                 )
+                expires_in = (
+                    (result.expires - datetime.now(UTC)).total_seconds() if result.expires else 45
+                )
                 try:
-                    await qr.wait(timeout=45)
-                    break
+                    await asyncio.wait_for(check_scan.wait(), max(0.1, expires_in))
                 except TimeoutError:
-                    await asyncio.wait_for(qr.recreate(), 30)
-            await self._ready(job)
+                    pass
+                job.update(state="checking", qr_image=None)
         except SessionPasswordNeededError:
             job.update(state="password", qr_image=None)
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
+            logger.warning("Telegram QR login failed (%s)", type(exc).__name__)
             job.update(state="error", qr_image=None, error="Telegram 登录失败，请检查网络后重试")
+        finally:
+            client.remove_event_handler(on_scan)
 
-    async def _ready(self, job: dict) -> None:
-        me = await asyncio.wait_for(job["client"].get_me(), 30)
+    def _ready(self, job: dict, me) -> None:
         if not me or getattr(me, "bot", False):
             raise HTTPException(400, "请使用个人 Telegram 账号扫码")
         job.update(
@@ -211,8 +250,8 @@ class AccountManager:
                 raise HTTPException(429, "验证次数过多，请取消后重新扫码")
             job["attempts"] += 1
             try:
-                await asyncio.wait_for(job["client"].sign_in(password=password), 30)
-                await self._ready(job)
+                user = await asyncio.wait_for(job["client"].sign_in(password=password), 30)
+                self._ready(job, user)
             except PasswordHashInvalidError:
                 raise HTTPException(400, "两步验证密码错误") from None
             except FloodWaitError as exc:

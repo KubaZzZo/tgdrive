@@ -1,4 +1,4 @@
-# TG Drive 生产编排（美国 VPS）
+# TG Drive 生产编排
 # 网络模型：公网 -> caddy(80/443) -> app(8787，仅内网)
 name: tgdrive
 

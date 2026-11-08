@@ -141,6 +141,7 @@ export const api = {
   telegramAccounts: () => request<TelegramAccountStatus>('/api/telegram'),
   telegramLogin: () => request<TelegramLogin>('/api/telegram/login', { method: 'POST' }),
   telegramLoginStatus: (id: string) => request<TelegramLogin>(`/api/telegram/login/${encodeURIComponent(id)}`),
+  telegramCheckScan: (id: string) => request<TelegramLogin>(`/api/telegram/login/${encodeURIComponent(id)}/check`, { method: 'POST' }),
   telegramCancelLogin: (id: string) => request<{ ok: boolean }>(`/api/telegram/login/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   telegramPassword: (id: string, password: string) => jsonRequest<TelegramLogin>('POST', `/api/telegram/login/${encodeURIComponent(id)}/password`, { password }),
   telegramChannels: (id: string) => request<{ channels: TelegramChannel[] }>(`/api/telegram/login/${encodeURIComponent(id)}/channels`),

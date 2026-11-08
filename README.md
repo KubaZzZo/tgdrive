@@ -2,7 +2,7 @@
 
 **把 Telegram 私有频道变成可以整理、同步和播放的个人网盘。**
 
-[![CI](https://github.com/KubaZzZo/tgdrive/actions/workflows/ci.yml/badge.svg)](https://github.com/KubaZzZo/tgdrive/actions/workflows/ci.yml)
+[CI 工作流](.github/workflows/ci.yml)
 
 在浏览器上传文件，也可以直接往 Telegram 频道发送媒体。TG Drive 会自动收录、分类，并提供文件夹、搜索、分享和视频在线播放。
 
@@ -76,8 +76,10 @@ flowchart TB
 - 一个 Telegram 账号、可访问的私有频道，以及自己申请的 [Telegram API 凭据](https://my.telegram.org)。
 - VPS 部署请使用 Docker Compose v2，并参考 [部署指南](DEPLOY.md)。
 
+将 `OWNER` 替换为仓库所在的用户或组织。
+
 ```bash
-git clone https://github.com/KubaZzZo/tgdrive.git
+git clone https://github.com/OWNER/tgdrive.git
 cd tgdrive
 ```
 
@@ -116,7 +118,7 @@ TG_API_HASH=your-api-hash
 TG_CHAT_ID=-1001234567890
 ```
 
-**检查代理配置：** `.env.example` 自带 `TG_PROXY=socks5://127.0.0.1:7892` 示例。请改成实际代理地址，不使用它时删除该行；程序还会尝试读取系统或环境代理。服务器需要能够访问 Telegram。
+**检查代理配置。** 如需指定代理，在本机 `.env` 填写 `TG_PROXY`。留空时程序会尝试读取系统或环境代理。服务器需要能够访问 Telegram。
 
 ### 2. 登录 Telegram 并选择存储频道
 
@@ -228,6 +230,7 @@ flowchart TB
 ### 账号、频道与文件分享
 
 - 点击“Telegram 账号”（手机上为“账号”）扫码添加个人账号，完成两步验证后选择频道；最多保存 10 个账号/频道组合。
+- 扫码后在手机上确认。若网页仍显示二维码，可点击“已扫码，检查验证状态”。需要两步验证时，网页会显示 Telegram 密码输入框，验证通过后可选择频道。
 - 每个频道保留独立的目录、分享、上传任务和同步记录，切回即可恢复。两步验证密码不会通过网页登录流程落盘。
 - 正在写入 Telegram 的上传完成前不能切换；未完成的浏览器上传留在原频道，切回后可续传。
 - 分享链接无需登录，可设有效期；对应频道未处于当前连接时，该频道的分享不可用。分享链接暂不支持密码保护。
@@ -340,6 +343,5 @@ static/dist/             # 前端构建产物，不提交到 Git
 | [更新记录](CHANGELOG.md) | 已完成的功能与修复 |
 | [历史验证记录](docs/CHANNEL_SYNC_AND_PLAYER_TEST.md) | 频道同步与播放器的阶段性验证 |
 | [分类验证记录](docs/FRONTEND_CLASSIFICATION_TEST.md) | 文件分类、分页与前端交互 |
-| [传输验证记录](docs/LIVE_TRANSFER_TEST.md) | 真实文件传输的阶段性测试 |
 
 历史验证记录反映当时版本，当前行为以代码和现行指南为准。

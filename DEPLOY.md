@@ -14,17 +14,18 @@
 
 ## 2. 一键部署
 
+将示例域名、邮箱和仓库地址替换为自己的部署参数。
+
 ```bash
 sudo bash deploy/bootstrap-ubuntu.sh \
   --domain drive.example.com \
   --email you@example.com \
-  --repo https://github.com/KubaZzZo/tgdrive.git
+  --repo https://github.com/OWNER/tgdrive.git
 ```
 
 Docker 镜像采用多阶段构建，会自动执行前端 `npm ci && npm run build`，无需在宿主机安装 Node。
 
-接入 Cloudflare 前请阅读 [Cloudflare 与亚太访问](docs/cloudflare.md)，其中说明私有接口缓存、视频分发边界和已有 Nginx 部署的接入方式。
-现有 VPS 的正式 Tunnel、独立 systemd 服务和 DNS 回退方式见 [正式部署记录](docs/cloudflare-production.md)。
+接入网站 CDN 或多 CDN 地域调度前，请阅读 [CDN 接入指南](docs/cdn.md)，确认私有接口缓存、视频 Range、流式缓冲和证书设置。实际部署记录与测速产物请保存在已忽略的 `docs/local/` 或 `output/`，不要提交凭据、个人域名或服务器信息。
 
 首次启动后：
 
