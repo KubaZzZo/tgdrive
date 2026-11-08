@@ -412,10 +412,10 @@ def test_revoked_history_session_requires_qr_login_and_recovers_same_workspace(
         latest_id = 1
 
         def add_event_handler(self, callback, builder):
-            pass
+            self.scan_handler = callback
 
-        def remove_event_handler(self, callback, builder):
-            pass
+        def remove_event_handler(self, callback, builder=None):
+            self.scan_handler = None
 
         async def get_messages(self, chat, *, limit):
             if self.reject_history:
@@ -458,7 +458,7 @@ def test_revoked_history_session_requires_qr_login_and_recovers_same_workspace(
 
             login = await manager.begin()
             await until(lambda: manager.pending["state"] == "waiting")
-            manager.pending["client"].event.set()
+            await manager.pending["client"].scan()
             manager.pending["client"].latest_id = 2
             await until(lambda: manager.pending["state"] == "ready")
             result = await manager.activate_login(login["id"], chat_id)
