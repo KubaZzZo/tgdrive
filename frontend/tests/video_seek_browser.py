@@ -68,10 +68,18 @@ def make_video(ffmpeg: str, path: Path, *, indexed: bool) -> bytes:
     return bytes(data)
 
 
-def exercise(base: str, channel: str | None, files: dict[str, str]) -> None:
+def exercise(base: str, channel: str | None, files: dict, storage, mobile: bool) -> None:
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel=channel)
-        page = browser.new_page(bypass_csp=True)
+        page = browser.new_page(
+            bypass_csp=True, viewport={"width": 390, "height": 844} if mobile else None
+        )
+        page.add_init_script("""document.addEventListener('loadedmetadata', event => {
+            const video = event.target;
+            if (video.matches('.media-screen video')) {
+                video.requestVideoFrameCallback(() => { window.firstVideoFrame = performance.now(); });
+            }
+        }, true);""")
         # Avoid background native video requests from the file-card thumbnails.
         page.route(
             "**/thumbnail*",
@@ -89,13 +97,19 @@ def exercise(base: str, channel: str | None, files: dict[str, str]) -> None:
             ("unindexed after reopening", "unindexed.mp4"),
             ("indexed first seek", "indexed.mp4"),
         ]:
+            item_id, data = files[name]
+            before_cancel = storage.cancelled_bytes
+            started = page.evaluate(
+                "() => { window.firstVideoFrame = 0; return performance.now(); }"
+            )
             page.get_by_text(name, exact=True).first.dblclick()
             page.wait_for_function(
                 """() => {
                     const video = document.querySelector('.media-screen video');
-                    return video?.readyState >= 2 && video.duration === 150;
+                    return video?.readyState >= 2 && video.duration === 150 && window.firstVideoFrame;
                 }"""
             )
+            first_frame = page.evaluate("window.firstVideoFrame") - started
             video = page.locator(".media-screen video")
             assert not video.evaluate(
                 "(v, t) => Array.from({ length: v.buffered.length }, (_, i) => i)"
@@ -104,13 +118,13 @@ def exercise(base: str, channel: str | None, files: dict[str, str]) -> None:
             )
             ranges = []
 
-            def record(request, item_id=files[name], recorded=ranges):
+            def record(request, item_id=item_id, recorded=ranges):
                 if f"/files/{item_id}/download" in request.url:
                     match = re.fullmatch(r"bytes=(\d+)-(\d+)", request.headers.get("range", ""))
                     if match:
                         start, end = map(int, match.groups())
                         # Ignore in-flight sequential prefetch started before the seek.
-                        if start >= 65536 and (start - 65536) % 2**21 != 0:
+                        if start >= 65536 and (start - 65536) % 65536 != 0:
                             recorded.append((start, end - start + 1))
 
             page.on("request", record)
@@ -135,26 +149,51 @@ def exercise(base: str, channel: str | None, files: dict[str, str]) -> None:
                 TARGET,
             )
             page.remove_listener("request", record)
-            # The fixture has at least 2 MiB after each target keyframe.
-            first_playback = next(i for i, (_, length) in enumerate(ranges) if length == 2**21)
+            first_playback = next(
+                i for i, (start, _) in enumerate(ranges) if data[start + 4 : start + 8] == b"moof"
+            )
             probes = ranges[:first_playback]
             if label == "unindexed first seek":
                 assert probes, ranges
             else:
                 assert not probes, ranges
+            stalled_ms = video.evaluate(
+                """async video => {
+                    let stalled = 0;
+                    let since = null;
+                    const wait = () => { since ??= performance.now(); };
+                    const play = () => {
+                        if (since !== null) stalled += performance.now() - since;
+                        since = null;
+                    };
+                    video.addEventListener('waiting', wait);
+                    video.addEventListener('playing', play);
+                    await video.play();
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                    video.pause();
+                    play();
+                    video.removeEventListener('waiting', wait);
+                    video.removeEventListener('playing', play);
+                    return stalled;
+                }"""
+            )
+            page.get_by_role("button", name="关闭", exact=True).click()
+            video.wait_for(state="detached")
+            page.wait_for_timeout(150)
             print(
                 json.dumps(
                     {
                         "case": label,
+                        "first_frame_ms": round(first_frame),
                         "seek_to_frame_ms": round(elapsed),
+                        "rebuffer_ms_1_5s": round(stalled_ms),
                         "probe_requests": len(probes),
                         "probe_bytes": sum(length for _, length in probes),
+                        "bytes_sent_on_cancelled_reads": storage.cancelled_bytes - before_cancel,
                     }
                 ),
                 flush=True,
             )
-            page.get_by_role("button", name="关闭", exact=True).click()
-            video.wait_for(state="detached")
         browser.close()
 
 
@@ -166,14 +205,25 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--channel", help="Playwright Chromium channel, such as msedge or chrome")
+    parser.add_argument("--delay-ms", type=int, default=15, help="Fixture delay per 256 KiB block")
+    parser.add_argument("--mobile", action="store_true", help="Use a narrow mobile viewport")
     args = parser.parse_args()
     assert (ROOT / "static/dist/index.html").is_file(), "Run npm --prefix frontend run build first"
 
     class Storage(FakeTelegramStorage):
+        cancelled_bytes = 0
+
         async def iter_download(self, message_id, offset, length):
-            for start in range(offset, offset + length, 262144):
-                await asyncio.sleep(0.015)
-                yield self.files[message_id][start : min(start + 262144, offset + length)]
+            sent = 0
+            try:
+                for start in range(offset, offset + length, 262144):
+                    await asyncio.sleep(args.delay_ms / 1000)
+                    block = self.files[message_id][start : min(start + 262144, offset + length)]
+                    sent += len(block)
+                    yield block
+            finally:
+                if sent < length:
+                    self.cancelled_bytes += sent
 
     with TemporaryDirectory(prefix="tgdrive-video-seek-") as temp, socket.socket() as listener:
         path = Path(temp)
@@ -194,7 +244,7 @@ def main() -> None:
                 str(storage.chat),
                 [{"part_index": 0, "tg_message_id": message_id, "size": len(data)}],
             )
-            files[name] = item["id"]
+            files[name] = (item["id"], data)
         listener.bind(("127.0.0.1", 0))
         base = f"http://127.0.0.1:{listener.getsockname()[1]}"
         server = uvicorn.Server(uvicorn.Config(app, access_log=False, log_level="warning"))
@@ -206,7 +256,7 @@ def main() -> None:
                     break
                 time.sleep(0.05)
             assert server.started, "Fixture server failed to start"
-            exercise(base, args.channel, files)
+            exercise(base, args.channel, files, storage, args.mobile)
         finally:
             server.should_exit = True
             thread.join(timeout=10)

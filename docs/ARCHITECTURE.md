@@ -73,7 +73,7 @@ schema v7 为频道消息保存 `remote_name`：普通字符串表示最近一�
 
 前端 Sync store 定期读取鉴权后的 `/api/sync`，只在 revision 变化时刷新当前列表；旧会话的异步响应在退出登录后丢弃。MediaPlayer 使用浏览器媒体元素，不做转码；进度在本地存储中限量保存，关闭时暂停并移除媒体源。
 
-分片 MP4 通过 MediaSource 或 iPhone 的 ManagedMediaSource 播放；后者在绑定前禁用远程播放，并遵守系统流式缓冲窗口。用户主动开启的完整视频缓存通过三个并发 Range 请求写入浏览器 OPFS；同名 Web Lock 协调跨标签页读写，VPS 不保存媒体缓存。鉴权后的封面接口只读取 Telegram 静态缩略图；缺少缩略图时，浏览器首帧提取最多并发两个任务。
+分片 MP4 通过 MediaSource 或 iPhone 的 ManagedMediaSource 播放，后者在绑定前禁用远程播放，并遵守系统流式缓冲窗口。播放器用真实 Range 请求采样网速，调整请求大小和缓冲窗口。视频文件头和手动缓存的完整文件保存在浏览器 OPFS，使用 ETag 校验和 Web Locks 协调跨标签页读写及淘汰。鉴权后的封面接口读取 Telegram 静态缩略图，缺少缩略图时浏览器最多同时提取两张，前台播放器打开时暂停提取。
 ## Telegram 连接与频道空间
 
 主数据库保存账号/频道连接清单、活动连接、频道数据库映射，以及全局流量统计。

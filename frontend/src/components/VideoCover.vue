@@ -25,13 +25,21 @@ async function firstFrame(): Promise<void> {
   controller = new AbortController()
   const signal = controller.signal
   const url = api.downloadUrl(props.item.id)
+  const finish = () => { if (controller?.signal === signal) stop() }
   try {
-    release = await acquireCoverSlot(signal)
+    const slot = await acquireCoverSlot(signal, () => {
+      if (controller?.signal !== signal) return
+      stop()
+      controller = undefined
+      void firstFrame()
+    })
+    if (signal.aborted) { slot(); return }
+    release = slot
     const response = await fetch(url, { method: 'HEAD', signal })
     signal.throwIfAborted()
-    if (!response.ok) { stop(); return }
+    if (!response.ok) { finish(); return }
   }
-  catch { stop(); return }
+  catch { finish(); return }
   video = document.createElement('video')
   video.muted = true; video.playsInline = true; video.preload = 'auto'
   video.style.cssText = 'position:fixed;width:1px;height:1px;opacity:0;pointer-events:none'
@@ -43,14 +51,14 @@ async function firstFrame(): Promise<void> {
       canvas.width = 320; canvas.height = Math.round(320 * video.videoHeight / video.videoWidth)
       canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height)
       image.value = canvas.toDataURL('image/jpeg', .7)
-    } finally { stop() }
+    } finally { finish() }
   }, { once: true })
-  timer = setTimeout(stop, 20000)
+  timer = setTimeout(finish, 20000)
   try {
-    const value = await attachMedia(video, url, signal, stop)
+    const value = await attachMedia(video, url, signal, finish)
     if (signal.aborted) value.dispose()
     else session = value
-  } catch { stop() }
+  } catch { finish() }
 }
 onMounted(() => {
   observer = new IntersectionObserver(entries => {

@@ -1,13 +1,23 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { attachMedia, fragmentedMp4Type, mediaChunkSize } from '../src/utils/fragmentedMp4.ts'
+import { attachMedia, fragmentedMp4Type } from '../src/utils/fragmentedMp4.ts'
+import { MediaTransfer } from '../src/utils/mediaTransfer.ts'
 
 test('media ranges adapt to bitrate and stay aligned within memory limits', () => {
-  assert.equal(mediaChunkSize(10_000_000, 1000), 512 * 1024)
-  assert.equal(mediaChunkSize(4_000_000_000, 1000), 4 * 1024 * 1024)
-  assert.equal(mediaChunkSize(100_000_000, NaN), 2 * 1024 * 1024)
-  assert.equal(mediaChunkSize(100_000_000, 0), 2 * 1024 * 1024)
-  assert.equal(mediaChunkSize(200_000_000, 1000) % (64 * 1024), 0)
+  const transfer = new MediaTransfer()
+  const bitrate = 1_000_000
+  assert.equal(transfer.playbackBytes(0, 10), 2 * 1024 * 1024)
+  assert.equal(transfer.playbackBytes(4_000_000, 10), 4 * 1024 * 1024)
+  assert.equal(transfer.playbackBytes(bitrate, 0), 512 * 1024)
+  transfer.sample(512 * 1024, 2000, 150)
+  assert.equal(transfer.playbackBytes(bitrate, 10), 512 * 1024)
+  assert.equal(transfer.bufferSeconds(bitrate, false, false), 16)
+  assert.equal(transfer.bufferSeconds(bitrate, true, false, 120), 8)
+  for (let i = 0; i < 12; i++) transfer.sample(1024 * 1024, 100)
+  assert.ok(transfer.playbackBytes(bitrate, 10) > 512 * 1024)
+  assert.equal(transfer.playbackBytes(bitrate, 10) % (64 * 1024), 0)
+  assert.equal(transfer.cacheConcurrency(false), 3)
+  assert.equal(transfer.cacheConcurrency(true), 1)
 })
 
 function box(type: string, ...parts: Uint8Array[]): Uint8Array {

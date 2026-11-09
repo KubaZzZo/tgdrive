@@ -256,14 +256,19 @@ class Database:
         with self._lock, self.conn:
             self.conn.execute("DELETE FROM image_hosts WHERE item_id=?", (item_id,))
 
-    def revoke_web_images_for_message(self, chat_id: str, message_id: int) -> int:
+    def invalidate_web_media_for_message(self, chat_id: str, message_id: int) -> int:
+        items = """SELECT i.id FROM items i JOIN file_parts p ON p.item_id=i.id
+                   WHERE i.source='web' AND i.tg_chat_id=? AND p.tg_message_id=?"""
         with self._lock, self.conn:
-            return self.conn.execute(
-                """DELETE FROM image_hosts WHERE item_id IN (
-                    SELECT i.id FROM items i JOIN file_parts p ON p.item_id=i.id
-                    WHERE i.source='web' AND i.tg_chat_id=? AND p.tg_message_id=?)""",
+            revoked = self.conn.execute(
+                f"DELETE FROM image_hosts WHERE item_id IN ({items})",
                 (chat_id, message_id),
             ).rowcount
+            changed = self.conn.execute(
+                f"UPDATE items SET updated_at=? WHERE id IN ({items})",
+                (utcnow(), chat_id, message_id),
+            ).rowcount
+            return revoked + changed
 
     def cdn_observe(self, rows: list[tuple[str, str, int]]) -> None:
         with self._lock, self.conn:
