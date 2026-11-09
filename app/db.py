@@ -312,6 +312,15 @@ class Database:
                 ).fetchone()
             )
 
+    def delete_telegram_profile(self, profile_id: str) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                """DELETE FROM telegram_profiles WHERE id=? AND NOT EXISTS (
+                    SELECT 1 FROM telegram_active WHERE profile_id=telegram_profiles.id
+                )""",
+                (profile_id,),
+            )
+
     def telegram_workspace(self, chat_id: str) -> str | None:
         with self._lock:
             row = self.conn.execute(

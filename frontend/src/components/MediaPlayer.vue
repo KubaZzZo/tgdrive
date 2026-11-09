@@ -54,6 +54,8 @@ const scrub = ref<number | null>(null)
 const rate = ref(1)
 const volume = ref(1)
 const muted = ref(false)
+const rotation = ref(0)
+const quarterTurn = computed(() => rotation.value % 180 !== 0)
 let restored = false
 let lastSaved = 0
 let disposed = false
@@ -277,11 +279,12 @@ onBeforeUnmount(() => {
     aria-label="媒体播放器；空格播放暂停，方向键快进快退"
     @keydown="onKey"
   >
-    <div class="media-screen">
+    <div class="media-screen" :class="{ 'media-quarter-turn': quarterTurn }">
       <component
         :is="kind"
         ref="player"
-        controls
+        :controls="rotation === 0"
+        :style="rotation ? { rotate: `${rotation}deg` } : undefined"
         playsinline
         preload="metadata"
         :poster="kind === 'video' ? poster : undefined"
@@ -346,6 +349,9 @@ onBeforeUnmount(() => {
           @input="changeVolume"
         /><button v-if="pipAvailable" @click="pictureInPicture">画中画</button
         ><button v-if="kind === 'video'" @click="fullscreen">全屏</button>
+        <button v-if="kind === 'video'" @click="rotation = (rotation + 90) % 360">
+          旋转视频<span v-if="rotation">（{{ rotation }}°）</span>
+        </button>
         <label v-if="kind === 'video'" class="speed-control">播放方式<select v-model="playbackMode" aria-label="播放方式" @change="retry"><option value="auto">兼容模式（推荐）</option><option value="native">浏览器原生</option></select></label>
         <label v-if="streaming" class="speed-control">预缓冲<select v-model.number="bufferSeconds" aria-label="预缓冲时长"><option :value="60">60 秒</option><option :value="120">120 秒</option></select></label>
         <button v-if="kind === 'video' && cacheSupported && !cacheBusy && !local" @click="cacheHere">缓存到本机</button>

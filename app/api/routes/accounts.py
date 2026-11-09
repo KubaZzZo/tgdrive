@@ -60,3 +60,8 @@ async def activate(job_id: str, body: ChannelBody, request: Request):
 @router.post("/profiles/{profile_id}/activate")
 async def activate_profile(profile_id: str, request: Request):
     return await request.app.state.accounts.activate_saved(profile_id)
+
+
+@router.delete("/profiles/{profile_id}")
+async def delete_profile(profile_id: str, request: Request):
+    return await request.app.state.accounts.delete_saved(profile_id)
