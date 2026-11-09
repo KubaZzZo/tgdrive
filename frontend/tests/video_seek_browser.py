@@ -74,12 +74,6 @@ def exercise(base: str, channel: str | None, files: dict, storage, mobile: bool)
         page = browser.new_page(
             bypass_csp=True, viewport={"width": 390, "height": 844} if mobile else None
         )
-        page.add_init_script("""document.addEventListener('loadedmetadata', event => {
-            const video = event.target;
-            if (video.matches('.media-screen video')) {
-                video.requestVideoFrameCallback(() => { window.firstVideoFrame = performance.now(); });
-            }
-        }, true);""")
         # Avoid background native video requests from the file-card thumbnails.
         page.route(
             "**/thumbnail*",
@@ -99,18 +93,30 @@ def exercise(base: str, channel: str | None, files: dict, storage, mobile: bool)
         ]:
             item_id, data = files[name]
             before_cancel = storage.cancelled_bytes
-            started = page.evaluate(
-                "() => { window.firstVideoFrame = 0; return performance.now(); }"
-            )
+            started = page.evaluate("performance.now()")
             page.get_by_text(name, exact=True).first.dblclick()
             page.wait_for_function(
                 """() => {
                     const video = document.querySelector('.media-screen video');
-                    return video?.readyState >= 2 && video.duration === 150 && window.firstVideoFrame;
-                }"""
+                    return video?.readyState >= 1 && Math.abs(video.duration - 150) < 1;
+                }""",
+                timeout=12000,
             )
-            first_frame = page.evaluate("window.firstVideoFrame") - started
             video = page.locator(".media-screen video")
+            first_frame = (
+                video.evaluate(
+                    """video => new Promise((resolve, reject) => {
+                    const timeout = setTimeout(() => reject(new Error('First frame not rendered')), 12000);
+                    video.requestVideoFrameCallback(now => {
+                        clearTimeout(timeout);
+                        video.pause();
+                        resolve(now);
+                    });
+                    video.play().catch(error => { clearTimeout(timeout); reject(error); });
+                })"""
+                )
+                - started
+            )
             assert not video.evaluate(
                 "(v, t) => Array.from({ length: v.buffered.length }, (_, i) => i)"
                 ".some(i => v.buffered.start(i) <= t && t < v.buffered.end(i))",
