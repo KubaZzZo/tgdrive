@@ -12,7 +12,9 @@ iPhone 的兼容模式优先检测 ManagedMediaSource，在绑定视频源前禁
 
 播放器优先使用文件头中可用的直接分片索引（SIDX）。需要探测时，同一浏览器标签页内重新打开同一版本的视频可以复用已找到的关键帧。
 
-本机 OPFS 缓存会保留已读过的分片 MP4 文件头，并按近期使用顺序淘汰。手动“缓存到本机”按网络速度使用 1～3 路请求，正在播放时降为单路。缓存预算为 512 MiB，手动缓存更大的单个视频时可扩展到该视频大小，仍受浏览器空间限制。重新打开视频时，仅在本机有缓存时发起权限和 ETag 校验。整片下载也逐段校验 ETag，正在播放的缓存受跨标签页锁保护。缓存完成后，下次打开时会优先使用本机文件。首次传输仍经 VPS，关闭播放器会取消未完成的缓存。
+本机 OPFS 缓存保留已读过的分片 MP4 文件头，以及观看或跳转过程中读到的关键帧附近片段。每个视频最多保留 8 段，每段至多 1 MiB，重复访问的片段会更新淘汰顺序。重新打开分片视频会尝试恢复播放进度，匹配 ETag 的本机片段和关键帧索引可以跨页面刷新复用。
+
+手动“缓存到本机”按网络速度使用 1～3 路请求，正在播放时降为单路。缓存预算为 512 MiB，手动缓存更大的单个视频时可扩展到该视频大小，仍受浏览器空间限制。重新打开视频时，仅在本机有完整文件或文件头缓存时单独发起权限和 ETag 校验。整片下载也逐段校验 ETag，正在播放的缓存受跨标签页锁保护。缓存完成后，下次打开时会优先使用本机文件。首次传输仍经 VPS，关闭播放器会取消未完成的缓存。
 
 封面优先使用 Telegram 静态缩略图。没有缩略图时尝试在浏览器截取首帧，打开播放器期间暂停这项后台任务。
 
@@ -22,4 +24,6 @@ iPhone 的兼容模式优先检测 ManagedMediaSource，在绑定视频源前禁
 
 回归检查：运行 `python -m pytest -q`；在 frontend 运行 `npm test` 与 `npm run build`。本机缓存的浏览器检查需先启动 Vite，然后分别用 Playwright CLI 的 chrome / msedge 会话打开 `http://127.0.0.1:5173/`，运行 `run-code --filename frontend/tests/deviceCache.browser.cjs`（从仓库根目录执行）。检查真实 OPFS 分段写入、字节完整性、重复读取、频道隔离与取消清理；使用约 6 MB 合成数据，不连接 Telegram。
 
-视频跳转的浏览器回归从仓库根目录运行。先构建前端并准备 Python Playwright、Chromium 与支持 libx264 的 FFmpeg，然后执行 `python frontend/tests/video_seek_browser.py`。可用 `--ffmpeg` 指定 FFmpeg 路径，用 `--channel msedge` 使用已安装的 Edge。脚本生成本地测试视频，记录从拖动到目标画面的时间、定位请求数和定位字节数。
+视频浏览器回归从仓库根目录运行。先构建前端并准备 Python Playwright、Chromium 与支持 libx264 的 FFmpeg，然后执行 `python frontend/tests/video_seek_browser.py --runs 5 --play-ms 3000`。可用 `--ffmpeg` 指定 FFmpeg 路径，用 `--channel msedge` 使用已安装的 Edge，或加 `--mobile --delay-ms 350` 模拟窄屏和高延迟。脚本记录首帧、拖动、卡顿、定位流量与被取消请求已发出的字节，并汇总中位数与 P95。热缓存用例刷新页面后验证从磁盘续播。模拟结果应与真实线路和设备的样本分开解读。
+
+排查线上视频链路时，对已登录的 1 MiB 以内视频 Range 请求附加 `X-TGDrive-Media-Probe: 1`。用响应的 `X-Request-ID` 在服务日志中匹配 `Media probe`，可把 VPS 等待首个媒体块的时间和客户端等待首字节的时间分开观察。取消请求时记录的是服务端已交给响应流的字节。

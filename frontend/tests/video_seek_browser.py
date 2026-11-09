@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import re
 import socket
 import struct
@@ -13,6 +14,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from statistics import median
 from tempfile import TemporaryDirectory
 
 import uvicorn
@@ -68,7 +70,10 @@ def make_video(ffmpeg: str, path: Path, *, indexed: bool) -> bytes:
     return bytes(data)
 
 
-def exercise(base: str, channel: str | None, files: dict, storage, mobile: bool) -> None:
+def exercise(
+    base: str, channel: str | None, files: dict, storage, mobile: bool, play_ms: int
+) -> list:
+    samples = []
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel=channel)
         page = browser.new_page(
@@ -86,15 +91,32 @@ def exercise(base: str, channel: str | None, files: dict, storage, mobile: bool)
             base + "/api/login", data={"password": "correct-horse-battery-staple"}
         ).ok
         page.goto(base)
+        anchor = None
+        resume_position = None
         for label, name in [
             ("unindexed first seek", "unindexed.mp4"),
-            ("unindexed after reopening", "unindexed.mp4"),
+            ("unindexed disk resume after reload", "unindexed.mp4"),
             ("indexed first seek", "indexed.mp4"),
         ]:
             item_id, data = files[name]
+            warm = label == "unindexed disk resume after reload"
+            if warm:
+                page.reload()
+            requests = []
+
+            def record(request, item_id=item_id, recorded=requests):
+                if f"/files/{item_id}/download" in request.url:
+                    match = re.fullmatch(r"bytes=(\d+)-(\d+)", request.headers.get("range", ""))
+                    if match:
+                        start, end = map(int, match.groups())
+                        recorded.append((request.method, start, end))
+
+            page.on("request", record)
             before_cancel = storage.cancelled_bytes
+            row = page.get_by_text(name, exact=True).first
+            row.wait_for(state="visible")
             started = page.evaluate("performance.now()")
-            page.get_by_text(name, exact=True).first.dblclick()
+            row.dblclick()
             page.wait_for_function(
                 """() => {
                     const video = document.querySelector('.media-screen video');
@@ -105,37 +127,42 @@ def exercise(base: str, channel: str | None, files: dict, storage, mobile: bool)
             video = page.locator(".media-screen video")
             first_frame = (
                 video.evaluate(
-                    """video => new Promise((resolve, reject) => {
+                    """(video, goal) => new Promise((resolve, reject) => {
                     const timeout = setTimeout(() => reject(new Error('First frame not rendered')), 12000);
-                    video.requestVideoFrameCallback(now => {
+                    function frame(now, metadata) {
+                        if (goal !== null && Math.abs(metadata.mediaTime - goal) > 1) {
+                            video.requestVideoFrameCallback(frame);
+                            return;
+                        }
                         clearTimeout(timeout);
                         video.pause();
                         resolve(now);
-                    });
+                    }
+                    video.requestVideoFrameCallback(frame);
                     video.play().catch(error => { clearTimeout(timeout); reject(error); });
-                })"""
+                })""",
+                    resume_position if warm else None,
                 )
                 - started
             )
-            assert not video.evaluate(
-                "(v, t) => Array.from({ length: v.buffered.length }, (_, i) => i)"
-                ".some(i => v.buffered.start(i) <= t && t < v.buffered.end(i))",
-                TARGET,
-            )
-            ranges = []
-
-            def record(request, item_id=item_id, recorded=ranges):
-                if f"/files/{item_id}/download" in request.url:
-                    match = re.fullmatch(r"bytes=(\d+)-(\d+)", request.headers.get("range", ""))
-                    if match:
-                        start, end = map(int, match.groups())
-                        # Ignore in-flight sequential prefetch started before the seek.
-                        if start >= 65536 and (start - 65536) % 65536 != 0:
-                            recorded.append((start, end - start + 1))
-
-            page.on("request", record)
-            elapsed = video.evaluate(
-                """(video, target) => new Promise((resolve, reject) => {
+            startup_requests = len(requests)
+            elapsed = None
+            probes = []
+            if warm:
+                assert resume_position is not None and anchor is not None
+                assert ("HEAD", 0, 0) in requests, requests
+                assert not any(
+                    method == "GET" and (start == 0 or start <= anchor <= end)
+                    for method, start, end in requests
+                ), requests
+            else:
+                assert not video.evaluate(
+                    "(v, t) => Array.from({ length: v.buffered.length }, (_, i) => i)"
+                    ".some(i => v.buffered.start(i) <= t && t < v.buffered.end(i))",
+                    TARGET,
+                )
+                elapsed = video.evaluate(
+                    """(video, target) => new Promise((resolve, reject) => {
                     const timeline = video.closest('.media-player').querySelector('.media-timeline input');
                     const started = performance.now();
                     const timeout = setTimeout(() => reject(new Error('Target frame was not displayed')), 12000);
@@ -152,19 +179,26 @@ def exercise(base: str, channel: str | None, files: dict, storage, mobile: bool)
                     timeline.dispatchEvent(new Event('input', { bubbles: true }));
                     timeline.dispatchEvent(new Event('change', { bubbles: true }));
                 })""",
-                TARGET,
-            )
-            page.remove_listener("request", record)
-            first_playback = next(
-                i for i, (start, _) in enumerate(ranges) if data[start + 4 : start + 8] == b"moof"
-            )
-            probes = ranges[:first_playback]
-            if label == "unindexed first seek":
-                assert probes, ranges
-            else:
-                assert not probes, ranges
+                    TARGET,
+                )
+                ranges = [
+                    (start, end)
+                    for method, start, end in requests[startup_requests:]
+                    if method == "GET" and start >= 65536 and (start - 65536) % 65536 != 0
+                ]
+                first_playback = next(
+                    i
+                    for i, (start, _) in enumerate(ranges)
+                    if data[start + 4 : start + 8] == b"moof"
+                )
+                probes = ranges[:first_playback]
+                if label == "unindexed first seek":
+                    assert probes, ranges
+                    anchor = ranges[first_playback][0]
+                else:
+                    assert not probes, ranges
             stalled_ms = video.evaluate(
-                """async video => {
+                """async (video, playMs) => {
                     let stalled = 0;
                     let since = null;
                     const wait = () => { since ??= performance.now(); };
@@ -175,32 +209,37 @@ def exercise(base: str, channel: str | None, files: dict, storage, mobile: bool)
                     video.addEventListener('waiting', wait);
                     video.addEventListener('playing', play);
                     await video.play();
-                    await new Promise(resolve => setTimeout(resolve, 1500));
+                    await new Promise(resolve => setTimeout(resolve, playMs));
                     video.pause();
                     play();
                     video.removeEventListener('waiting', wait);
                     video.removeEventListener('playing', play);
                     return stalled;
-                }"""
+                }""",
+                play_ms,
             )
+            if label == "unindexed first seek":
+                resume_position = video.evaluate("(video) => video.currentTime")
+                assert TARGET <= resume_position < DURATION - 2
             page.get_by_role("button", name="关闭", exact=True).click()
             video.wait_for(state="detached")
             page.wait_for_timeout(150)
-            print(
-                json.dumps(
-                    {
-                        "case": label,
-                        "first_frame_ms": round(first_frame),
-                        "seek_to_frame_ms": round(elapsed),
-                        "rebuffer_ms_1_5s": round(stalled_ms),
-                        "probe_requests": len(probes),
-                        "probe_bytes": sum(length for _, length in probes),
-                        "bytes_sent_on_cancelled_reads": storage.cancelled_bytes - before_cancel,
-                    }
-                ),
-                flush=True,
-            )
+            page.remove_listener("request", record)
+            sample = {
+                "case": label,
+                "first_frame_ms": round(first_frame),
+                "seek_to_frame_ms": round(elapsed) if elapsed is not None else None,
+                "rebuffer_ms": round(stalled_ms),
+                "play_window_ms": play_ms,
+                "startup_range_requests": startup_requests,
+                "probe_requests": None if warm else len(probes),
+                "probe_bytes": None if warm else sum(end - start + 1 for start, end in probes),
+                "bytes_sent_on_cancelled_reads": storage.cancelled_bytes - before_cancel,
+            }
+            samples.append(sample)
+            print(json.dumps(sample), flush=True)
         browser.close()
+    return samples
 
 
 def main() -> None:
@@ -213,7 +252,13 @@ def main() -> None:
     parser.add_argument("--channel", help="Playwright Chromium channel, such as msedge or chrome")
     parser.add_argument("--delay-ms", type=int, default=15, help="Fixture delay per 256 KiB block")
     parser.add_argument("--mobile", action="store_true", help="Use a narrow mobile viewport")
+    parser.add_argument("--runs", type=int, default=1, help="Number of independent browser samples")
+    parser.add_argument(
+        "--play-ms", type=int, default=1500, help="Playback window for stall sampling"
+    )
     args = parser.parse_args()
+    if args.runs < 1 or not 1 <= args.play_ms <= 30_000 or args.delay_ms < 0:
+        parser.error("runs must be positive, play-ms must be 1–30000, delay-ms must be nonnegative")
     assert (ROOT / "static/dist/index.html").is_file(), "Run npm --prefix frontend run build first"
 
     class Storage(FakeTelegramStorage):
@@ -262,7 +307,30 @@ def main() -> None:
                     break
                 time.sleep(0.05)
             assert server.started, "Fixture server failed to start"
-            exercise(base, args.channel, files, storage, args.mobile)
+            samples = []
+            for _ in range(args.runs):
+                samples.extend(
+                    exercise(base, args.channel, files, storage, args.mobile, args.play_ms)
+                )
+            for label in dict.fromkeys(sample["case"] for sample in samples):
+                group = [sample for sample in samples if sample["case"] == label]
+                metrics = {}
+                for key in (
+                    "first_frame_ms",
+                    "seek_to_frame_ms",
+                    "rebuffer_ms",
+                    "bytes_sent_on_cancelled_reads",
+                ):
+                    values = sorted(sample[key] for sample in group if sample[key] is not None)
+                    if values:
+                        metrics[key] = {
+                            "median": median(values),
+                            "p95": values[math.ceil(len(values) * 0.95) - 1],
+                        }
+                print(
+                    json.dumps({"summary": label, "samples": len(group), "metrics": metrics}),
+                    flush=True,
+                )
         finally:
             server.should_exit = True
             thread.join(timeout=10)

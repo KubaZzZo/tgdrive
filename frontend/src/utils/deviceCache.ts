@@ -5,14 +5,25 @@ const MiB = 1024 * 1024
 const capacity = 512 * MiB
 const prefixSize = 64 * 1024
 const indexName = 'index.json'
+const maxSegmentBytes = MiB
+const segmentsPerVideo = 8
 
-type CacheEntry = { key: string; etag: string; name: string; bytes: number; touched: number; prefix: boolean }
+export interface VideoSegment {
+  start: number
+  keyframeOffset: number
+  time: number
+  length: number
+}
+type CacheEntry = {
+  key: string; etag: string; name: string; bytes: number; touched: number; prefix: boolean
+  segment?: VideoSegment
+}
 type CachedVideo = { file: File; etag: string; release: () => void }
 
 export const deviceCacheAvailable = () => !!navigator.storage?.getDirectory && !!navigator.locks
 
-async function root(): Promise<FileSystemDirectoryHandle> {
-  return (await navigator.storage.getDirectory()).getDirectoryHandle(directory, { create: true })
+async function root(create = false): Promise<FileSystemDirectoryHandle> {
+  return (await navigator.storage.getDirectory()).getDirectoryHandle(directory, { create })
 }
 
 async function readIndex(dir: FileSystemDirectoryHandle): Promise<CacheEntry[]> {
@@ -67,7 +78,7 @@ export async function cachedVideo(key: string, size: number, allowPrefix = false
       const dir = await root()
       const entries = await readIndex(dir)
       for (const bytes of allowPrefix && size > prefixSize ? [size, prefixSize] : [size]) {
-        const entry = entries.find(value => value.key === key && value.bytes === bytes)
+        const entry = entries.find(value => value.key === key && !value.segment && value.bytes === bytes)
         if (!entry || !strongMediaTag(entry.etag)) continue
         const file = await (await dir.getFileHandle(entry.name)).getFile()
         if (file.size !== bytes) continue
@@ -99,6 +110,7 @@ async function writeCached(
   fill: (writer: FileSystemWritableFileStream) => Promise<string>,
   prefix = false,
   signal?: AbortSignal,
+  segment?: VideoSegment,
 ): Promise<File> {
   const entries = (await readIndex(dir)).sort((a, b) => a.touched - b.touched)
   const existing = new Set(entries.map(entry => entry.name))
@@ -108,7 +120,15 @@ async function writeCached(
   }
   const limit = Math.max(capacity, bytes)
   const locked = new Set((await navigator.locks.query()).held?.map(lock => lock.name))
-  const kept = entries.filter(entry => entry.key !== key || entry.bytes !== bytes)
+  const kept = entries.filter(entry => {
+    if (entry.key !== key) return true
+    return segment ? entry.segment?.start !== segment.start : !!entry.segment || entry.bytes !== bytes
+  })
+  if (segment) {
+    const previous = kept.filter(entry => entry.key === key && entry.segment)
+    const oldest = new Set(previous.slice(0, Math.max(0, previous.length - segmentsPerVideo + 1)))
+    for (const entry of oldest) kept.splice(kept.indexOf(entry), 1)
+  }
   let used = kept.reduce((sum, entry) => sum + entry.bytes, 0)
   for (const oldest of kept.slice()) {
     if (used + bytes <= limit && kept.length < 128) break
@@ -131,7 +151,7 @@ async function writeCached(
       const file = await handle.getFile()
       if (file.size !== bytes) throw new Error('本机缓存大小不符')
       signal?.throwIfAborted()
-      await writeIndex(dir, [...kept, { key, bytes, etag, name, touched: Date.now(), prefix }])
+      await writeIndex(dir, [...kept, { key, bytes, etag, name, touched: Date.now(), prefix, segment }])
       for (const entry of entries) {
         if (!kept.includes(entry)) await evict(dir, entry.name).catch(() => {})
       }
@@ -150,15 +170,70 @@ export async function cacheVideoPrefix(key: string, bytes: Uint8Array, etag: str
   if (bytes.length !== prefixSize || !strongMediaTag(etag)) return
   await navigator.locks.request(directory, { ifAvailable: true }, async lock => {
     if (!lock) return
-    const dir = await root()
+    const dir = await root(true)
     // Speculative data must never evict a whole video saved by the user.
     const entries = await readIndex(dir)
-    if (entries.some(entry => entry.key === key && entry.bytes === bytes.length && entry.etag === etag)) return
+    if (entries.some(entry => entry.key === key && !entry.segment && entry.bytes === bytes.length && entry.etag === etag)) return
     await writeCached(dir, key, bytes.length, async writer => {
       await writer.write(bytes as Uint8Array<ArrayBuffer>)
       return etag
     }, true)
   }).catch(() => {})
+}
+
+export async function cachedVideoSegments(key: string, etag: string): Promise<VideoSegment[]> {
+  if (!strongMediaTag(etag)) return []
+  try {
+    return await navigator.locks.request(directory, { mode: 'shared', ifAvailable: true }, async lock => {
+      if (!lock) return []
+      return (await readIndex(await root())).flatMap(entry =>
+        entry.key === key && entry.etag === etag && entry.segment ? [entry.segment] : [])
+    })
+  } catch { return [] }
+}
+
+export async function readCachedVideoSegment(
+  key: string, etag: string, start: number, end: number,
+): Promise<Uint8Array<ArrayBuffer> | null> {
+  try {
+    return await navigator.locks.request(directory, { ifAvailable: true }, async lock => {
+      if (!lock) return null
+      const dir = await root()
+      const entries = await readIndex(dir)
+      const entry = entries.find(value => value.key === key && value.etag === etag && value.segment &&
+        start >= value.segment.start && end < value.segment.start + value.segment.length)
+      if (!entry?.segment) return null
+      const file = await (await dir.getFileHandle(entry.name)).getFile()
+      if (file.size !== entry.bytes) return null
+      const offset = entry.segment.start
+      const bytes = new Uint8Array(await file.slice(start - offset, end - offset + 1).arrayBuffer())
+      // A frequently reused seek anchor stays ahead of older speculative data in the LRU.
+      entry.touched = Date.now()
+      await writeIndex(dir, entries).catch(() => {})
+      return bytes
+    })
+  } catch { return null }
+}
+
+export async function cacheVideoSegment(
+  key: string, segment: VideoSegment, bytes: Uint8Array<ArrayBuffer>, etag: string,
+): Promise<boolean> {
+  if (segment.start < 0 || !Number.isFinite(segment.time) || segment.time < 0 ||
+    segment.keyframeOffset < segment.start || segment.keyframeOffset >= segment.start + segment.length ||
+    bytes.length !== segment.length || bytes.length < 4096 || bytes.length > maxSegmentBytes ||
+    !strongMediaTag(etag)) return false
+  return navigator.locks.request(directory, { ifAvailable: true }, async lock => {
+    if (!lock) return false
+    const dir = await root(true)
+    const entries = await readIndex(dir)
+    if (entries.some(entry => entry.key === key && entry.etag === etag &&
+      entry.segment?.start === segment.start && entry.bytes >= segment.length)) return true
+    await writeCached(dir, key, bytes.length, async writer => {
+      await writer.write(bytes)
+      return etag
+    }, true, undefined, segment)
+    return true
+  }).catch(() => false)
 }
 
 export async function cacheVideo(
@@ -169,7 +244,7 @@ export async function cacheVideo(
     if (!lock) throw new Error('另一个标签页正在缓存视频')
     signal.throwIfAborted()
     if (size <= 0) throw new Error('空文件无法缓存')
-    return writeCached(await root(), key, size, async writer => {
+    return writeCached(await root(true), key, size, async writer => {
       const controller = new AbortController()
       const stop = () => controller.abort()
       signal.addEventListener('abort', stop, { once: true })

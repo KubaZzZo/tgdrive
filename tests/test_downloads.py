@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from conftest import make_settings
 
+from app.api.routes import files
 from app.storage import TelegramStorage
 
 
@@ -58,6 +59,24 @@ def test_incomplete_part_mapping_rejected_before_streaming(authenticated_client)
     url = f"/api/files/{item['id']}/download"
     assert client.head(url).status_code == 503
     assert client.get(url).status_code == 503
+
+
+def test_authenticated_media_probe_preserves_range_and_correlates_timing(
+    authenticated_client, monkeypatch
+):
+    client, app, storage = authenticated_client
+    item = make_file(app, storage)
+    url = f"/api/files/{item['id']}/download"
+    calls = []
+    monkeypatch.setattr(files.logger, "info", lambda *args, **kwargs: calls.append((args, kwargs)))
+    response = client.get(url, headers={"Range": "bytes=2-7", "X-TGDrive-Media-Probe": "1"})
+    assert response.status_code == 206 and response.content == b"cdefgh"
+    assert len(calls) == 1
+    args, kwargs = calls[0]
+    assert args[1] >= 0 and args[-2:] == (6, 6)
+    assert kwargs["extra"]["request_id"] == response.headers["X-Request-ID"]
+    assert client.get(url, headers={"Range": "bytes=2-7"}).status_code == 206
+    assert len(calls) == 1
 
 
 @pytest.mark.parametrize("failure", [ConnectionError, TimeoutError, OSError])

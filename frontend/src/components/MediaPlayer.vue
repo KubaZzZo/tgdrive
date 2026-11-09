@@ -3,7 +3,10 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { mediaFailure } from '@/api/client'
 import { mediaTime, playbackPosition, savePlayback } from '@/utils/playback'
 import { attachMedia, type MediaPrefix, type MediaSession } from '@/utils/fragmentedMp4'
-import { cacheVideo, cacheVideoPrefix, cachedVideo, clearVideoCache, deviceCacheAvailable } from '@/utils/deviceCache'
+import {
+  cacheVideo, cacheVideoPrefix, cacheVideoSegment, cachedVideo, cachedVideoSegments,
+  clearVideoCache, deviceCacheAvailable, readCachedVideoSegment,
+} from '@/utils/deviceCache'
 import { holdCoverQueue } from '@/utils/coverQueue'
 import { withMediaTimeout } from '@/utils/mediaTransfer'
 
@@ -79,14 +82,14 @@ const pipAvailable = computed(
 
 function save(): void {
   const media = player.value
-  if (media) savePlayback(props.itemId, media.currentTime, media.duration)
+  if (media && !media.seeking) savePlayback(props.itemId, media.currentTime, media.duration)
 }
 function metadata(): void {
   const media = player.value
   if (!media) return
   media.playbackRate = rate.value
   duration.value = Number.isFinite(media.duration) ? media.duration : 0
-  if (!restored && duration.value > 0 && !streaming.value) {
+  if (!restored && duration.value > 0) {
     restored = true
     const position = playbackPosition(props.itemId, media.duration)
     if (position) {
@@ -209,7 +212,8 @@ function start(useCache = false): void {
   streaming.value = false
   setup = (async () => {
     let prefix: MediaPrefix | undefined
-    const native = props.kind === 'audio' || playbackMode.value === 'native'
+    const native = props.kind === 'audio' || playbackMode.value === 'native' ||
+      /^video\/(?:webm|ogg|x-matroska|x-msvideo|mpeg)(?:;|$)/i.test(props.mime)
     if (useCache && cacheSupported && props.kind === 'video') {
       const hit = await cachedVideo(cacheKey(), props.size, !native)
       if (hit) {
@@ -242,12 +246,18 @@ function start(useCache = false): void {
       } else media.src = props.src
       return
     }
+    const key = cacheKey()
     const value = await attachMedia(media, props.src, signal, () => {
       if (!signal.aborted) reportFailure('视频流加载失败，请重试；若仍失败，可切换播放方式。')
     }, {
       file: localFile, bufferSeconds: () => bufferSeconds.value || undefined, version: props.version,
       size: props.size, prefix,
-      onPrefix: cacheSupported ? data => { void cacheVideoPrefix(cacheKey(), data.bytes, data.etag) } : undefined,
+      onPrefix: cacheSupported ? data => { void cacheVideoPrefix(key, data.bytes, data.etag) } : undefined,
+      segments: cacheSupported ? {
+        list: etag => cachedVideoSegments(key, etag),
+        read: (etag, start, end) => readCachedVideoSegment(key, etag, start, end),
+        write: (etag, segment, bytes) => cacheVideoSegment(key, segment, bytes, etag),
+      } : undefined,
       onSeekUnavailable: () => { notice.value = '未能在缓冲预算内定位，已返回原进度。可重试或切换播放方式。' },
     })
     if (signal.aborted) value.dispose()

@@ -41,6 +41,15 @@ async page => {
     if (prefix?.file.size !== 65536 || new Uint8Array(await prefix.file.arrayBuffer())[0] !== 7)
       throw new Error('Cached startup prefix unavailable')
     prefix.release()
+    const segment = {start: 600000, keyframeOffset: 600512, time: 60, length: 128 * 1024}
+    await cache.cacheVideoSegment('test-video', segment, new Uint8Array(segment.length).fill(19), '"fixture-v1"')
+    const segments = await cache.cachedVideoSegments('test-video', '"fixture-v1"')
+    if (segments[0]?.time !== 60 || (await cache.cachedVideoSegments('test-video', '"fixture-v2"')).length)
+      throw new Error('Cached seek index did not isolate ETags')
+    const slice = await cache.readCachedVideoSegment('test-video', '"fixture-v1"', segment.start + 20, segment.start + 63)
+    if (slice?.length !== 44 || slice.some(value => value !== 19)) throw new Error('Cached segment bytes mismatch')
+    if (await cache.readCachedVideoSegment('another-channel', '"fixture-v1"', segment.start, segment.start + 63))
+      throw new Error('Cached segment crossed workspace')
     return {bytes:size,correct:true,reused:true,workspaceIsolated:true,writerIsolated:true,cancellationClean:true,pinned:true}
   }, bytes.length)
   changeVersion = true

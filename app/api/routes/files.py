@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import html
+import logging
 import mimetypes
 from contextlib import aclosing
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Any
 from urllib.parse import quote
 
@@ -22,6 +24,7 @@ from app.storage import TelegramStorage
 
 router = APIRouter(tags=["files"])
 auth_router = APIRouter(prefix="/api", tags=["files"], dependencies=[Depends(require_auth)])
+logger = logging.getLogger("tgdrive.media")
 
 
 def content_disposition(name: str, inline: bool) -> str:
@@ -59,6 +62,28 @@ async def iter_item_range(
                     if cdn:
                         await cdn.charge(len(chunk))
                     yield chunk
+
+
+async def trace_media_range(stream, request_id: str, expected: int):
+    started = perf_counter()
+    first_ms = None
+    sent = 0
+    try:
+        async with aclosing(stream):
+            async for chunk in stream:
+                if first_ms is None:
+                    first_ms = round((perf_counter() - started) * 1000, 1)
+                sent += len(chunk)
+                yield chunk
+    finally:
+        logger.info(
+            "Media probe origin_first_ms=%s origin_total_ms=%.1f bytes_yielded=%d expected=%d",
+            first_ms,
+            (perf_counter() - started) * 1000,
+            sent,
+            expected,
+            extra={"request_id": request_id},
+        )
 
 
 async def stream_item(
@@ -141,8 +166,17 @@ async def stream_item(
         request.app.state.traffic.record("telegram", inbound=received)
         await cdn.charge(len(data))
         return Response(data, status_code=206 if partial else 200, media_type=mime, headers=headers)
+    stream = iter_item_range(db, storage, item, start, end, parts, cdn) if length else iter(())
+    if (
+        not public
+        and partial
+        and 0 < length <= 1024 * 1024
+        and mime.startswith("video/")
+        and request.headers.get("X-TGDrive-Media-Probe") == "1"
+    ):
+        stream = trace_media_range(stream, request.state.request_id, length)
     return StreamingResponse(
-        iter_item_range(db, storage, item, start, end, parts, cdn) if length else iter(()),
+        stream,
         status_code=206 if partial else 200,
         media_type=mime,
         headers=headers,
