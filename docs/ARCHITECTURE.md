@@ -71,6 +71,8 @@ schema v7 为频道消息保存 `remote_name`：普通字符串表示最近一�
 
 schema v12 新增 `video_people`。频道同步在导入事务中维护视频与人物的关联，删除视频时同步清除关联。人物筛选使用规范化后的原名，中文显示名仅用于展示和搜索。
 
+schema v13 为可选的模型识别保存待分析描述、结果和重试状态。相同描述与模型配置复用结果，更新时仅修改仍引用该描述的视频。译名和别名用于搜索，人物详情继续以原名筛选。
+
 需要登录的 `GET /api/people` 支持 `q`、`limit` 和 `offset`，返回匹配人物的原名、显示名、视频数和匹配人物总数。人物详情使用 `GET /api/items?scope=all&person=原名` 查询视频，响应包含 `person_display_name`。
 
 照片大小与 Telethon 实际选用的最后一个 photo size 一致，支持原生照片和文档两类下载。下载请求采用 4 KiB–512 KiB 的二次幂块长，满足 Telegram 无 precise 标志时的参数限制；HTTP Range 的最终输出仍严格裁剪到请求长度。HEAD 仅返回元数据，不请求文件内容。客户端拖动/断开时，在取消保护范围内关闭下载流，归还借用的 Telegram sender。

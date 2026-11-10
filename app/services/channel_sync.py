@@ -20,6 +20,7 @@ from app.categories import classify_file, effective_mime
 from app.config import Settings
 from app.db import Database
 from app.people import extract_people
+from app.services.people_model import PeopleModel, PeopleModelError
 from app.services.telegram_bot import MAX_BOT_COVER, BotAPIError, TelegramBot
 from app.storage import SESSION_AUTH_ERRORS, TelegramStorage
 
@@ -126,6 +127,9 @@ def describe_message(
     extension = PurePath(original_name).suffix or file.ext or ".mp4"
     name = (clean_channel_name(title, extension) if title else original_name) or original_name
     date = message.date or datetime.now(UTC)
+    is_video = classify_file(original_name, mime) == "video"
+    own_people = extract_people(own_caption) if is_video else ()
+    people_caption = own_caption if own_people else shared_caption or own_caption
     return {
         "name": name,
         "original_name": original_name,
@@ -134,9 +138,8 @@ def describe_message(
         else original_name,
         "size": int(size),
         "mime": effective_mime(name, file.mime_type),
-        "people": (extract_people(own_caption) or extract_people(shared_caption))
-        if classify_file(original_name, mime) == "video"
-        else (),
+        "people": own_people or (extract_people(shared_caption) if is_video else ()),
+        "people_caption": people_caption if is_video else "",
         "media_key": f"{'document' if message.document else 'photo'}:{media.id}",
         "remote_version": version.isoformat(),
         "created_at": date.astimezone(UTC).isoformat(),
@@ -184,6 +187,7 @@ def describe_bot_post(post: dict) -> tuple[dict, str, str | None] | None:
     ]
     cover = min(covers, key=lambda photo: abs(photo.get("width", 320) - 320), default=None)
     cover_id = (cover or media.get("thumbnail") or {}).get("file_id")
+    is_video = classify_file(name, mime) == "video"
     return (
         {
             "name": clean_channel_name(title, PurePath(name).suffix or ".mp4") or name
@@ -192,7 +196,8 @@ def describe_bot_post(post: dict) -> tuple[dict, str, str | None] | None:
             "original_name": name,
             "size": size,
             "mime": mime,
-            "people": extract_people(caption) if classify_file(name, mime) == "video" else (),
+            "people": extract_people(caption) if is_video else (),
+            "people_caption": caption if is_video else "",
             "media_key": f"bot:{media.get('file_unique_id') or file_id}",
             "remote_version": version,
             "created_at": date,
@@ -206,6 +211,9 @@ class ChannelSyncService:
     def __init__(self, db: Database, storage: TelegramStorage, settings: Settings):
         self.db, self.storage, self.settings = db, storage, settings
         self._worker: asyncio.Task[None] | None = None
+        self._people_worker: asyncio.Task[None] | None = None
+        self._people_wake = asyncio.Event()
+        self.people_model = PeopleModel(settings)
         self._wake = asyncio.Event()
         self._full = True
         self._unsubscribe = None
@@ -232,6 +240,10 @@ class ChannelSyncService:
     async def start(self) -> None:
         if not self.settings.channel_sync_enabled:
             return
+        if self.people_model.enabled:
+            self._people_worker = asyncio.create_task(
+                self._process_people_jobs(), name="channel-people-model"
+            )
         storage_status = self.storage.status()
         if storage_status.get("auth_required"):
             self.state = "auth_required"
@@ -305,6 +317,7 @@ class ChannelSyncService:
         if described:
             file, file_id, cover_id = described
             mid = int(post["message_id"])
+            self._prepare_people_job(file, submit=True)
             if self.db.import_bot_file(self.chat_id, mid, file, bot.id, file_id, cover_id):
                 self.revision += 1
                 self.imported += 1
@@ -315,12 +328,45 @@ class ChannelSyncService:
         file = describe_message(message, album_messages)
         if not file:
             return False
+        self._prepare_people_job(file, submit=scan_run is None)
         changed = self.db.import_channel_file(self.chat_id, int(message.id), file, scan_run)
         if changed:
             self.storage.invalidate_message(int(message.id))
             self.revision += 1
             self.imported += 1
         return changed
+
+    def _prepare_people_job(self, file: dict[str, Any], *, submit: bool) -> None:
+        if job := self.people_model.job(file["people_caption"]):
+            file["people_ai_job"] = job
+            file["people_ai_submit"] = submit
+            if submit:
+                self._people_wake.set()
+
+    async def _process_people_jobs(self) -> None:
+        while True:
+            try:
+                self._people_wake.clear()
+                job = self.db.next_people_ai_job(self.people_model.namespace, time.time())
+                if not job:
+                    try:
+                        await asyncio.wait_for(self._people_wake.wait(), timeout=30)
+                    except TimeoutError:
+                        pass
+                    continue
+                key, caption = job
+                try:
+                    async with asyncio.timeout(40):
+                        people = await self.people_model.analyze(caption)
+                except (PeopleModelError, TimeoutError) as exc:
+                    self.db.defer_people_ai_job(key, time.time() + 300)
+                    logger.warning("People model analysis deferred (%s)", type(exc).__name__)
+                    await asyncio.sleep(30)
+                    continue
+                self.revision += self.db.finish_people_ai_job(key, people)
+            except Exception as exc:
+                logger.warning("People model worker will retry (%s)", type(exc).__name__)
+                await asyncio.sleep(30)
 
     async def album_context(self, message: Any) -> list[Any]:
         group = getattr(message, "grouped_id", None)
@@ -510,6 +556,9 @@ class ChannelSyncService:
         if self._worker:
             self._worker.cancel()
             await asyncio.gather(self._worker, return_exceptions=True)
+        if self._people_worker:
+            self._people_worker.cancel()
+            await asyncio.gather(self._people_worker, return_exceptions=True)
         self.bot_state = None
         self.bot_error = None
         self.state = "stopped"

@@ -12,7 +12,6 @@ from app.auth import require_auth
 from app.categories import Category
 from app.db import Database
 from app.people import MAX_PERSON_LENGTH
-from app.person_names import chinese_person_name
 from app.schemas import FolderBody, ShareBody, UpdateItemBody
 from app.storage import TelegramStorage
 
@@ -69,7 +68,7 @@ async def list_items(
         "limit": limit,
         "offset": offset,
         "stats": db.stats(),
-        **({"person_display_name": chinese_person_name(person)} if person else {}),
+        **({"person_display_name": db.video_person_display_name(person)} if person else {}),
     }
 
 

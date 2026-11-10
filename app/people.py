@@ -15,11 +15,22 @@ def person_key(name: str) -> str:
     return " ".join(normalize("NFKC", name).split()).casefold()
 
 
+def clean_caption(caption: str) -> str:
+    return re.sub(r"https?://\S+|(?<!\w)@[A-Za-z0-9_]+", "", normalize("NFKC", caption), flags=re.I)
+
+
+def valid_person_name(name: object) -> str:
+    if isinstance(name, str):
+        clean = " ".join(normalize("NFKC", name).split())
+        if 0 < len(clean) <= MAX_PERSON_LENGTH and NAME.fullmatch(clean):
+            return clean
+    return ""
+
+
 @lru_cache(maxsize=256)
 def extract_people(caption: str) -> tuple[str, ...]:
     """Read explicit credits first, otherwise use local Chinese POS tagging."""
-    caption = normalize("NFKC", caption)
-    caption = re.sub(r"https?://\S+|(?<!\w)@[A-Za-z0-9_]+", "", caption, flags=re.I)
+    caption = clean_caption(caption)
     fields = [match[1] for line in caption.splitlines() if (match := PERSON_FIELD.match(line))]
     if fields:
         candidates = re.split(r"[、,;/|&]", ",".join(fields))
@@ -32,7 +43,6 @@ def extract_people(caption: str) -> tuple[str, ...]:
 
     names: dict[str, str] = {}
     for candidate in candidates:
-        name = " ".join(candidate.split())
-        if 0 < len(name) <= MAX_PERSON_LENGTH and NAME.fullmatch(name):
+        if name := valid_person_name(candidate):
             names.setdefault(person_key(name), name)
     return tuple(names.values())

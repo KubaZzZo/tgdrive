@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import secrets
 import sqlite3
 import threading
@@ -13,7 +14,7 @@ from app.categories import CATEGORY_LABELS, classify_file, effective_mime
 from app.people import person_key
 from app.person_names import chinese_person_name
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 def utcnow() -> str:
@@ -236,6 +237,32 @@ class Database:
                         "CREATE INDEX IF NOT EXISTS idx_video_people_key ON video_people(person_key)"
                     )
                     self.conn.execute("PRAGMA user_version=12")
+
+            if current < 13:
+                with self.conn:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    self.conn.execute("""CREATE TABLE IF NOT EXISTS people_ai_jobs (
+                        key TEXT PRIMARY KEY, caption TEXT, result TEXT,
+                        retry_at REAL NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0)""")
+                    channel_columns = {
+                        row["name"]
+                        for row in self.conn.execute("PRAGMA table_info(channel_messages)")
+                    }
+                    if "people_ai_key" not in channel_columns:
+                        self.conn.execute(
+                            "ALTER TABLE channel_messages ADD COLUMN people_ai_key TEXT"
+                        )
+                    self.conn.execute("""CREATE INDEX IF NOT EXISTS idx_channel_messages_people_ai
+                        ON channel_messages(people_ai_key) WHERE people_ai_key IS NOT NULL""")
+                    people_columns = {
+                        row["name"] for row in self.conn.execute("PRAGMA table_info(video_people)")
+                    }
+                    if "display_name" not in people_columns:
+                        self.conn.execute("ALTER TABLE video_people ADD COLUMN display_name TEXT")
+                        self.conn.execute(
+                            "ALTER TABLE video_people ADD COLUMN aliases TEXT NOT NULL DEFAULT '[]'"
+                        )
+                    self.conn.execute("PRAGMA user_version=13")
 
     def publish_image(self, item_id: str, token: str, mime: str) -> dict[str, Any]:
         with self._lock, self.conn:
@@ -495,28 +522,44 @@ class Database:
         return [dict(row) for row in rows], int(total)
 
     def list_video_people(self, query: str, limit: int, offset: int) -> tuple[list[dict], int]:
-        source = """FROM video_people p JOIN items i ON i.id=p.item_id
-                    WHERE i.category='video'"""
+        grouped = """SELECT p.person_key, MIN(p.name) AS name,
+                            MIN(p.display_name) AS display_name, COUNT(*) AS count
+                     FROM video_people p JOIN items i ON i.id=p.item_id
+                     WHERE i.category='video' GROUP BY p.person_key"""
         key = person_key(query)
         params: tuple[str, ...] = ()
         if key:
-            source += (
-                " AND (instr(p.person_key, ?) > 0 OR instr(person_display_name(p.name), ?) > 0)"
-            )
-            params = (key, key)
+            # Match at the person level so an alias on one video finds all their videos.
+            grouped += """ HAVING instr(p.person_key, ?) > 0
+                OR instr(person_display_name(MIN(p.name)), ?) > 0
+                OR MAX(instr(COALESCE(p.display_name, ''), ?)) > 0
+                OR MAX(EXISTS(SELECT 1 FROM json_each(p.aliases) WHERE instr(value, ?) > 0))"""
+            params = (key, key, key, key)
         with self._lock:
-            total = self.conn.execute(
-                "SELECT COUNT(DISTINCT p.person_key) " + source, params
-            ).fetchone()[0]
+            total = self.conn.execute("SELECT COUNT(*) FROM (" + grouped + ")", params).fetchone()[
+                0
+            ]
             rows = self.conn.execute(
-                "SELECT MIN(p.name) AS name, COUNT(*) AS count "
-                + source
-                + " GROUP BY p.person_key ORDER BY count DESC, p.person_key LIMIT ? OFFSET ?",
+                grouped + " ORDER BY count DESC, p.person_key LIMIT ? OFFSET ?",
                 (*params, limit, offset),
             ).fetchall()
         return [
-            {**dict(row), "display_name": chinese_person_name(row["name"])} for row in rows
+            {
+                "name": row["name"],
+                "display_name": row["display_name"] or chinese_person_name(row["name"]),
+                "count": row["count"],
+            }
+            for row in rows
         ], int(total)
+
+    def video_person_display_name(self, name: str) -> str:
+        with self._lock:
+            label = self.conn.execute(
+                """SELECT MIN(p.display_name) FROM video_people p JOIN items i ON i.id=p.item_id
+                   WHERE i.category='video' AND p.person_key=?""",
+                (person_key(name),),
+            ).fetchone()[0]
+        return label or chinese_person_name(name)
 
     def category_stats(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -812,21 +855,100 @@ class Database:
                 (chat_id, message_id),
             )
 
-    def _replace_video_people(self, item_id: str, names: Iterable[str]) -> bool:
-        people = {person_key(name): name for name in names}
-        previous = dict(
-            self.conn.execute(
-                "SELECT person_key,name FROM video_people WHERE item_id=?", (item_id,)
-            ).fetchall()
-        )
+    def _replace_video_people(
+        self, item_id: str, names: Iterable[str], analysis: Iterable[dict] = ()
+    ) -> bool:
+        people = {person_key(name): (name, None, "[]") for name in names}
+        for person in analysis:
+            key = person_key(person["name"])
+            existing = people.get(key)
+            people[key] = (
+                existing[0] if existing else person["name"],
+                person["display_name"] or None,
+                json.dumps(sorted({person_key(alias) for alias in person["aliases"]})),
+            )
+        previous = {
+            row["person_key"]: (row["name"], row["display_name"], row["aliases"])
+            for row in self.conn.execute(
+                "SELECT person_key,name,display_name,aliases FROM video_people WHERE item_id=?",
+                (item_id,),
+            )
+        }
         if previous == people:
             return False
         self.conn.execute("DELETE FROM video_people WHERE item_id=?", (item_id,))
         self.conn.executemany(
-            "INSERT INTO video_people(item_id,person_key,name) VALUES (?,?,?)",
-            [(item_id, key, name) for key, name in people.items()],
+            """INSERT INTO video_people(item_id,person_key,name,display_name,aliases)
+               VALUES (?,?,?,?,?)""",
+            [(item_id, key, *data) for key, data in people.items()],
         )
         return True
+
+    def _sync_video_people(self, chat_id: str, message_id: int, item_id: str, file: dict) -> bool:
+        key = None
+        analysis = ()
+        if job := file.get("people_ai_job"):
+            candidate, caption = job
+            if file.get("people_ai_submit"):
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO people_ai_jobs(key,caption) VALUES (?,?)",
+                    (candidate, caption),
+                )
+            cached = self.conn.execute(
+                "SELECT result FROM people_ai_jobs WHERE key=?", (candidate,)
+            ).fetchone()
+            if cached is not None:
+                key = candidate
+                if cached["result"] is not None:
+                    analysis = json.loads(cached["result"])
+        self.conn.execute(
+            """UPDATE channel_messages SET people_ai_key=?
+               WHERE chat_id=? AND message_id=? AND people_ai_key IS NOT ?""",
+            (key, chat_id, message_id, key),
+        )
+        return self._replace_video_people(item_id, file.get("people", ()), analysis)
+
+    def next_people_ai_job(self, namespace: str, now: float) -> tuple[str, str] | None:
+        with self._lock:
+            row = self.conn.execute(
+                """SELECT j.key,j.caption FROM people_ai_jobs j
+                   WHERE j.key LIKE ? AND j.caption IS NOT NULL AND j.retry_at<=? AND j.attempts<3
+                     AND EXISTS (SELECT 1 FROM channel_messages c WHERE c.people_ai_key=j.key
+                                 AND c.state='imported' AND c.item_id IS NOT NULL)
+                   ORDER BY j.retry_at,j.rowid LIMIT 1""",
+                (namespace + ":%", now),
+            ).fetchone()
+        return (row["key"], row["caption"]) if row else None
+
+    def defer_people_ai_job(self, key: str, retry_at: float) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "UPDATE people_ai_jobs SET retry_at=?, attempts=attempts+1 WHERE key=?",
+                (retry_at, key),
+            )
+
+    def finish_people_ai_job(self, key: str, people: list[dict]) -> int:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "UPDATE people_ai_jobs SET result=?,caption=NULL WHERE key=?",
+                (json.dumps(people, ensure_ascii=False), key),
+            )
+            items = self.conn.execute(
+                """SELECT c.item_id FROM channel_messages c JOIN items i ON i.id=c.item_id
+                   WHERE c.people_ai_key=? AND c.state='imported' AND i.category='video'""",
+                (key,),
+            ).fetchall()
+            changed = 0
+            for item in items:
+                item_id = item["item_id"]
+                names = [
+                    row["name"]
+                    for row in self.conn.execute(
+                        "SELECT name FROM video_people WHERE item_id=?", (item_id,)
+                    )
+                ]
+                changed += self._replace_video_people(item_id, names, people)
+            return changed
 
     def import_channel_file(
         self, chat_id: str, message_id: int, file: dict[str, Any], scan_run: str | None = None
@@ -872,8 +994,8 @@ class Database:
                         "UPDATE channel_messages SET remote_name=? WHERE chat_id=? AND message_id=?",
                         (previous, chat_id, message_id),
                     )
-                    people_changed = self._replace_video_people(
-                        seen["item_id"], file.get("people", ())
+                    people_changed = self._sync_video_people(
+                        chat_id, message_id, seen["item_id"], file
                     )
                     return changed or people_changed
                 if not seen["item_id"]:
@@ -907,7 +1029,7 @@ class Database:
                     "UPDATE channel_messages SET media_key=?,remote_name=? WHERE chat_id=? AND message_id=?",
                     (file["media_key"], "" if keep_name else file["name"], chat_id, message_id),
                 )
-                self._replace_video_people(seen["item_id"], file.get("people", ()))
+                self._sync_video_people(chat_id, message_id, seen["item_id"], file)
                 return True
             existing = self.conn.execute(
                 """SELECT i.id FROM file_parts p JOIN items i ON i.id=p.item_id
@@ -951,7 +1073,7 @@ class Database:
                     file["name"],
                 ),
             )
-            self._replace_video_people(item_id, file.get("people", ()))
+            self._sync_video_people(chat_id, message_id, item_id, file)
             return True
 
     def import_bot_file(
