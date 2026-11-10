@@ -9,6 +9,7 @@ import type {
   UploadRecord,
   TrafficStatus,
   TelegramAccountStatus, TelegramLogin, TelegramChannel,
+  VideoPerson,
 } from './types'
 
 export class ApiError extends Error {
@@ -184,6 +185,10 @@ export const api = {
     if (folderId) query.set('parent_id', folderId)
     Object.entries(options).forEach(([key, value]) => { if (value !== undefined && value !== '') query.set(key, String(value)) })
     return request<ItemListResponse>(`/api/items?${query}`, { signal })
+  },
+  listPeople: (q: string, limit: number, offset: number, signal: AbortSignal) => {
+    const query = new URLSearchParams({ q, limit: String(limit), offset: String(offset) })
+    return request<{ people: VideoPerson[]; total: number }>(`/api/people?${query}`, { signal })
   },
   createFolder: (name: string, parentId: string | null) =>
     jsonRequest<DriveItem>('POST', '/api/folders', { name, parent_id: parentId }),

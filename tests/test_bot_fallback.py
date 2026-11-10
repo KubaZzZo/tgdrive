@@ -47,7 +47,11 @@ def test_bot_fallback_imports_once_and_serves_byte_ranges(
             "cover": [{"file_id": "cover-file", "width": 320, "height": 180}],
         },
     }
-    original = {**post, "video": {k: v for k, v in post["video"].items() if k != "cover"}}
+    original = {
+        **post,
+        "caption": "人物：张三",
+        "video": {k: v for k, v in post["video"].items() if k != "cover"},
+    }
     offsets = []
 
     async def telegram(request):
@@ -78,7 +82,11 @@ def test_bot_fallback_imports_once_and_serves_byte_ranges(
                         },
                         {
                             "update_id": 5,
-                            "edited_channel_post": {**post, "edit_date": post["date"] + 1},
+                            "edited_channel_post": {
+                                **post,
+                                "caption": "人物：李四",
+                                "edit_date": post["date"] + 1,
+                            },
                         },
                     ],
                 },
@@ -117,6 +125,10 @@ def test_bot_fallback_imports_once_and_serves_byte_ranges(
         assert ready.status_code == 200 and ready.json()["checks"]["telegram"] == "bot_fallback"
         assert client.post("/api/sync", json={"full": True}).status_code == 409
         [item] = client.get("/api/items").json()["items"]
+        assert client.get("/api/people").json() == {
+            "people": [{"name": "李四", "display_name": "李四", "count": 1}],
+            "total": 1,
+        }
         thumbnail = client.get(f"/api/files/{item['id']}/thumbnail")
         assert thumbnail.status_code == 200 and thumbnail.content == b"\xff\xd8\xffcover"
         assert thumbnail.headers["content-type"] == "image/jpeg"
@@ -147,5 +159,37 @@ def test_bot_file_is_reconciled_by_primary_without_losing_the_local_name(workdir
         assert db.get_item(item["id"])["name"] == "custom.txt"
         assert db.bot_file_id(item["id"], "123") == file_id
         assert db.bot_file_id(item["id"], "456") is None
+    finally:
+        db.close()
+
+
+def test_bot_video_replacement_updates_people_and_keeps_the_latest_file(workdir):
+    db = Database(workdir / "bot.sqlite3")
+    chat = "-1001"
+    original = {
+        "message_id": 5,
+        "date": 1_780_000_000,
+        "caption": "人物：张三",
+        "video": {"file_id": "old-file", "file_size": 5, "file_name": "original.mp4"},
+    }
+    replacement = {
+        **original,
+        "edit_date": original["date"] + 1,
+        "caption": "人物：李四",
+        "video": {"file_id": "new-file", "file_size": 9, "file_name": "replacement.mp4"},
+    }
+    try:
+        original_file, original_id, original_cover = describe_bot_post(original)
+        replaced_file, replaced_id, replaced_cover = describe_bot_post(replacement)
+        assert db.import_bot_file(chat, 5, original_file, "123", original_id, original_cover)
+        [item] = db.list_items(None)
+        assert db.import_bot_file(chat, 5, replaced_file, "123", replaced_id, replaced_cover)
+        assert not db.import_bot_file(chat, 5, original_file, "123", original_id, original_cover)
+        assert db.bot_file_id(item["id"], "123") == "new-file"
+        assert db.get_parts(item["id"])[0]["size"] == 9
+        assert db.list_video_people("", 10, 0) == (
+            [{"name": "李四", "display_name": "李四", "count": 1}],
+            1,
+        )
     finally:
         db.close()

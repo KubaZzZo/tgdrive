@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import type { DriveItem, FileAction, FileCategory } from '@/api/types'
@@ -11,12 +11,14 @@ import AppIcon from './AppIcon.vue'
 import BaseModal from './BaseModal.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import FileTable from './FileTable.vue'
+import PeopleIndex from './PeopleIndex.vue'
 import PreviewModal from './PreviewModal.vue'
 import PromptDialog from './PromptDialog.vue'
 
 const drive = useDriveStore()
 const uploads = useUploadStore()
 const toast = useToastStore()
+const props = defineProps<{ person?: string | null }>()
 
 const classificationHelp = ref(false)
 let searchTimer: ReturnType<typeof setTimeout>
@@ -39,6 +41,9 @@ function navigate(view: 'all' | 'recent' | FileCategory): void {
   clearTimeout(searchTimer)
   void drive.selectView(view)
 }
+function openPeople(): void {
+  window.location.hash = 'people'
+}
 function breadcrumb(id: string | null): void {
   clearTimeout(searchTimer)
   void drive.openFolder(id)
@@ -53,15 +58,15 @@ onBeforeUnmount(() => clearTimeout(searchTimer))
 const overview = computed(() =>
   drive.categories.filter((c) => ['image', 'video', 'document', 'archive'].includes(c.id)),
 )
-const description = computed(() =>
-  drive.folderId
-    ? '保存在此文件夹中的文件，也会自动出现在对应分类。'
-    : drive.view === 'all'
-      ? '所有设备上传的文件，统一收纳、自动分类。'
-      : drive.view === 'recent'
-        ? '集中查看最近上传到网盘的文件。'
-        : '从所有文件夹中汇集同类文件，保留原有目录。',
-)
+const description = computed(() => {
+  if (drive.folderId) return '保存在此文件夹中的文件，也会自动出现在对应分类。'
+  if (drive.view === 'all') return '所有设备上传的文件，统一收纳、自动分类。'
+  if (drive.view === 'recent') return '集中查看最近上传到网盘的文件。'
+  if (drive.view === 'people') {
+    return drive.person ? '该人物在频道中收录的视频。' : '按频道视频描述中识别到的人名浏览。'
+  }
+  return '从所有文件夹中汇集同类文件，保留原有目录。'
+})
 const dragging = ref(false)
 const folderDialog = ref(false)
 const renameTarget = ref<DriveItem | null>(null)
@@ -187,10 +192,23 @@ function closePreview(): void {
   previewOpen.value = false
   previewTarget.value = null
 }
+
+watch(() => props.person, (person) => {
+  if (person === undefined && drive.view !== 'people') return
+  if (person !== undefined && drive.view === 'people' && drive.person === person) return
+  clearTimeout(searchTimer)
+  closePreview()
+  renameTarget.value = null
+  deleteTarget.value = null
+  folderDialog.value = false
+  classificationHelp.value = false
+  void (person === undefined ? drive.selectView('all') : drive.selectView('people', person))
+  void nextTick(() => window.scrollTo(0, 0))
+}, { immediate: true })
 </script>
 <template>
-  <div class="library-layout">
-    <aside class="library-sidebar" aria-label="文件导航">
+  <div class="library-layout" :class="{ 'people-layout': drive.view === 'people' }">
+    <aside v-if="drive.view !== 'people'" class="library-sidebar" aria-label="文件导航">
       <p class="nav-heading">文件空间</p>
       <nav class="primary-nav">
         <button
@@ -207,6 +225,9 @@ function closePreview(): void {
           @click="navigate('recent')"
         >
           <AppIcon name="recent" /><span>最近上传</span>
+        </button>
+        <button type="button" @click="openPeople">
+          <AppIcon name="people" /><span>人物视频</span>
         </button>
       </nav>
       <div class="nav-section-label"><span>文件分类</span><span class="auto-tag">自动</span></div>
@@ -245,9 +266,12 @@ function closePreview(): void {
         <div>
           <p class="eyebrow">TG DRIVE / 个人网盘</p>
           <h1>{{ drive.title }}</h1>
-          <p class="page-description">{{ description }}</p>
+          <p v-if="drive.person && drive.person !== drive.title" class="page-description">
+            原名 {{ drive.person }}
+          </p>
+          <p v-else class="page-description">{{ description }}</p>
         </div>
-        <div class="toolbar-actions">
+        <div v-if="drive.view !== 'people'" class="toolbar-actions">
           <button class="ghost" type="button" @click="folderDialog = true">
             <AppIcon name="plus" :size="18" />新建文件夹
           </button>
@@ -262,6 +286,8 @@ function closePreview(): void {
         </div>
       </header>
 
+      <PeopleIndex v-if="drive.view === 'people' && !drive.person" />
+      <template v-else>
       <div v-if="drive.view === 'all' && !drive.folderId && !drive.query" class="category-overview">
         <button
           v-for="category in overview"
@@ -287,7 +313,7 @@ function closePreview(): void {
             id="file-search"
             v-model="drive.query"
             type="search"
-            :placeholder="drive.folderId ? '搜索当前文件夹' : '搜索文件名称…'"
+            :placeholder="drive.person ? '搜索此人物的视频…' : drive.folderId ? '搜索当前文件夹' : '搜索文件名称…'"
             maxlength="255"
             @input="scheduleSearch"
             @keydown.enter="submitSearch"
@@ -322,7 +348,12 @@ function closePreview(): void {
       </div>
 
       <div class="location-row">
-        <nav v-if="drive.view === 'all' && !drive.query" class="crumbs" aria-label="目录路径">
+        <nav v-if="drive.person" class="crumbs" aria-label="人物目录">
+          <a class="crumb" href="#people">全部人物</a>
+          <AppIcon name="chevron" :size="12" />
+          <span>{{ drive.title }}</span>
+        </nav>
+        <nav v-else-if="drive.view === 'all' && !drive.query" class="crumbs" aria-label="目录路径">
           <button class="crumb" @click="breadcrumb(null)">我的文件</button
           ><template v-for="item in drive.path" :key="item.id"
             ><AppIcon name="chevron" :size="12" /><button
@@ -336,7 +367,9 @@ function closePreview(): void {
         <span v-else class="results-label">{{
           drive.query ? `“${drive.query}”的搜索结果` : `全部${drive.title}文件`
         }}</span>
-        <span class="item-count" aria-live="polite">{{ drive.total }} 个项目</span>
+        <span class="item-count" aria-live="polite">
+          {{ drive.total }} {{ drive.person ? '部视频' : '个项目' }}
+        </span>
       </div>
 
       <div v-if="drive.error" class="inline-error" role="alert">
@@ -362,14 +395,16 @@ function closePreview(): void {
       <div v-if="isEmpty" class="empty">
         <span class="empty-art"
           ><AppIcon
-            :name="drive.query ? 'search' : drive.view === 'all' ? 'folder' : drive.view"
+          :name="drive.query ? 'search' : drive.person ? 'video' : drive.view === 'all' ? 'folder' : drive.view"
             :size="42"
         /></span>
-        <h2>{{ drive.query ? '没有找到匹配的文件' : '这里还没有文件' }}</h2>
+        <h2>{{ drive.query ? '没有找到匹配的文件' : drive.person ? '暂无相关视频' : '这里还没有文件' }}</h2>
         <p>
           {{
             drive.query
               ? '试试其他关键词，或清除搜索查看所有文件。'
+              : drive.person
+                ? '返回人物目录，查看其他人物的视频。'
               : '上传后会自动归入对应分类，在电脑和手机上都能找到。'
           }}
         </p>
@@ -380,7 +415,7 @@ function closePreview(): void {
           >{{ (drive.page - 1) * drive.pageSize + 1 }}–{{
             Math.min(drive.page * drive.pageSize, drive.total)
           }}
-          / {{ drive.total }} 个项目</span
+          / {{ drive.total }} {{ drive.person ? '部视频' : '个项目' }}</span
         >
         <div>
           <button
@@ -400,6 +435,7 @@ function closePreview(): void {
         </div>
       </footer>
       <div
+        v-if="drive.view !== 'people'"
         class="drop-zone"
         :class="{ dragover: dragging }"
         @dragenter.prevent="dragging = true"
@@ -417,6 +453,7 @@ function closePreview(): void {
         </div>
         <span class="drop-caption">电脑拖放 / 手机选择文件</span>
       </div>
+      </template>
     </section>
 
     <PromptDialog
@@ -489,3 +526,16 @@ function closePreview(): void {
     >
   </div>
 </template>
+
+<style scoped>
+.people-layout {
+  grid-template-columns: minmax(0, 1fr);
+  overflow-wrap: anywhere;
+}
+@media (min-width: 761px) {
+  .people-layout { padding-left: 28px; }
+}
+@media (min-width: 1440px) {
+  .people-layout { padding-left: 44px; }
+}
+</style>

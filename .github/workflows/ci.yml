@@ -28,6 +28,9 @@ jobs:
       - run: python -m ruff check scripts/traffic_collector.py && python -m ruff format --check scripts/traffic_collector.py
       - run: bash -n deploy/install-traffic.sh deploy/bootstrap-ubuntu.sh
       - run: python -m pytest --cov=app --cov-report=term-missing
+        env:
+          # Avoid slow line tracing while Jieba imports its large model tables.
+          COVERAGE_CORE: sysmon
 
   frontend:
     name: Frontend typecheck & build

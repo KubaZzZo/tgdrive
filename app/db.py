@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from app.categories import CATEGORY_LABELS, classify_file, effective_mime
+from app.people import person_key
+from app.person_names import chinese_person_name
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 def utcnow() -> str:
@@ -89,6 +91,7 @@ class Database:
         self._lock = threading.RLock()
         self.conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.conn.create_function("person_display_name", 1, chinese_person_name, deterministic=True)
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.execute("PRAGMA busy_timeout=30000")
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -221,6 +224,18 @@ class Database:
                         item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
                         token TEXT NOT NULL UNIQUE, mime TEXT NOT NULL, created_at TEXT NOT NULL)""")
                     self.conn.execute("PRAGMA user_version=11")
+
+            if current < 12:
+                with self.conn:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    self.conn.execute("""CREATE TABLE IF NOT EXISTS video_people (
+                        item_id TEXT NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                        person_key TEXT NOT NULL, name TEXT NOT NULL,
+                        PRIMARY KEY(item_id, person_key))""")
+                    self.conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_video_people_key ON video_people(person_key)"
+                    )
+                    self.conn.execute("PRAGMA user_version=12")
 
     def publish_image(self, item_id: str, token: str, mime: str) -> dict[str, Any]:
         with self._lock, self.conn:
@@ -432,6 +447,7 @@ class Database:
         scope: str = "folder",
         category: str | None = None,
         query: str = "",
+        person: str | None = None,
         sort: str = "name",
         direction: str = "asc",
         limit: int = 60,
@@ -452,6 +468,14 @@ class Database:
             # instr treats %, _ and backslashes literally rather than as LIKE wildcards.
             conditions.append("instr(lower(name), lower(?)) > 0")
             params.append(query)
+        if person is not None:
+            conditions.extend(
+                [
+                    "category='video'",
+                    "id IN (SELECT item_id FROM video_people WHERE person_key=?)",
+                ]
+            )
+            params.append(person_key(person))
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
         column = {
             "name": "name COLLATE NOCASE",
@@ -469,6 +493,30 @@ class Database:
                 [*params, limit, offset],
             ).fetchall()
         return [dict(row) for row in rows], int(total)
+
+    def list_video_people(self, query: str, limit: int, offset: int) -> tuple[list[dict], int]:
+        source = """FROM video_people p JOIN items i ON i.id=p.item_id
+                    WHERE i.category='video'"""
+        key = person_key(query)
+        params: tuple[str, ...] = ()
+        if key:
+            source += (
+                " AND (instr(p.person_key, ?) > 0 OR instr(person_display_name(p.name), ?) > 0)"
+            )
+            params = (key, key)
+        with self._lock:
+            total = self.conn.execute(
+                "SELECT COUNT(DISTINCT p.person_key) " + source, params
+            ).fetchone()[0]
+            rows = self.conn.execute(
+                "SELECT MIN(p.name) AS name, COUNT(*) AS count "
+                + source
+                + " GROUP BY p.person_key ORDER BY count DESC, p.person_key LIMIT ? OFFSET ?",
+                (*params, limit, offset),
+            ).fetchall()
+        return [
+            {**dict(row), "display_name": chinese_person_name(row["name"])} for row in rows
+        ], int(total)
 
     def category_stats(self) -> list[dict[str, Any]]:
         with self._lock:
@@ -764,6 +812,22 @@ class Database:
                 (chat_id, message_id),
             )
 
+    def _replace_video_people(self, item_id: str, names: Iterable[str]) -> bool:
+        people = {person_key(name): name for name in names}
+        previous = dict(
+            self.conn.execute(
+                "SELECT person_key,name FROM video_people WHERE item_id=?", (item_id,)
+            ).fetchall()
+        )
+        if previous == people:
+            return False
+        self.conn.execute("DELETE FROM video_people WHERE item_id=?", (item_id,))
+        self.conn.executemany(
+            "INSERT INTO video_people(item_id,person_key,name) VALUES (?,?,?)",
+            [(item_id, key, name) for key, name in people.items()],
+        )
+        return True
+
     def import_channel_file(
         self, chat_id: str, message_id: int, file: dict[str, Any], scan_run: str | None = None
     ) -> bool:
@@ -808,7 +872,10 @@ class Database:
                         "UPDATE channel_messages SET remote_name=? WHERE chat_id=? AND message_id=?",
                         (previous, chat_id, message_id),
                     )
-                    return changed
+                    people_changed = self._replace_video_people(
+                        seen["item_id"], file.get("people", ())
+                    )
+                    return changed or people_changed
                 if not seen["item_id"]:
                     return False
                 item = self.get_item(seen["item_id"])
@@ -840,6 +907,7 @@ class Database:
                     "UPDATE channel_messages SET media_key=?,remote_name=? WHERE chat_id=? AND message_id=?",
                     (file["media_key"], "" if keep_name else file["name"], chat_id, message_id),
                 )
+                self._replace_video_people(seen["item_id"], file.get("people", ()))
                 return True
             existing = self.conn.execute(
                 """SELECT i.id FROM file_parts p JOIN items i ON i.id=p.item_id
@@ -883,6 +951,7 @@ class Database:
                     file["name"],
                 ),
             )
+            self._replace_video_people(item_id, file.get("people", ()))
             return True
 
     def import_bot_file(
@@ -901,8 +970,16 @@ class Database:
             changed = False
             if not seen or (
                 seen["state"] == "imported"
-                and seen["media_key"] == file["media_key"]
-                and seen["remote_version"] < file["remote_version"]
+                and (
+                    (
+                        seen["media_key"] == file["media_key"]
+                        and seen["remote_version"] <= file["remote_version"]
+                    )
+                    or (
+                        (seen["media_key"] or "").startswith("bot:")
+                        and seen["remote_version"] < file["remote_version"]
+                    )
+                )
             ):
                 changed = self.import_channel_file(chat_id, message_id, file)
                 seen = self.conn.execute(sql, params).fetchone()

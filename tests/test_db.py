@@ -88,11 +88,12 @@ def test_reconcile_deployed_and_cdn_schema_variants_without_data_loss(workdir, v
             db.conn.execute("DROP TABLE channel_bot_files")
         version = 7 if variant == "schema7" else 9 if variant == "schema9" else 8
         db.conn.execute("DROP TABLE image_hosts")
+        db.conn.execute("DROP TABLE video_people")
         db.conn.execute("ALTER TABLE uploads DROP COLUMN image_host")
         db.conn.execute(f"PRAGMA user_version={version}")
     db.close()
     db = Database(path)
-    assert db.schema_version() == SCHEMA_VERSION == 11
+    assert db.schema_version() == SCHEMA_VERSION
     assert db.get_item(item["id"])["name"] == "kept.bin"
     assert db.get_parts(item["id"])[0]["size"] == 3
     if variant in {"schema8-bot", "schema9"}:

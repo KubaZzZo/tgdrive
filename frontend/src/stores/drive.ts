@@ -21,7 +21,9 @@ export const useDriveStore = defineStore('drive', () => {
   const loading = ref(false)
   const error = ref('')
   const categories = ref<CategoryStats[]>(defaultCategories.map((c) => ({ ...c })))
-  const view = ref<'all' | 'recent' | FileCategory>('all')
+  const view = ref<'all' | 'recent' | 'people' | FileCategory>('all')
+  const person = ref<string | null>(null)
+  const personDisplayName = ref('')
   const query = ref('')
   const sortOption = ref('newest')
   const page = ref(1)
@@ -29,15 +31,12 @@ export const useDriveStore = defineStore('drive', () => {
   const pageSize = 60
   const layout = ref<'list' | 'grid'>('list')
   const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
-  const title = computed(() =>
-    folderId.value
-      ? (path.value.at(-1)?.name ?? '文件夹')
-      : view.value === 'all'
-        ? '我的文件'
-        : view.value === 'recent'
-          ? '最近上传'
-          : (categories.value.find((c) => c.id === view.value)?.label ?? '我的文件'),
-  )
+  const title = computed(() => {
+    if (folderId.value) return path.value.at(-1)?.name ?? '文件夹'
+    if (view.value === 'people') return personDisplayName.value || person.value || '人物视频'
+    if (view.value === 'recent') return '最近上传'
+    return categories.value.find((c) => c.id === view.value)?.label ?? '我的文件'
+  })
   let loadVersion = 0
   let controller: AbortController | null = null
 
@@ -53,7 +52,10 @@ export const useDriveStore = defineStore('drive', () => {
       name: { sort: 'name', direction: 'asc' },
       size: { sort: 'size', direction: 'desc' },
     }
-    const category = view.value !== 'all' && view.value !== 'recent' ? view.value : undefined
+    const peopleIndex = view.value === 'people' && !person.value
+    const category = view.value === 'people'
+      ? 'video'
+      : view.value !== 'all' && view.value !== 'recent' ? view.value : undefined
     const scope = category
       ? 'all'
       : view.value === 'recent'
@@ -67,14 +69,16 @@ export const useDriveStore = defineStore('drive', () => {
         {
           scope,
           category,
+          person: person.value ?? undefined,
           q: query.value,
           ...sorting[sortOption.value],
-          limit: pageSize,
+          limit: peopleIndex ? 1 : pageSize,
           offset: (page.value - 1) * pageSize,
         },
         controller.signal,
       )
       if (version !== loadVersion) return
+      personDisplayName.value = data.person_display_name ?? ''
       items.value = data.items
       path.value = data.path
       stats.value = data.stats
@@ -92,8 +96,10 @@ export const useDriveStore = defineStore('drive', () => {
     }
   }
 
-  async function selectView(next: typeof view.value): Promise<void> {
+  async function selectView(next: typeof view.value, selectedPerson: string | null = null): Promise<void> {
     view.value = next
+    person.value = selectedPerson
+    personDisplayName.value = ''
     folderId.value = null
     path.value = []
     query.value = ''
@@ -103,6 +109,8 @@ export const useDriveStore = defineStore('drive', () => {
 
   async function openFolder(nextId: string | null): Promise<void> {
     view.value = 'all'
+    person.value = null
+    personDisplayName.value = ''
     folderId.value = nextId
     query.value = ''
     page.value = 1
@@ -164,6 +172,7 @@ export const useDriveStore = defineStore('drive', () => {
 
   return {
     view,
+    person,
     query,
     sortOption,
     page,
