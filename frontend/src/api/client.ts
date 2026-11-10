@@ -170,6 +170,7 @@ export const api = {
   telegramChannels: (id: string) => request<{ channels: TelegramChannel[] }>(`/api/telegram/login/${encodeURIComponent(id)}/channels`),
   telegramActivate: (id: string, chatId: string) => request<TelegramAccountStatus>(`/api/telegram/login/${encodeURIComponent(id)}/activate`, { method: 'POST', body: JSON.stringify({ chat_id: chatId }), signal: AbortSignal.timeout(180_000) }),
   telegramSwitch: (id: string) => request<TelegramAccountStatus>(`/api/telegram/profiles/${encodeURIComponent(id)}/activate`, { method: 'POST', signal: AbortSignal.timeout(180_000) }),
+  telegramDeleteProfile: (id: string) => request<TelegramAccountStatus>(`/api/telegram/profiles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   traffic: () => request<TrafficStatus>('/api/traffic'),
   saveTrafficQuota: (quotaBytes: number) => jsonRequest<TrafficStatus>('PUT', '/api/traffic/settings', { quota_bytes: quotaBytes }),
   syncStatus: () => request<SyncStatus>('/api/sync'),
@@ -220,7 +221,8 @@ export const api = {
   cancelUpload: (uploadId: string) =>
     request<{ ok: boolean }>(`/api/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' }),
 
-  checkDownload: (url: string) => request<void>(url, { method: 'HEAD' }),
+  checkDownload: (itemId: string) =>
+    request<void>(`/api/files/${encodeURIComponent(itemId)}/download/check`, { cache: 'no-store' }),
 
   downloadUrl: (itemId: string, download = false) => {
     const query = new URLSearchParams()

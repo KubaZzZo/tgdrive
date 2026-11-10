@@ -140,6 +140,17 @@ def test_resumable_upload_download_share_and_delete(authenticated_client):
     assert item["name"] == "hello.txt"
     assert item["size"] == 10
 
+    checked = client.get(f"/api/files/{item['id']}/download/check")
+    assert checked.status_code == 204
+    assert not checked.content
+    storage.stopped = True
+    try:
+        failed_check = client.get(f"/api/files/{item['id']}/download/check")
+        assert failed_check.status_code == 503
+        assert failed_check.json()["detail"] == "Telegram 尚未连接"
+    finally:
+        storage.stopped = False
+
     download = client.get(f"/api/files/{item['id']}/download?download=1")
     assert download.status_code == 200
     assert download.content == b"helloworld"

@@ -5,7 +5,7 @@ import io
 import logging
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing
 from pathlib import Path
@@ -28,6 +28,10 @@ from app.network import get_proxy
 
 ProgressCallback = Callable[[int, int], Awaitable[None] | None]
 logger = logging.getLogger("tgdrive.storage")
+DOWNLOAD_BLOCK_SIZE = 512 * 1024
+PREFETCH_MIN_BYTES = 8 * 1024 * 1024
+PREFETCH_DEPTH = 4
+PREFETCH_DOWNLOAD_LIMIT = 2
 SESSION_AUTH_ERRORS = (
     AuthKeyDuplicatedError,
     AuthKeyInvalidError,
@@ -91,6 +95,7 @@ class TelegramStorage:
         self._started = False
         self.traffic = None
         self._message_cache: OrderedDict[tuple[str, int], tuple[float, Any]] = OrderedDict()
+        self._prefetch_downloads = 0
 
     @property
     def mode(self) -> str:
@@ -311,12 +316,33 @@ class TelegramStorage:
             self._message_cache.popitem(last=False)
         return message
 
-    async def iter_download(self, message_id: int, offset: int, length: int):
+    async def iter_download(
+        self, message_id: int, offset: int, length: int, *, prefetch: bool = False
+    ):
+        if (
+            prefetch
+            and length >= PREFETCH_MIN_BYTES
+            and self._prefetch_downloads < PREFETCH_DOWNLOAD_LIMIT
+        ):
+            self._prefetch_downloads += 1
+            try:
+                async with aclosing(self._prefetch_download(message_id, offset, length)) as stream:
+                    async for chunk in stream:
+                        yield chunk
+            finally:
+                self._prefetch_downloads -= 1
+            return
+
+        async with aclosing(self._retry_download(message_id, offset, length)) as stream:
+            async for chunk in stream:
+                yield chunk
+
+    async def _retry_download(self, message_id: int, offset: int, length: int, message=None):
         remaining = length
         for attempt in range(3):
             try:
                 async with aclosing(
-                    self._iter_download_once(message_id, offset, remaining)
+                    self._iter_download_once(message_id, offset, remaining, message)
                 ) as stream:
                     async for chunk in stream:
                         offset += len(chunk)
@@ -331,9 +357,49 @@ class TelegramStorage:
                 logger.warning("Retrying Telegram download %s at byte %s", message_id, offset)
                 await asyncio.sleep(0.25 * 2**attempt)
 
-    async def _iter_download_once(self, message_id: int, offset: int, length: int):
+    async def _prefetch_download(self, message_id: int, offset: int, length: int):
+        try:
+            message = await self._get_message(message_id)
+        except FileNotFoundError:
+            raise
+        except OSError:
+            async with aclosing(self._retry_download(message_id, offset, length)) as stream:
+                async for chunk in stream:
+                    yield chunk
+            return
+
+        end = offset + length
+        pending: deque[asyncio.Task[bytes]] = deque()
+
+        async def read_block(start: int, size: int) -> bytes:
+            async with aclosing(self._retry_download(message_id, start, size, message)) as stream:
+                return b"".join([chunk async for chunk in stream])
+
+        def schedule() -> None:
+            nonlocal offset
+            size = min(end - offset, DOWNLOAD_BLOCK_SIZE - offset % DOWNLOAD_BLOCK_SIZE)
+            pending.append(asyncio.create_task(read_block(offset, size)))
+            offset += size
+
+        try:
+            # Send the first block without competing with later blocks.
+            schedule()
+            while pending:
+                chunk = await pending[0]
+                pending.popleft()
+                while len(pending) < PREFETCH_DEPTH and offset < end:
+                    schedule()
+                yield chunk
+        finally:
+            with anyio.CancelScope(shield=True):
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+
+    async def _iter_download_once(self, message_id: int, offset: int, length: int, message=None):
         client = self.require_client()
-        message = await self._get_message(message_id)
+        if message is None:
+            message = await self._get_message(message_id)
         if not getattr(message, "document", None) and not getattr(message, "photo", None):
             raise FileNotFoundError(f"Telegram 消息不是文件: {message_id}")
         if length <= 0:
@@ -342,7 +408,7 @@ class TelegramStorage:
         # Align the start ourselves: Telethon can select its direct iterator for
         # a 4 KiB-aligned offset even when a request would cross a 1 MiB boundary.
         # Browser ranges such as 688128-1048575 trigger that path.
-        chunk_size = min(512 * 1024, max(4096, 1 << (length - 1).bit_length()))
+        chunk_size = min(DOWNLOAD_BLOCK_SIZE, max(4096, 1 << (length - 1).bit_length()))
         aligned_offset = offset // chunk_size * chunk_size
         skip = offset - aligned_offset
         stream = client.iter_download(

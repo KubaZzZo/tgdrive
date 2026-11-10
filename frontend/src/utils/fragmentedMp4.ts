@@ -1,13 +1,22 @@
+import { MediaTransfer, readMediaBytes, strongMediaTag, withMediaTimeout } from './mediaTransfer'
+import type { VideoSegment } from './deviceCache'
+
 // Only inspect complete boxes in the bounded initial range. Other formats use
 // the native player; malformed or unusually large headers never trigger a scan.
 interface Box { type: string; start: number; end: number; data: number }
-function boxes(bytes: Uint8Array, start: number, end: number): Box[] {
+export function boxes(bytes: Uint8Array, start: number, end: number, limit = Infinity): Box[] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   const result: Box[] = []
   while (start + 8 <= end) {
-    const size = view.getUint32(start)
-    if (size < 8 || start + size > end) break
-    result.push({ type: String.fromCharCode(...bytes.subarray(start + 4, start + 8)), start, end: start + size, data: start + 8 })
+    if (result.length === limit) return []
+    let size = view.getUint32(start)
+    const header = size === 1 ? 16 : 8
+    if (header === 16) {
+      if (start + header > end) break
+      size = Number(view.getBigUint64(start + 8))
+    }
+    if (size < header || start + size > end) break
+    result.push({ type: String.fromCharCode(...bytes.subarray(start + 4, start + 8)), start, end: start + size, data: start + header })
     start += size
   }
   return result
@@ -62,11 +71,12 @@ export function fragmentedMp4Type(bytes: Uint8Array): string | null {
   return codecs.length ? `video/mp4; codecs="${codecs.join(',')}"` : null
 }
 
-function isBuffered(buffered: TimeRanges, target: number): boolean {
+function secondsAhead(buffered: TimeRanges, target: number, initialGap = false): number {
   for (let i = 0; i < buffered.length; i++) {
-    if (target >= buffered.start(i) && target < buffered.end(i)) return true
+    if (target >= buffered.start(i) && target < buffered.end(i)) return buffered.end(i) - target
   }
-  return false
+  if (initialGap && buffered.length && target < buffered.start(0)) return buffered.end(0) - buffered.start(0)
+  return 0
 }
 
 interface Fragment { offset: number; time: number; sync: boolean }
@@ -196,8 +206,9 @@ function fragments(bytes: Uint8Array, offset: number, track: SeekTrack): Fragmen
 async function seekOffset(
   target: number, duration: number, size: number, track: SeekTrack, known: Map<number, Fragment>,
   indexes: SegmentIndex[],
-  read: (start: number, end: number) => Promise<Uint8Array>,
-): Promise<number> {
+  read: (start: number, end: number, signal: AbortSignal) => Promise<Uint8Array>,
+  signal: AbortSignal, probeSignal: AbortSignal,
+): Promise<number | null> {
   // Start a little before the requested frame so separately stored audio and
   // video fragments can both cover it.
   const goal = target - 4
@@ -227,7 +238,8 @@ async function seekOffset(
   known.forEach(bracket)
   let limit = high.offset
   const window = 512 * 1024
-  for (let probe = 0; probe < 14 && goal - best.time > 5 && limit > low.offset + 8; probe++) {
+  let remaining = 8 * 1024 * 1024
+  probes: for (let probe = 0; probe < 14 && remaining && goal - best.time > 5 && limit > low.offset + 8; probe++) {
     const span = limit - low.offset
     const fraction = (goal - low.time) / (high.time - low.time)
     const estimate = (high.offset - low.offset) * fraction
@@ -240,9 +252,17 @@ async function seekOffset(
     let bytes = new Uint8Array(0)
     // Large fragments may need a wider probe to reach the next video header.
     for (const length of [window, 4 * window, 16 * window]) {
-      const end = Math.min(high.offset - 1, start + length - 1)
-      if (end < start) break
-      const more = await read(start + bytes.length, end)
+      const next = start + bytes.length
+      const end = Math.min(high.offset - 1, start + length - 1, next + remaining - 1)
+      if (end < next) break
+      remaining -= end - next + 1
+      let more: Uint8Array
+      try { more = await read(next, end, probeSignal) }
+      catch (error) {
+        signal.throwIfAborted()
+        if (probeSignal.aborted) break probes
+        throw error
+      }
       const expanded = new Uint8Array(bytes.length + more.length)
       expanded.set(bytes)
       expanded.set(more, bytes.length)
@@ -257,23 +277,44 @@ async function seekOffset(
     }
     limit = high.offset
   }
-  if (goal - best.time > 45) throw new Error('No nearby random-access fragment')
+  signal.throwIfAborted()
+  if (goal - best.time > 45) return null
   remember(best)
   return best.offset
 }
 
-export interface MediaSession { streaming: boolean; dispose: () => void }
+export interface MediaSession { streaming: boolean; remuxed?: boolean; dispose: () => void }
+export interface MediaPrefix { bytes: Uint8Array; etag: string }
+interface SegmentCache {
+  list: (etag: string) => Promise<VideoSegment[]>
+  read: (etag: string, start: number, end: number) => Promise<Uint8Array<ArrayBuffer> | null>
+  write: (etag: string, segment: VideoSegment, bytes: Uint8Array<ArrayBuffer>) => Promise<boolean>
+}
 
-// Aim for four seconds per request; bound both round trips and transient memory.
-export function mediaChunkSize(size: number, duration: number): number {
-  const alignment = 64 * 1024
-  const estimate = Number.isFinite(duration) && duration > 0 ? size / duration * 4 : 2 * 1024 * 1024
-  return Math.min(4 * 1024 * 1024, Math.max(512 * 1024, Math.ceil(estimate / alignment) * alignment))
+async function lookupCached<T>(lookup: () => Promise<T>, signal: AbortSignal): Promise<T | null> {
+  if (signal.aborted) return null
+  return new Promise(resolve => {
+    const finish = (value: T | null) => {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', abort)
+      resolve(value)
+    }
+    const abort = () => finish(null)
+    const timer = setTimeout(abort, 100)
+    signal.addEventListener('abort', abort, { once: true })
+    void lookup().then(finish, abort)
+  })
 }
 
 export async function attachMedia(
   media: HTMLMediaElement, url: string, signal: AbortSignal, onError: () => void,
-  options: { file?: Blob; bufferSeconds?: () => number; version?: string } = {},
+  options: {
+    file?: Blob; bufferSeconds?: () => number | undefined; version?: string
+    size?: number; prefix?: MediaPrefix; onPrefix?: (prefix: MediaPrefix) => void
+    onSeekUnavailable?: () => void
+    segments?: SegmentCache
+    remux?: boolean
+  } = {},
 ): Promise<MediaSession> {
   const native = () => {
     const objectUrl = options.file ? URL.createObjectURL(options.file) : null
@@ -286,13 +327,32 @@ export async function attachMedia(
   }).ManagedMediaSource
   const Source = ManagedSource ?? (typeof MediaSource !== 'undefined' ? MediaSource : undefined)
   if (!Source) return native()
-  let rangeVersion: string | null = null
-  const range = async (start: number, end: number, requestSignal = signal) => {
+  const transfer = new MediaTransfer(Source === ManagedSource ? 24 : 48)
+  let rangeVersion: string | null = options.prefix?.etag ?? null
+  let size = 0
+  let cachedSegments: VideoSegment[] = []
+  const range = async (start: number, end: number, requestSignal = signal, allowCache = false) => {
     requestSignal.throwIfAborted()
-    if (options.file) return { reader: options.file.slice(start, end + 1).stream().getReader(), size: options.file.size }
+    if (options.file) return { reader: options.file.slice(start, end + 1).stream().getReader(), size: options.file.size, end, latency: 0, local: true }
+    const segmentCache = options.segments
+    const etag = rangeVersion
+    if (allowCache && segmentCache && etag && size) {
+      const cached = cachedSegments.find(part => start >= part.start && start < part.start + part.length)
+      if (cached) {
+        const cachedEnd = Math.min(end, cached.start + cached.length - 1)
+        const bytes = await lookupCached(() => segmentCache.read(etag, start, cachedEnd), requestSignal)
+        requestSignal.throwIfAborted()
+        if (bytes?.length === cachedEnd - start + 1) {
+          const reader = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(bytes); controller.close() } }).getReader()
+          return { reader, size, end: cachedEnd, latency: 0, local: true }
+        }
+      }
+    }
     const headers: Record<string, string> = { Range: `bytes=${start}-${end}` }
     if (rangeVersion) headers['If-Range'] = rangeVersion
+    const started = performance.now()
     const response = await fetch(url, { headers, signal: requestSignal })
+    const latency = performance.now() - started
     if (response.status !== 206 || !response.body) {
       await response.body?.cancel()
       throw new Error('Byte ranges unavailable')
@@ -306,28 +366,32 @@ export async function attachMedia(
       await response.body.cancel(); throw new Error('Media changed during playback')
     }
     rangeVersion = version
-    return { reader: response.body.getReader(), size: Number(match[3]) }
+    return { reader: response.body.getReader(), size: Number(match[3]), end: Number(match[2]), latency, local: false }
   }
-  let first: Uint8Array, size: number
-  try {
+  const readHeader = async () => {
+    if (options.prefix && options.size) return { first: options.prefix.bytes, size: options.size }
     const initial = await range(0, 65535)
-    size = initial.size
-    const chunks: Uint8Array[] = []; let length = 0
-    try {
-      while (true) {
-        const { done, value } = await initial.reader.read()
-        if (done) break
-        length += value.length
-        if (length > 65536) throw new Error('Oversized media header')
-        chunks.push(value)
-      }
-    } finally { await initial.reader.cancel() }
-    if (length !== Math.min(65536, size)) throw new Error('Incomplete media header')
-    first = new Uint8Array(length); let cursor = 0
-    for (const chunk of chunks) { first.set(chunk, cursor); cursor += chunk.length }
+    const first = await readMediaBytes(initial.reader, Math.min(65536, initial.size))
+    transfer.sample(0, 0, initial.latency)
+    return { first, size: initial.size }
+  }
+  let first: Uint8Array
+  try {
+    ({ first, size } = await readHeader())
   } catch { return native() }
   const type = fragmentedMp4Type(first)
+  if (!type && options.remux && !signal.aborted && !options.file && strongMediaTag(rangeVersion) &&
+    boxes(first, 0, first.length).some(box => box.type === 'ftyp')) {
+    try {
+      const { attachOrdinaryMp4 } = await import('./ordinaryMp4')
+      const remuxed = await attachOrdinaryMp4(
+        media, Source, Source === ManagedSource, first, size, signal, range, onError, options.bufferSeconds,
+      )
+      if (remuxed) return remuxed
+    } catch { return native() }
+  }
   if (!type || !Source.isTypeSupported(type) || signal.aborted) return native()
+  if (!options.prefix && rangeVersion) options.onPrefix?.({ bytes: first, etag: rangeVersion })
   const managed = Source === ManagedSource
   const source = new Source() as MediaSource & { readonly streaming?: boolean }
   // Without an HLS AirPlay alternative, WebKit requires remote playback to be
@@ -357,20 +421,11 @@ export async function attachMedia(
   }
   const readProbe = async (from: number, to: number, requestSignal: AbortSignal) => {
     const { reader, size: total } = await range(from, to, requestSignal)
-    const bytes = new Uint8Array(to - from + 1)
-    let length = 0
-    try {
-      if (total !== size) throw new Error('Media changed during playback')
-      while (true) {
-        requestSignal.throwIfAborted()
-        const { done, value } = await reader.read()
-        if (done) break
-        bytes.set(value, length)
-        length += value.length
-      }
-      if (length !== bytes.length) throw new Error('Incomplete fragment probe')
-      return bytes
-    } finally { await reader.cancel() }
+    if (total !== size) {
+      await reader.cancel()
+      throw new Error('Media changed during playback')
+    }
+    return readMediaBytes(reader, to - from + 1)
   }
   const pump = async () => {
     const deadline = Date.now() + 15000
@@ -409,15 +464,41 @@ export async function attachMedia(
     const track = seekTrack(first)
     const indexes = track ? segmentIndexes(first, track, size) : []
     const known = seekPoints(track && options.version !== undefined
-      ? JSON.stringify([url, options.version, size]) : undefined)
+      ? JSON.stringify([url, options.version, size, rangeVersion]) : undefined)
+    const diskCache = track && !options.file ? options.segments : undefined
+    const etag = rangeVersion
+    const diskReady = track && diskCache && etag ? lookupCached(() => diskCache.list(etag), signal).then(segments => {
+      if (signal.aborted || !segments) return
+      cachedSegments = segments.filter(part => Number.isSafeInteger(part.start) && part.start >= track.start &&
+        Number.isSafeInteger(part.length) && part.length > 0 && part.start + part.length <= size &&
+        Number.isSafeInteger(part.keyframeOffset) && part.keyframeOffset >= part.start &&
+        part.keyframeOffset < part.start + part.length &&
+        Number.isFinite(part.time) && part.time >= 0)
+      for (const part of cachedSegments) {
+        if (!known.has(part.keyframeOffset)) {
+          if (known.size >= 256) known.delete(known.keys().next().value!)
+          known.set(part.keyframeOffset, { offset: part.keyframeOffset, time: part.time, sync: true })
+        }
+      }
+    }).catch(() => {}) : undefined
     let target: number | undefined
+    let lastCaptured = -Infinity
+    let captureAfterSeek = false
+    let capturePending = false
+    let lastPosition = media.currentTime
+    const rememberPosition = () => {
+      if (!media.seeking && target === undefined) lastPosition = media.currentTime
+    }
     const seek = () => {
       if (!track || !Number.isFinite(media.duration)) return
-      if (target === undefined && isBuffered(media.buffered, media.currentTime)) return
+      if (target === undefined && secondsAhead(media.buffered, media.currentTime)) return
       target = media.currentTime
       request.abort()
     }
-    if (track) media.addEventListener('seeking', seek)
+    if (track) {
+      media.addEventListener('seeking', seek)
+      media.addEventListener('timeupdate', rememberPosition)
+    }
     try {
       await streamingWindow()
       await append(first)
@@ -427,37 +508,75 @@ export async function attachMedia(
         const requestSignal = request.signal
         let failures = 0
         try {
-          if (target !== undefined && track && !isBuffered(media.buffered, target)) {
-            const start = await seekOffset(target, media.duration, size, track, known, indexes,
-              (from, to) => readProbe(from, to, requestSignal))
+          if (target !== undefined && track && !secondsAhead(media.buffered, target)) {
+            const requested = target
+            await diskReady
             requestSignal.throwIfAborted()
-            reopen()
-            buffer.abort()
-            offset = start
-            if (buffer.buffered.length) await change(() => buffer.remove(0, source.duration))
+            const start = await withMediaTimeout(requestSignal, 2500, probeSignal =>
+              seekOffset(requested, media.duration, size, track, known, indexes, readProbe, requestSignal, probeSignal))
+            requestSignal.throwIfAborted()
+            if (start === null) {
+              media.currentTime = secondsAhead(media.buffered, lastPosition) ? lastPosition : media.buffered.length
+                ? media.buffered.start(0) : 0
+              options.onSeekUnavailable?.()
+            } else {
+              reopen()
+              buffer.abort()
+              offset = start
+              captureAfterSeek = true
+              if (buffer.buffered.length) await change(() => buffer.remove(0, source.duration))
+            }
           }
           requestSignal.throwIfAborted()
           target = undefined
           while (offset < size) {
-            while (media.buffered.length && media.buffered.end(media.buffered.length - 1) - media.currentTime >
-              (options.bufferSeconds?.() ?? (media.paused ? 10 : 60))) await wait(requestSignal)
+            const bitrate = Number.isFinite(media.duration) && media.duration > 0 ? size / media.duration : 0
+            while (secondsAhead(media.buffered, media.currentTime, media.paused && media.currentTime === 0) >
+              transfer.bufferSeconds(bitrate, media.paused, globalThis.document?.hidden ?? false, options.bufferSeconds?.(), media.playbackRate))
+              await wait(requestSignal)
             await streamingWindow(requestSignal)
-            if (media.currentTime > 90 && buffer.buffered.length && buffer.buffered.start(0) < media.currentTime - 60)
-              await change(() => buffer.remove(0, media.currentTime - 60))
+            const cutoff = media.currentTime - transfer.historySeconds(bitrate)
+            if (cutoff > 0 && buffer.buffered.length && buffer.buffered.start(0) < cutoff - 1)
+              await change(() => buffer.remove(0, cutoff))
             try {
-              const end = Math.min(size - 1, offset + mediaChunkSize(size, media.duration) - 1)
-              const { reader, size: total } = await range(offset, end, requestSignal)
+              const bytes = transfer.playbackBytes(bitrate, secondsAhead(media.buffered, media.currentTime))
+              const from = offset
+              const wantedEnd = Math.min(size - 1, offset + bytes - 1)
+              const { reader, size: total, end, latency, local } = await range(offset, wantedEnd, requestSignal, true)
+              const shouldCapture = diskCache && !local && rangeVersion && !capturePending && (captureAfterSeek ||
+                (!media.paused && !globalThis.document?.hidden && Math.abs(media.currentTime - lastCaptured) >= 6))
+              const capture = shouldCapture ? new Uint8Array(Math.min(1024 * 1024, end - from + 1)) : undefined
+              const bodyStarted = performance.now()
+              let lastByte = bodyStarted
               try {
                 if (total !== size) throw new Error('Media changed during playback')
                 while (true) {
                   requestSignal.throwIfAborted()
                   const { done, value } = await reader.read()
                   if (done) break
+                  lastByte = performance.now()
                   if (offset + value.length > end + 1) throw new Error('Oversized media segment')
+                  if (capture && offset - from < capture.length)
+                    capture.set(value.subarray(0, capture.length - offset + from), offset - from)
                   await append(value)
                   offset += value.length
                 }
                 if (offset !== end + 1) throw new Error('Incomplete media segment')
+                if (!local) transfer.sample(offset - from, lastByte - bodyStarted, latency)
+                if (capture && track && diskCache && rangeVersion) {
+                  const anchor = fragments(capture, from, track).find(fragment => fragment.sync)
+                  if (anchor) {
+                    const position = media.currentTime
+                    capturePending = true
+                    void diskCache.write(rangeVersion, {
+                      start: from, keyframeOffset: anchor.offset, time: anchor.time, length: capture.length,
+                    }, capture).then(stored => {
+                      if (!stored || requestSignal.aborted) return
+                      lastCaptured = position
+                      captureAfterSeek = false
+                    }).catch(() => {}).finally(() => { capturePending = false })
+                  }
+                }
                 failures = 0
               } finally { await reader.cancel() }
             } catch (error) {
@@ -477,7 +596,10 @@ export async function attachMedia(
         }
       }
     } finally {
-      if (track) media.removeEventListener('seeking', seek)
+      if (track) {
+        media.removeEventListener('seeking', seek)
+        media.removeEventListener('timeupdate', rememberPosition)
+      }
     }
   }
   void pump().catch(() => { if (!signal.aborted) onError() })

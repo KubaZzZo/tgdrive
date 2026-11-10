@@ -124,6 +124,8 @@ def test_web_upload_message_changes_revoke_publication(authenticated_client, eve
     client, app, storage = authenticated_client
     item = image(app, storage)
     url = client.post(f"/api/images/{item['id']}").json()["url"]
+    download = f"/api/files/{item['id']}/download"
+    old_tag = client.head(download).headers["etag"]
     mid = app.state.db.get_parts(item["id"])[0]["tg_message_id"]
     storage.invalidate_message = lambda _: None
     if event == "delete":
@@ -142,6 +144,7 @@ def test_web_upload_message_changes_revoke_publication(authenticated_client, eve
     else:
         caption = "tgdrive:v1:test:0" if event == "tagged_edit" else "replacement"
         asyncio.run(app.state.channel_sync.on_edit(message(mid, "private.txt", caption=caption)))
+    assert client.head(download).headers["etag"] != old_tag
     client.cookies.clear()
     assert client.get(url).status_code == 404
     assert app.state.db.get_item(item["id"]) is not None

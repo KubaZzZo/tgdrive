@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
 import type { DriveItem, FileAction, FileCategory } from '@/api/types'
@@ -68,6 +68,7 @@ const renameTarget = ref<DriveItem | null>(null)
 const deleteTarget = ref<DriveItem | null>(null)
 const previewTarget = ref<DriveItem | null>(null)
 const previewOpen = ref(false)
+const downloadStatus = ref('')
 
 const isEmpty = computed(() => !drive.loading && !drive.error && drive.items.length === 0)
 
@@ -79,6 +80,7 @@ async function openFolder(item: DriveItem): Promise<void> {
 function openItem(item: DriveItem): void {
   previewTarget.value = item
   previewOpen.value = true
+  downloadStatus.value = ''
 }
 
 function previewItem(item: DriveItem): void {
@@ -89,22 +91,29 @@ function previewItem(item: DriveItem): void {
   openItem(item)
 }
 
-const pendingDownloads = new Set<string>()
+const pendingDownloads = reactive(new Set<string>())
 async function download(item: DriveItem): Promise<void> {
   if (pendingDownloads.has(item.id)) return
   pendingDownloads.add(item.id)
+  const inPreview = () => previewOpen.value && previewTarget.value?.id === item.id
+  const report = (message: string, failed = false) => {
+    if (inPreview()) downloadStatus.value = message
+    else if (failed) toast.error(message)
+    else toast.push(message)
+  }
+  if (inPreview()) downloadStatus.value = '正在检查下载…'
   const url = api.downloadUrl(item.id, true)
   try {
-    await api.checkDownload(url)
+    await api.checkDownload(item.id)
     const link = document.createElement('a')
     link.href = url
     link.download = item.name
     document.body.append(link)
     link.click()
     link.remove()
-    toast.success('已交给浏览器下载，可在浏览器下载列表查看进度')
+    report('已提交下载请求，请在浏览器下载列表查看进度')
   } catch (error) {
-    toast.error(error instanceof Error ? error.message : '下载失败，请重试')
+    report(error instanceof Error ? error.message : '下载失败，请重试', true)
   } finally { pendingDownloads.delete(item.id) }
 }
 
@@ -440,6 +449,8 @@ function closePreview(): void {
     <PreviewModal
       :open="previewOpen"
       :item="previewTarget"
+      :download-pending="!!previewTarget && pendingDownloads.has(previewTarget.id)"
+      :download-status="downloadStatus"
       @close="closePreview"
       @download="download"
     />

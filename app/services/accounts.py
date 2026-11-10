@@ -140,7 +140,7 @@ class AccountManager:
                 raise HTTPException(409, error)
             at_limit = len(self.control.telegram_profiles()) >= 10
             if at_limit and not self.current.storage.status().get("auth_required"):
-                raise HTTPException(409, "最多保存 10 个账号/频道组合，请先使用已有连接")
+                raise HTTPException(409, "最多保存 10 个账号/频道组合，请先删除一个旧连接")
             await self._cancel()
             key = uuid.uuid4().hex
             directory = self.settings.data_dir / "accounts"
@@ -457,6 +457,14 @@ class AccountManager:
             except BaseException:
                 await candidate.stop()
                 raise
+            return self.status()
+
+    async def delete_saved(self, profile_id: str) -> dict:
+        async with self.lock:
+            active = self.control.active_telegram_profile()
+            if active and active["id"] == profile_id:
+                raise HTTPException(409, "请先切换到其他连接，再删除当前连接")
+            self.control.delete_telegram_profile(profile_id)
             return self.status()
 
     def workspace(self, chat_id: str) -> tuple[Database, str]:

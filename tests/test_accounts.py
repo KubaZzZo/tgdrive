@@ -181,6 +181,7 @@ def test_accounts_require_auth_and_password_validation_does_not_echo(app_client)
     assert client.get("/api/telegram").status_code == 401
     assert client.post("/api/telegram/login").status_code == 401
     assert client.post("/api/telegram/profiles/default/activate").status_code == 401
+    assert client.delete("/api/telegram/profiles/default").status_code == 401
     assert client.get("/api/items", headers={"X-Workspace-ID": "old"}).status_code == 401
     client.post("/api/login", json={"password": "correct-horse-battery-staple"})
     assert client.get("/api/telegram").json()["active_id"] == "default"
@@ -188,6 +189,24 @@ def test_accounts_require_auth_and_password_validation_does_not_echo(app_client)
     response = client.post("/api/telegram/login/missing/password", json={"password": secret})
     assert response.status_code == 422 and secret not in response.text
     assert "input" not in response.json()["errors"][0]
+
+
+def test_delete_saved_connection_preserves_active_profile_and_workspace(authenticated_client):
+    client, app, _ = authenticated_client
+    control = app.state.accounts.control
+    old = profile(-1000000000222)
+    control.save_telegram_profile(old, "b" * 32, activate=False)
+    target = f"/api/telegram/profiles/{old['id']}"
+
+    assert client.delete("/api/telegram/profiles/default").status_code == 409
+    for _ in range(2):
+        response = client.delete(target)
+        assert response.status_code == 200
+        status = response.json()
+        assert status["active_id"] == "default" and status["connected"]
+        assert [saved["id"] for saved in status["profiles"]] == ["default"]
+    assert client.post(f"{target}/activate").status_code == 404
+    assert control.telegram_workspace(old["chat_id"]) == "b" * 32
 
 
 @pytest.mark.parametrize("shared_id", [4, 6])

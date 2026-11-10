@@ -2,14 +2,19 @@ from __future__ import annotations
 
 import hashlib
 import html
+import logging
 import mimetypes
+from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from datetime import UTC, datetime
+from time import perf_counter
 from typing import Any
 from urllib.parse import quote
 
+import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from starlette.types import Send
 
 from app.api.deps import get_db, get_settings, get_storage
 from app.auth import require_auth
@@ -18,10 +23,23 @@ from app.db import Database
 from app.ranges import parse_range
 from app.services.cdn import CDNMonitor
 from app.services.telegram_bot import MAX_BOT_DOWNLOAD, BotAPIError
-from app.storage import TelegramStorage
+from app.storage import PREFETCH_MIN_BYTES, TelegramStorage
 
 router = APIRouter(tags=["files"])
 auth_router = APIRouter(prefix="/api", tags=["files"], dependencies=[Depends(require_auth)])
+logger = logging.getLogger("tgdrive.media")
+
+
+class FileStreamingResponse(StreamingResponse):
+    body_iterator: AsyncGenerator[bytes, None]
+
+    async def stream_response(self, send: Send) -> None:
+        try:
+            await super().stream_response(send)
+        finally:
+            # A disconnect can interrupt send() while the iterator is suspended.
+            with anyio.CancelScope(shield=True):
+                await self.body_iterator.aclose()
 
 
 def content_disposition(name: str, inline: bool) -> str:
@@ -38,6 +56,8 @@ async def iter_item_range(
     end: int,
     parts: list[dict[str, Any]] | None = None,
     cdn: CDNMonitor | None = None,
+    *,
+    prefetch: bool = False,
 ):
     parts = db.get_parts(item["id"]) if parts is None else parts
     if not parts:
@@ -51,8 +71,10 @@ async def iter_item_range(
             continue
         local_start = max(start, part_start) - part_start
         local_end = min(end, part_end) - part_start
+        length = local_end - local_start
+        options = {"prefetch": True} if prefetch and length >= PREFETCH_MIN_BYTES else {}
         async with aclosing(
-            storage.iter_download(int(part["tg_message_id"]), local_start, local_end - local_start)
+            storage.iter_download(int(part["tg_message_id"]), local_start, length, **options)
         ) as stream:
             async for chunk in stream:
                 if chunk:
@@ -61,12 +83,35 @@ async def iter_item_range(
                     yield chunk
 
 
+async def trace_media_range(stream, request_id: str, expected: int):
+    started = perf_counter()
+    first_ms = None
+    sent = 0
+    try:
+        async with aclosing(stream):
+            async for chunk in stream:
+                if first_ms is None:
+                    first_ms = round((perf_counter() - started) * 1000, 1)
+                sent += len(chunk)
+                yield chunk
+    finally:
+        logger.info(
+            "Media probe origin_first_ms=%s origin_total_ms=%.1f bytes_yielded=%d expected=%d",
+            first_ms,
+            (perf_counter() - started) * 1000,
+            sent,
+            expected,
+            extra={"request_id": request_id},
+        )
+
+
 async def stream_item(
     request: Request,
     item: dict[str, Any],
     db: Database,
     storage: TelegramStorage,
     public: bool = False,
+    check_only: bool = False,
 ) -> Response:
     if item["kind"] != "file":
         raise HTTPException(400, "只能下载文件")
@@ -106,12 +151,14 @@ async def stream_item(
         )
     )
     etag = '"' + hashlib.sha256(version.encode()).hexdigest() + '"'
-    range_header = request.headers.get("range")
+    range_header = None if check_only else request.headers.get("range")
     if request.headers.get("if-range") not in (None, etag):
         range_header = None
     start, end, partial = parse_range(range_header, size)
     length = end - start
     await cdn.check(length)
+    if check_only:
+        return Response(status_code=204, headers={"Cache-Control": "no-store"})
     mime = item.get("mime") or mimetypes.guess_type(item["name"])[0] or "application/octet-stream"
     inline = not request.query_params.get("download") and (
         mime.startswith("video/")
@@ -131,7 +178,7 @@ async def stream_item(
     }
     if partial:
         headers["Content-Range"] = f"bytes {start}-{end - 1}/{size}"
-    if request.method == "HEAD":
+    if request.method == "HEAD" or not length:
         return Response(status_code=206 if partial else 200, media_type=mime, headers=headers)
     if bot and bot_file_id:
         try:
@@ -141,8 +188,17 @@ async def stream_item(
         request.app.state.traffic.record("telegram", inbound=received)
         await cdn.charge(len(data))
         return Response(data, status_code=206 if partial else 200, media_type=mime, headers=headers)
-    return StreamingResponse(
-        iter_item_range(db, storage, item, start, end, parts, cdn) if length else iter(()),
+    stream = iter_item_range(db, storage, item, start, end, parts, cdn, prefetch=not inline)
+    if (
+        not public
+        and partial
+        and 0 < length <= 1024 * 1024
+        and mime.startswith("video/")
+        and request.headers.get("X-TGDrive-Media-Probe") == "1"
+    ):
+        stream = trace_media_range(stream, request.state.request_id, length)
+    return FileStreamingResponse(
+        stream,
         status_code=206 if partial else 200,
         media_type=mime,
         headers=headers,
@@ -150,6 +206,7 @@ async def stream_item(
 
 
 @auth_router.api_route("/files/{item_id}/download", methods=["GET", "HEAD"])
+@auth_router.get("/files/{item_id}/download/check")
 async def download_file(
     item_id: str,
     request: Request,
@@ -159,7 +216,9 @@ async def download_file(
     item = db.get_item(item_id)
     if not item:
         raise HTTPException(404, "文件不存在")
-    return await stream_item(request, item, db, storage)
+    return await stream_item(
+        request, item, db, storage, check_only=request.url.path.endswith("/check")
+    )
 
 
 @auth_router.get("/files/{item_id}/thumbnail")

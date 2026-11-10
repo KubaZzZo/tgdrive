@@ -289,7 +289,7 @@ class ChannelSyncService:
 
     def _ingest_bot_post(self, bot: TelegramBot, post: dict) -> None:
         if post.get("edit_date"):
-            self.revision += self.db.revoke_web_images_for_message(
+            self.revision += self.db.invalidate_web_media_for_message(
                 self.chat_id, int(post["message_id"])
             )
         described = describe_bot_post(post)
@@ -354,18 +354,17 @@ class ChannelSyncService:
             self._wake.set()
 
     async def on_edit(self, message: Any) -> None:
-        # Web uploads are excluded from re-import by their storage tag. Any edit
-        # can replace those bytes, so require fresh publication consent.
-        self.revision += self.db.revoke_web_images_for_message(self.chat_id, int(message.id))
-        self.storage.invalidate_message(int(message.id))
+        # An edit can replace bytes without changing the Telegram message ID.
         if describe_message(message):
+            self.revision += self.db.invalidate_web_media_for_message(self.chat_id, int(message.id))
+            self.storage.invalidate_message(int(message.id))
             await self.on_message(message)
         else:
             await self.on_delete([int(message.id)])
 
     async def on_delete(self, ids: list[int]) -> None:
         for mid in ids:
-            self.revision += self.db.revoke_web_images_for_message(self.chat_id, mid)
+            self.revision += self.db.invalidate_web_media_for_message(self.chat_id, mid)
             self.storage.invalidate_message(mid)
         removed = self.db.remove_channel_messages(self.chat_id, ids)
         self.revision += removed

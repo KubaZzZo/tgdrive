@@ -155,6 +155,15 @@ async function activate(profileId?: string): Promise<void> {
     if (job.value) poll(generation)
   } finally { busy.value = false }
 }
+async function deleteProfile(profileId: string, title: string): Promise<void> {
+  if (busy.value || profileId === account.value?.active_id) return
+  if (!window.confirm(`删除已保存的连接「${title}」？频道里的文件和分享链接会保留。`)) return
+  busy.value = true
+  error.value = ''
+  try { account.value = await api.telegramDeleteProfile(profileId) }
+  catch (cause) { message(cause) }
+  finally { busy.value = false }
+}
 async function close(): Promise<void> {
   if (busy.value) return
   generation++
@@ -182,7 +191,10 @@ onBeforeUnmount(() => { generation++; clearTimeout(timer); password.value = '' }
         <h3>已保存的连接</h3>
         <div v-for="profile in account.profiles" :key="profile.id" class="telegram-profile">
           <div><strong>{{ profile.first_name || profile.username || 'Telegram 账号' }}</strong><span v-if="profile.username"> @{{ profile.username }}</span><p>{{ profile.title }} <small class="muted">{{ profile.chat_id }}</small></p></div>
-          <button class="ghost" :disabled="busy || (account.active_id === profile.id && (connected || authRequired))" @click="activate(profile.id)">{{ account.active_id === profile.id && (connected || authRequired) ? '当前连接' : '切换' }}</button>
+          <div class="telegram-profile-actions">
+            <button class="ghost" :disabled="busy || (account.active_id === profile.id && (connected || authRequired))" @click="activate(profile.id)">{{ account.active_id === profile.id && (connected || authRequired) ? '当前连接' : '切换' }}</button>
+            <button v-if="account.active_id !== profile.id" class="ghost danger-text" :disabled="busy" @click="deleteProfile(profile.id, profile.title)">删除</button>
+          </div>
         </div>
       </div>
       <button v-if="!loginActive" class="primary" :disabled="busy || !account?.can_login" @click="begin">{{ busy ? '连接中…' : authRequired ? '重新扫码登录' : account?.active_id && !connected ? '重新扫码连接' : '扫码添加账号与频道' }}</button>
