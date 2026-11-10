@@ -47,7 +47,7 @@ class FakeTelegramStorage:
             await progress(len(data), len(data))
         return [{"part_index": 0, "tg_message_id": message_id, "size": len(data)}]
 
-    async def iter_download(self, message_id: int, offset: int, length: int):
+    async def iter_download(self, message_id: int, offset: int, length: int, *, prefetch=False):
         data = self.files[message_id][offset : offset + length]
         for index in range(0, len(data), 3):
             yield data[index : index + 3]

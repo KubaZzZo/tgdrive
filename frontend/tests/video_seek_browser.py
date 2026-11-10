@@ -1,4 +1,4 @@
-"""Measure fragmented MP4 seeks in the built app using local synthetic media."""
+"""Measure MP4 playback and seeks in the built app using synthetic media."""
 
 from __future__ import annotations
 
@@ -26,8 +26,9 @@ TARGET = 112
 sys.path[:0] = [str(ROOT), str(ROOT / "tests")]
 
 
-def make_video(ffmpeg: str, path: Path, *, indexed: bool) -> bytes:
-    flags = "+frag_keyframe+empty_moov+default_base_moof"
+def make_video(ffmpeg: str, path: Path, *, indexed: bool | None) -> bytes:
+    ordinary = indexed is None
+    flags = "+faststart" if ordinary else "+frag_keyframe+empty_moov+default_base_moof"
     if indexed:
         flags += "+global_sidx"
     subprocess.run(
@@ -39,7 +40,8 @@ def make_video(ffmpeg: str, path: Path, *, indexed: bool) -> bytes:
             "-f",
             "lavfi",
             "-i",
-            "testsrc2=size=320x180:rate=12",
+            f"testsrc2=size=320x180:rate={30 if ordinary else 12}",
+            *(["-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000"] if ordinary else []),
             "-t",
             str(DURATION),
             "-c:v",
@@ -51,7 +53,7 @@ def make_video(ffmpeg: str, path: Path, *, indexed: bool) -> bytes:
             "-b:v",
             "500k",
             "-g",
-            "24",
+            "60" if ordinary else "24",
             "-sc_threshold",
             "0",
             "-movflags",
@@ -61,6 +63,10 @@ def make_video(ffmpeg: str, path: Path, *, indexed: bool) -> bytes:
         check=True,
     )
     data = bytearray(path.read_bytes())
+    if ordinary:
+        movie = data.index(b"moov") - 4
+        assert movie + struct.unpack_from(">I", data, movie)[0] > 65536
+        return bytes(data)
     # Empty-movie FFmpeg fixtures leave the duration at zero. Set the movie
     # duration so the player can expose the complete timeline before playback.
     movie = data.index(b"mvhd", 0, 65536) + 4
@@ -78,6 +84,23 @@ def exercise(
         browser = playwright.chromium.launch(channel=channel)
         page = browser.new_page(
             bypass_csp=True, viewport={"width": 390, "height": 844} if mobile else None
+        )
+        page.on(
+            "console",
+            lambda message: (
+                print(message.text, flush=True) if message.type in ("error", "warning") else None
+            ),
+        )
+        cdp = page.context.new_cdp_session(page)
+        cdp.send("Media.enable")
+        cdp.on("Media.playerErrorsRaised", lambda event: print("MEDIA", event, flush=True))
+        cdp.on(
+            "Media.playerMessagesLogged",
+            lambda event: (
+                print("MEDIA", event, flush=True)
+                if any(m["level"] in ("error", "warning") for m in event["messages"])
+                else None
+            ),
         )
         # Avoid background native video requests from the file-card thumbnails.
         page.route(
@@ -97,26 +120,37 @@ def exercise(
             ("unindexed first seek", "unindexed.mp4"),
             ("unindexed disk resume after reload", "unindexed.mp4"),
             ("indexed first seek", "indexed.mp4"),
+            ("ordinary MP4 remux", "ordinary.mp4"),
         ]:
             item_id, data = files[name]
             warm = label == "unindexed disk resume after reload"
             if warm:
                 page.reload()
+            ordinary = name == "ordinary.mp4"
             requests = []
+            unexpected_ranges = []
 
-            def record(request, item_id=item_id, recorded=requests):
+            def record(
+                request,
+                item_id=item_id,
+                recorded=requests,
+                ordinary=ordinary,
+                unexpected=unexpected_ranges,
+            ):
                 if f"/files/{item_id}/download" in request.url:
                     match = re.fullmatch(r"bytes=(\d+)-(\d+)", request.headers.get("range", ""))
                     if match:
                         start, end = map(int, match.groups())
                         recorded.append((request.method, start, end))
+                    elif ordinary and request.method == "GET":
+                        unexpected.append(request.headers.get("range"))
 
             page.on("request", record)
             before_cancel = storage.cancelled_bytes
-            row = page.get_by_text(name, exact=True).first
+            row = page.get_by_role("button", name=name, exact=True)
             row.wait_for(state="visible")
             started = page.evaluate("performance.now()")
-            row.dblclick()
+            row.click()
             page.wait_for_function(
                 """() => {
                     const video = document.querySelector('.media-screen video');
@@ -184,19 +218,25 @@ def exercise(
                 ranges = [
                     (start, end)
                     for method, start, end in requests[startup_requests:]
-                    if method == "GET" and start >= 65536 and (start - 65536) % 65536 != 0
+                    if method == "GET"
+                    and (ordinary or (start >= 65536 and (start - 65536) % 65536 != 0))
                 ]
-                first_playback = next(
-                    i
-                    for i, (start, _) in enumerate(ranges)
-                    if data[start + 4 : start + 8] == b"moof"
-                )
-                probes = ranges[:first_playback]
-                if label == "unindexed first seek":
-                    assert probes, ranges
-                    anchor = ranges[first_playback][0]
+                if ordinary:
+                    assert video.evaluate("video => video.src.startsWith('blob:')")
+                    assert not unexpected_ranges, unexpected_ranges
+                    assert ranges and ranges[0][0] > len(data) // 2, ranges
                 else:
-                    assert not probes, ranges
+                    first_playback = next(
+                        i
+                        for i, (start, _) in enumerate(ranges)
+                        if data[start + 4 : start + 8] == b"moof"
+                    )
+                    probes = ranges[:first_playback]
+                    if label == "unindexed first seek":
+                        assert probes, ranges
+                        anchor = ranges[first_playback][0]
+                    else:
+                        assert not probes, ranges
             stalled_ms = video.evaluate(
                 """async (video, playMs) => {
                     let stalled = 0;
@@ -264,7 +304,7 @@ def main() -> None:
     class Storage(FakeTelegramStorage):
         cancelled_bytes = 0
 
-        async def iter_download(self, message_id, offset, length):
+        async def iter_download(self, message_id, offset, length, *, prefetch=False):
             sent = 0
             try:
                 for start in range(offset, offset + length, 262144):
@@ -282,7 +322,7 @@ def main() -> None:
         app = create_app(make_settings(path, frontend_dist=ROOT / "static/dist"), storage=storage)
         files = {}
         for message_id, (name, indexed) in enumerate(
-            [("unindexed.mp4", False), ("indexed.mp4", True)], start=1
+            [("unindexed.mp4", False), ("indexed.mp4", True), ("ordinary.mp4", None)], start=1
         ):
             data = make_video(args.ffmpeg, path / name, indexed=indexed)
             storage.files[message_id] = data

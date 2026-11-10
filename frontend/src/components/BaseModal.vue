@@ -19,13 +19,16 @@ function release(): void {
 }
 function onKeydown(event: KeyboardEvent): void {
   if (!props.open) return
+  const fullscreen = document.fullscreenElement
+  const fullscreenInside = fullscreen && card.value?.contains(fullscreen) ? fullscreen : null
   if (event.key === 'Escape') {
+    if (fullscreenInside) return
     event.preventDefault()
     emit('close')
   }
   if (event.key !== 'Tab' || !card.value) return
   const controls = Array.from(
-    card.value.querySelectorAll<HTMLElement>(
+    (fullscreenInside ?? card.value).querySelectorAll<HTMLElement>(
       'button:not(:disabled), input:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]',
     ),
   ).filter((element) => element.getClientRects().length > 0)
@@ -33,7 +36,8 @@ function onKeydown(event: KeyboardEvent): void {
   const last = controls.at(-1)
   if (!first) {
     event.preventDefault()
-    card.value.focus()
+    if (fullscreenInside instanceof HTMLElement) fullscreenInside.focus()
+    else card.value.focus()
     return
   }
   if (

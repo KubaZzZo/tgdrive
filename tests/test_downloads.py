@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import random
+from contextlib import aclosing
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -8,7 +10,7 @@ import pytest
 from conftest import make_settings
 
 from app.api.routes import files
-from app.storage import TelegramStorage
+from app.storage import DOWNLOAD_BLOCK_SIZE, PREFETCH_DEPTH, PREFETCH_MIN_BYTES, TelegramStorage
 
 
 def make_file(app, storage, sizes=(4, 6)):
@@ -59,6 +61,111 @@ def test_incomplete_part_mapping_rejected_before_streaming(authenticated_client)
     url = f"/api/files/{item['id']}/download"
     assert client.head(url).status_code == 503
     assert client.get(url).status_code == 503
+
+
+def test_only_large_attachment_ranges_use_prefetch(authenticated_client):
+    client, app, storage = authenticated_client
+    size = PREFETCH_MIN_BYTES
+    item = app.state.db.create_file(
+        "large.mp4",
+        None,
+        size,
+        "video/mp4",
+        None,
+        str(storage.chat),
+        [{"part_index": 0, "tg_message_id": 201, "size": size}],
+    )
+    calls = []
+
+    async def download(message_id, offset, length, *, prefetch=False):
+        calls.append((message_id, offset, length, prefetch))
+        yield b"x" * length
+
+    storage.iter_download = download
+    url = f"/api/files/{item['id']}/download"
+    assert client.get(url).status_code == 200
+    assert client.get(url + "?download=1", headers={"Range": "bytes=1-2"}).content == b"xx"
+    response = client.get(url + "?download=1")
+    assert response.status_code == 200 and len(response.content) == size
+    assert calls == [(201, 0, size, False), (201, 1, 2, False), (201, 0, size, True)]
+
+
+def test_prefetched_blocks_preserve_order_and_range(workdir):
+    async def run():
+        offset = 17
+        length = PREFETCH_MIN_BYTES + 67
+        data = random.Random(0).randbytes(offset + length)
+        ahead = asyncio.Event()
+        started, completed = [], []
+        active = peak = 0
+        storage = TelegramStorage(make_settings(workdir))
+        original_message = object()
+        storage._get_message = AsyncMock(side_effect=[original_message, object()])
+
+        async def read(message_id, start, size, message):
+            nonlocal active, peak
+            assert message is original_message
+            started.append(start)
+            active += 1
+            peak = max(peak, active)
+            try:
+                if start == DOWNLOAD_BLOCK_SIZE:
+                    await ahead.wait()
+                elif start == 2 * DOWNLOAD_BLOCK_SIZE:
+                    ahead.set()
+                completed.append(start)
+                yield data[start : start + size]
+            finally:
+                active -= 1
+
+        storage._iter_download_once = read
+        async with aclosing(storage.iter_download(1, offset, length, prefetch=True)) as stream:
+            first = await anext(stream)
+            assert started == [offset]
+            received = first + b"".join([chunk async for chunk in stream])
+        assert received == data[offset:]
+        assert completed.index(2 * DOWNLOAD_BLOCK_SIZE) < completed.index(DOWNLOAD_BLOCK_SIZE)
+        assert 1 < peak <= PREFETCH_DEPTH
+        assert storage._prefetch_downloads == active == 0
+        storage._get_message.assert_awaited_once_with(1)
+
+    asyncio.run(run())
+
+
+def test_disconnect_during_send_closes_pending_prefetch(workdir):
+    async def run():
+        pending = 0
+        started = asyncio.Event()
+        storage = TelegramStorage(make_settings(workdir))
+        storage._get_message = AsyncMock(return_value=object())
+
+        async def read(message_id, offset, length, message):
+            nonlocal pending
+            if offset == 0:
+                yield b"x" * length
+                return
+            pending += 1
+            if pending == PREFETCH_DEPTH:
+                started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                pending -= 1
+
+        async def send(event):
+            if event["type"] == "http.response.body":
+                await asyncio.wait_for(started.wait(), 2)
+                raise OSError("client disconnected")
+
+        storage._iter_download_once = read
+        response = files.FileStreamingResponse(
+            storage.iter_download(1, 0, PREFETCH_MIN_BYTES, prefetch=True)
+        )
+        with pytest.raises(OSError, match="client disconnected"):
+            await response.stream_response(send)
+        assert storage._prefetch_downloads == pending == 0
+
+    asyncio.run(run())
 
 
 def test_authenticated_media_probe_preserves_range_and_correlates_timing(

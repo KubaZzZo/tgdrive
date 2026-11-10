@@ -1,16 +1,22 @@
-import { MediaTransfer, readMediaBytes, withMediaTimeout } from './mediaTransfer'
+import { MediaTransfer, readMediaBytes, strongMediaTag, withMediaTimeout } from './mediaTransfer'
 import type { VideoSegment } from './deviceCache'
 
 // Only inspect complete boxes in the bounded initial range. Other formats use
 // the native player; malformed or unusually large headers never trigger a scan.
 interface Box { type: string; start: number; end: number; data: number }
-function boxes(bytes: Uint8Array, start: number, end: number): Box[] {
+export function boxes(bytes: Uint8Array, start: number, end: number, limit = Infinity): Box[] {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   const result: Box[] = []
   while (start + 8 <= end) {
-    const size = view.getUint32(start)
-    if (size < 8 || start + size > end) break
-    result.push({ type: String.fromCharCode(...bytes.subarray(start + 4, start + 8)), start, end: start + size, data: start + 8 })
+    if (result.length === limit) return []
+    let size = view.getUint32(start)
+    const header = size === 1 ? 16 : 8
+    if (header === 16) {
+      if (start + header > end) break
+      size = Number(view.getBigUint64(start + 8))
+    }
+    if (size < header || start + size > end) break
+    result.push({ type: String.fromCharCode(...bytes.subarray(start + 4, start + 8)), start, end: start + size, data: start + header })
     start += size
   }
   return result
@@ -277,7 +283,7 @@ async function seekOffset(
   return best.offset
 }
 
-export interface MediaSession { streaming: boolean; dispose: () => void }
+export interface MediaSession { streaming: boolean; remuxed?: boolean; dispose: () => void }
 export interface MediaPrefix { bytes: Uint8Array; etag: string }
 interface SegmentCache {
   list: (etag: string) => Promise<VideoSegment[]>
@@ -307,6 +313,7 @@ export async function attachMedia(
     size?: number; prefix?: MediaPrefix; onPrefix?: (prefix: MediaPrefix) => void
     onSeekUnavailable?: () => void
     segments?: SegmentCache
+    remux?: boolean
   } = {},
 ): Promise<MediaSession> {
   const native = () => {
@@ -373,6 +380,16 @@ export async function attachMedia(
     ({ first, size } = await readHeader())
   } catch { return native() }
   const type = fragmentedMp4Type(first)
+  if (!type && options.remux && !signal.aborted && !options.file && strongMediaTag(rangeVersion) &&
+    boxes(first, 0, first.length).some(box => box.type === 'ftyp')) {
+    try {
+      const { attachOrdinaryMp4 } = await import('./ordinaryMp4')
+      const remuxed = await attachOrdinaryMp4(
+        media, Source, Source === ManagedSource, first, size, signal, range, onError, options.bufferSeconds,
+      )
+      if (remuxed) return remuxed
+    } catch { return native() }
+  }
   if (!type || !Source.isTypeSupported(type) || signal.aborted) return native()
   if (!options.prefix && rangeVersion) options.onPrefix?.({ bytes: first, etag: rangeVersion })
   const managed = Source === ManagedSource

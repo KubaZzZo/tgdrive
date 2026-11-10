@@ -221,7 +221,8 @@ export const api = {
   cancelUpload: (uploadId: string) =>
     request<{ ok: boolean }>(`/api/uploads/${encodeURIComponent(uploadId)}`, { method: 'DELETE' }),
 
-  checkDownload: (url: string) => request<void>(url, { method: 'HEAD' }),
+  checkDownload: (itemId: string) =>
+    request<void>(`/api/files/${encodeURIComponent(itemId)}/download/check`, { cache: 'no-store' }),
 
   downloadUrl: (itemId: string, download = false) => {
     const query = new URLSearchParams()

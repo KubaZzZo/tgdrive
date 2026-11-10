@@ -7,7 +7,7 @@ import { formatBytes, previewKind } from '@/utils/format'
 import BaseModal from './BaseModal.vue'
 import MediaPlayer from './MediaPlayer.vue'
 
-const props = defineProps<{ open: boolean; item: DriveItem | null }>()
+const props = defineProps<{ open: boolean; item: DriveItem | null; downloadPending: boolean; downloadStatus: string }>()
 const emit = defineEmits<{ close: []; download: [item: DriveItem] }>()
 
 const failed = ref(false)
@@ -32,16 +32,22 @@ const src = computed(() => (props.item ? api.downloadUrl(props.item.id) : ''))
       :size="item.size"
       :version="item.updated_at"
       :mime="item.mime || 'video/mp4'"
+      :download-pending="downloadPending"
+      :download-status="downloadStatus"
       :poster="kind === 'video' ? api.thumbnailUrl(item.id, item.updated_at) : undefined"
+      @download="emit('download', item)"
     />
     <div v-else-if="open" class="preview-stage">
       <div v-if="failed" class="preview-fallback">浏览器暂不支持预览此格式，请下载后查看。</div>
       <img v-else-if="kind === 'image'" :src="src" :alt="item.name" @error="failed = true" />
       <iframe v-else-if="kind === 'pdf'" :src="src" :title="item.name" />
     </div>
-    <template #footer>
+    <template v-if="kind !== 'video' && kind !== 'audio'" #footer>
       <span class="muted">{{ formatBytes(item.size) }}</span>
-      <button class="primary" type="button" @click="emit('download', item)">下载</button>
+      <span v-if="downloadStatus" class="muted" role="status">{{ downloadStatus }}</span>
+      <button class="primary" type="button" :disabled="downloadPending" @click="emit('download', item)">
+        {{ downloadPending ? '正在检查…' : '下载' }}
+      </button>
     </template>
   </BaseModal>
 </template>
