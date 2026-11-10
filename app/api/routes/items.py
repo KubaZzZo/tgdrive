@@ -11,6 +11,8 @@ from app.api.deps import get_db, get_storage
 from app.auth import require_auth
 from app.categories import Category
 from app.db import Database
+from app.people import MAX_PERSON_LENGTH
+from app.person_names import chinese_person_name
 from app.schemas import FolderBody, ShareBody, UpdateItemBody
 from app.storage import TelegramStorage
 
@@ -35,6 +37,7 @@ async def list_items(
     scope: Literal["folder", "all", "recent"] = "folder",
     category: Category | None = None,
     q: str = Query(default="", max_length=255),
+    person: str | None = Query(default=None, min_length=1, max_length=MAX_PERSON_LENGTH),
     sort: Literal["name", "size", "created_at", "updated_at"] = "name",
     direction: Literal["asc", "desc"] = "asc",
     limit: int = Query(default=60, ge=1, le=200),
@@ -48,6 +51,7 @@ async def list_items(
         scope=scope,
         category=category,
         query=q.strip(),
+        person=person,
         sort=sort,
         direction=direction,
         limit=limit,
@@ -65,7 +69,19 @@ async def list_items(
         "limit": limit,
         "offset": offset,
         "stats": db.stats(),
+        **({"person_display_name": chinese_person_name(person)} if person else {}),
     }
+
+
+@router.get("/people")
+async def list_video_people(
+    q: str = Query(default="", max_length=MAX_PERSON_LENGTH),
+    limit: int = Query(default=48, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: Database = Depends(get_db),
+) -> dict[str, Any]:
+    people, total = db.list_video_people(q, limit, offset)
+    return {"people": people, "total": total}
 
 
 @router.post("/folders")

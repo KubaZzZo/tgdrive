@@ -54,10 +54,17 @@ export interface ItemQuery {
   scope?: 'folder' | 'all' | 'recent'
   category?: FileCategory
   q?: string
+  person?: string
   sort?: 'name' | 'size' | 'created_at' | 'updated_at'
   direction?: 'asc' | 'desc'
   limit?: number
   offset?: number
+}
+
+export interface VideoPerson {
+  name: string
+  display_name: string
+  count: number
 }
 
 export type ItemKind = 'file' | 'folder'
@@ -109,6 +116,7 @@ export interface Meta {
 }
 
 export interface ItemListResponse {
+  person_display_name?: string
   categories: CategoryStats[]
   total: number
   limit: number

@@ -8,6 +8,7 @@ const paths: Record<string, string[]> = {
     'M8 8h.01',
   ],
   video: ['M4 4h16v16H4Z', 'm10 8 6 4-6 4Z'],
+  people: ['M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2', 'M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Z', 'M22 21v-2a4 4 0 0 0-3-4', 'M16 3a4 4 0 0 1 0 8'],
   audio: [
     'M9 18V5l11-2v13',
     'M9 14H5a3 3 0 1 0 0 6h1a3 3 0 0 0 3-3',

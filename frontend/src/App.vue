@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import AppHeader from '@/components/AppHeader.vue'
 import FileBrowser from '@/components/FileBrowser.vue'
@@ -20,12 +20,30 @@ const drive = useDriveStore()
 const uploads = useUploadStore()
 const toast = useToastStore()
 const entered = ref(false)
-const module = ref<'drive' | 'images'>('drive')
+const hash = ref(window.location.hash)
+const module = computed(() => {
+  const [page] = hash.value.split('?', 2)
+  if (page === '#people') return 'people'
+  if (page === '#images') return 'images'
+  return 'drive'
+})
+const person = computed(() => {
+  if (module.value !== 'people') return undefined
+  const [, query] = hash.value.split('?', 2)
+  const name = new URLSearchParams(query).get('name')?.trim()
+  return name && Array.from(name).length <= 80 ? name : null
+})
+
+function updateRoute(): void {
+  hash.value = window.location.hash
+}
 
 async function enterApp(): Promise<void> {
   if (entered.value) return
   entered.value = true
-  await drive.selectView('all')
+  await (person.value === undefined
+    ? drive.selectView('all')
+    : drive.selectView('people', person.value))
   sync.start()
   const pending = await uploads.restore()
   if (pending > 0) {
@@ -58,6 +76,7 @@ watch(
 )
 
 onMounted(async () => {
+  window.addEventListener('hashchange', updateRoute)
   window.addEventListener('tgdrive:unauthorized', onUnauthorized)
   await auth.bootstrap()
   if (auth.authenticated) await enterApp()
@@ -65,6 +84,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   sync.stop()
+  window.removeEventListener('hashchange', updateRoute)
   window.removeEventListener('tgdrive:unauthorized', onUnauthorized)
 })
 </script>
@@ -72,10 +92,10 @@ onBeforeUnmount(() => {
 <template>
   <LoginView v-if="auth.ready && !auth.authenticated" />
   <div v-else-if="auth.authenticated" class="app-shell">
-    <AppHeader :module="module" @navigate="module = $event" />
+    <AppHeader :module="module" />
     <StorageWarning :storage="auth.storage" />
     <main class="main" :class="{ 'has-transfers': uploads.hasJobs }">
-      <FileBrowser v-if="module === 'drive'" />
+      <FileBrowser v-if="module !== 'images'" :person="person" />
       <ImageHost v-else />
     </main>
     <UploadPanel />
