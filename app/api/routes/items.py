@@ -11,9 +11,8 @@ from app.api.deps import get_db, get_storage
 from app.auth import require_auth
 from app.categories import Category
 from app.db import Database
-from app.people import MAX_PERSON_LENGTH
-from app.person_names import chinese_person_name
-from app.schemas import FolderBody, ShareBody, UpdateItemBody
+from app.people import MAX_PERSON_LENGTH, person_key
+from app.schemas import FolderBody, PeopleLabelBody, ShareBody, UpdateItemBody, VideoPeopleBody
 from app.storage import TelegramStorage
 
 logger = logging.getLogger("tgdrive.items")
@@ -69,7 +68,7 @@ async def list_items(
         "limit": limit,
         "offset": offset,
         "stats": db.stats(),
-        **({"person_display_name": chinese_person_name(person)} if person else {}),
+        **({"person_display_name": db.video_person_display_name(person)} if person else {}),
     }
 
 
@@ -81,7 +80,56 @@ async def list_video_people(
     db: Database = Depends(get_db),
 ) -> dict[str, Any]:
     people, total = db.list_video_people(q, limit, offset)
-    return {"people": people, "total": total}
+    return {
+        "people": [{**label, "key": person_key(label["name"])} for label in people],
+        "total": total,
+    }
+
+
+@router.post("/people")
+async def create_people_label(
+    body: PeopleLabelBody, db: Database = Depends(get_db)
+) -> dict[str, bool]:
+    try:
+        db.create_people_label(body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"ok": True}
+
+
+@router.delete("/people")
+async def delete_people_label(
+    name: str = Query(min_length=1, max_length=MAX_PERSON_LENGTH),
+    db: Database = Depends(get_db),
+) -> dict[str, bool]:
+    try:
+        db.delete_people_label(name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"ok": True}
+
+
+@router.get("/items/{item_id}/people")
+async def get_video_people(item_id: str, db: Database = Depends(get_db)) -> dict[str, Any]:
+    try:
+        return {"people": db.video_people_labels(item_id)}
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
+@router.patch("/items/{item_id}/people")
+async def edit_video_people(
+    item_id: str, body: VideoPeopleBody, db: Database = Depends(get_db)
+) -> dict[str, bool]:
+    try:
+        db.edit_video_people(item_id, body.add, body.remove)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"ok": True}
 
 
 @router.post("/folders")

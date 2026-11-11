@@ -9,7 +9,7 @@ import type {
   UploadRecord,
   TrafficStatus,
   TelegramAccountStatus, TelegramLogin, TelegramChannel,
-  VideoPerson,
+  PersonLabel, VideoPerson,
 } from './types'
 
 export class ApiError extends Error {
@@ -190,6 +190,16 @@ export const api = {
     const query = new URLSearchParams({ q, limit: String(limit), offset: String(offset) })
     return request<{ people: VideoPerson[]; total: number }>(`/api/people?${query}`, { signal })
   },
+  createPeopleLabel: (name: string) => jsonRequest<{ ok: boolean }>('POST', '/api/people', { name }),
+  deletePeopleLabel: (name: string) => request<{ ok: boolean }>(
+    `/api/people?${new URLSearchParams({ name })}`, { method: 'DELETE' },
+  ),
+  videoPeople: (itemId: string, signal: AbortSignal) => request<{ people: PersonLabel[] }>(
+    `/api/items/${encodeURIComponent(itemId)}/people`, { signal },
+  ),
+  editVideoPeople: (itemId: string, add: string[], remove: string[]) => jsonRequest<{ ok: boolean }>(
+    'PATCH', `/api/items/${encodeURIComponent(itemId)}/people`, { add, remove },
+  ),
   createFolder: (name: string, parentId: string | null) =>
     jsonRequest<DriveItem>('POST', '/api/folders', { name, parent_id: parentId }),
   updateItem: (itemId: string, body: { name?: string; parent_id?: string | null; move?: boolean }) =>

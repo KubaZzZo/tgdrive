@@ -1805,7 +1805,7 @@ h1 {
   align-items: center;
   gap: 8px;
 }
-.media-setting select {
+.media-setting :is(select, input[type="number"]) {
   min-height: 34px;
   min-width: 0;
   padding: 4px 8px;
@@ -1815,6 +1815,11 @@ h1 {
   color: #dbeafe;
   font-size: 12px;
 }
+.media-close-timer {
+  display: grid;
+  gap: 8px;
+}
+.media-close-countdown { font-variant-numeric: tabular-nums; }
 .media-setting-actions {
   border-top: 1px solid #344258;
   padding-top: 5px;

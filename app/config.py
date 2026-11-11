@@ -101,6 +101,13 @@ class Settings:
     channel_sync_interval: int = field(
         default_factory=lambda: _env_int("CHANNEL_SYNC_INTERVAL", 30)
     )
+    people_ai_base_url: str = field(
+        default_factory=lambda: os.getenv("PEOPLE_AI_BASE_URL", "").strip()
+    )
+    people_ai_model: str = field(default_factory=lambda: os.getenv("PEOPLE_AI_MODEL", "").strip())
+    people_ai_api_key: str = field(
+        default_factory=lambda: os.getenv("PEOPLE_AI_API_KEY", "").strip(), repr=False
+    )
 
     @property
     def is_production(self) -> bool:

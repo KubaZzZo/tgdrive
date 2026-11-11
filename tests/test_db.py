@@ -87,6 +87,9 @@ def test_reconcile_deployed_and_cdn_schema_variants_without_data_loss(workdir, v
         if variant in {"schema7", "schema8-cdn"}:
             db.conn.execute("DROP TABLE channel_bot_files")
         version = 7 if variant == "schema7" else 9 if variant == "schema9" else 8
+        db.conn.execute("DROP VIEW effective_video_people")
+        db.conn.execute("DROP TABLE video_people_edits")
+        db.conn.execute("DROP TABLE people_labels")
         db.conn.execute("DROP TABLE image_hosts")
         db.conn.execute("DROP TABLE video_people")
         db.conn.execute("ALTER TABLE uploads DROP COLUMN image_host")

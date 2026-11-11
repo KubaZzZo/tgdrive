@@ -28,9 +28,9 @@ export const useDriveStore = defineStore('drive', () => {
   const sortOption = ref('newest')
   const page = ref(1)
   const total = ref(0)
-  const pageSize = 60
+  const pageSize = computed(() => ['all', 'recent', 'video', 'people'].includes(view.value) ? 10 : 60)
   const layout = ref<'list' | 'grid'>('list')
-  const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize)))
+  const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
   const title = computed(() => {
     if (folderId.value) return path.value.at(-1)?.name ?? '文件夹'
     if (view.value === 'people') return personDisplayName.value || person.value || '人物视频'
@@ -72,8 +72,8 @@ export const useDriveStore = defineStore('drive', () => {
           person: person.value ?? undefined,
           q: query.value,
           ...sorting[sortOption.value],
-          limit: peopleIndex ? 1 : pageSize,
-          offset: (page.value - 1) * pageSize,
+          limit: peopleIndex ? 1 : pageSize.value,
+          offset: (page.value - 1) * pageSize.value,
         },
         controller.signal,
       )

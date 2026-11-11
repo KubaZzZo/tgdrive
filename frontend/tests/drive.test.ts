@@ -81,7 +81,8 @@ test('pagination, literal search and sort are sent to the server', async () => {
   }
   await store.load()
   await store.setPage(2)
-  assert.equal(last.searchParams.get('offset'), '60')
+  assert.equal(last.searchParams.get('limit'), '10')
+  assert.equal(last.searchParams.get('offset'), '10')
   store.query = '照片 %_'
   store.sortOption = 'size'
   await store.search()
@@ -94,4 +95,40 @@ test('pagination, literal search and sort are sent to the server', async () => {
   await store.search()
   assert.equal(last.searchParams.get('scope'), 'folder')
   assert.equal(last.searchParams.get('parent_id'), 'nested')
+})
+
+test('video and person results page through ten items at a time', async () => {
+  const store = useDriveStore()
+  const videos = Array.from({ length: 23 }, (_, index): DriveItem => ({
+    ...item(String(index + 1)),
+    name: `video-${index + 1}.mp4`,
+    category: 'video',
+    mime: 'video/mp4',
+  }))
+  let params!: URLSearchParams
+  globalThis.fetch = async (url) => {
+    params = new URL(String(url), 'http://test').searchParams
+    const offset = Number(params.get('offset'))
+    return payload(videos.slice(offset, offset + Number(params.get('limit'))), videos.length)
+  }
+
+  await store.selectView('video')
+  assert.equal(store.items.length, 10)
+  assert.equal(store.pageCount, 3)
+  await store.setPage(2)
+  assert.equal(store.items.length, 10)
+  assert.equal(store.items[0]!.id, '11')
+  await store.setPage(3)
+  assert.deepEqual(store.items.map((video) => video.id), ['21', '22', '23'])
+
+  await store.selectView('people', 'Alice')
+  assert.equal(store.page, 1)
+  assert.equal(store.items.length, 10)
+  await store.setPage(2)
+  assert.equal(params.get('person'), 'Alice')
+  assert.equal(params.get('category'), 'video')
+  assert.equal(store.items[0]!.id, '11')
+
+  await store.selectView('image')
+  assert.equal(params.get('limit'), '60')
 })

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from typing import Annotated
+
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.people import MAX_PERSON_LENGTH
 
 
 class ApiModel(BaseModel):
@@ -22,6 +26,18 @@ class UpdateItemBody(ApiModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     parent_id: str | None = Field(default=None, max_length=64)
     move: bool = False
+
+
+PeopleLabelName = Annotated[str, Field(min_length=1, max_length=MAX_PERSON_LENGTH)]
+
+
+class PeopleLabelBody(ApiModel):
+    name: PeopleLabelName
+
+
+class VideoPeopleBody(ApiModel):
+    add: list[PeopleLabelName] = Field(default_factory=list, max_length=200)
+    remove: list[PeopleLabelName] = Field(default_factory=list, max_length=200)
 
 
 class ShareBody(ApiModel):

@@ -63,11 +63,11 @@ def test_people_history_backfill_and_edits_preserve_renames_and_respect_tombston
     second = message(2, caption="人物：张三")
     db.import_channel_file(chat, second.id, describe_message(second))
     assert client.get("/api/people", params={"limit": 1}).json() == {
-        "people": [{"name": "张三", "display_name": "张三", "count": 2}],
+        "people": [{"key": "张三", "name": "张三", "display_name": "张三", "count": 2}],
         "total": 3,
     }
     assert client.get("/api/people", params={"q": "ＪＡＮＥ"}).json() == {
-        "people": [{"name": "Jane Doe", "display_name": "简·多伊", "count": 1}],
+        "people": [{"key": "jane doe", "name": "Jane Doe", "display_name": "简·多伊", "count": 1}],
         "total": 1,
     }
     detail = client.get("/api/items", params={"person": "jane doe", "scope": "all"}).json()
@@ -93,7 +93,7 @@ def test_people_can_search_transliterations_without_merging_original_names(authe
         db.import_channel_file(chat, mid, describe_message(post))
     result = client.get("/api/people", params={"q": "萨库", "limit": 1}).json()
     assert result == {
-        "people": [{"name": "さくら", "display_name": "萨库拉", "count": 1}],
+        "people": [{"key": "さくら", "name": "さくら", "display_name": "萨库拉", "count": 1}],
         "total": 2,
     }
     second_page = client.get("/api/people", params={"q": "萨库", "limit": 1, "offset": 1}).json()
@@ -102,3 +102,51 @@ def test_people_can_search_transliterations_without_merging_original_names(authe
         detail = client.get("/api/items", params={"person": original, "scope": "all"}).json()
         assert detail["person_display_name"] == "萨库拉"
         assert [row["name"] for row in detail["items"]] == [title]
+
+
+def test_manual_labels_survive_sync_and_deleted_labels_stay_hidden(authenticated_client):
+    client, app, storage = authenticated_client
+    db, chat = app.state.db, str(storage.chat)
+    post = message(1, caption="人物：张三、李四")
+    db.import_channel_file(chat, post.id, describe_message(post))
+    [video] = db.list_items(None)
+    url = f"/api/items/{video['id']}/people"
+
+    def assigned():
+        return {label["name"] for label in client.get(url).json()["people"]}
+
+    def counts():
+        return {
+            label["name"]: label["count"] for label in client.get("/api/people").json()["people"]
+        }
+
+    assert client.post("/api/people", json={"name": "嘉宾 1"}).status_code == 200
+    assert counts() == {"张三": 1, "李四": 1, "嘉宾 1": 0}
+    assert (
+        client.patch(url, json={"add": ["嘉宾 1", "不存在"], "remove": ["张三"]}).status_code == 400
+    )
+    assert assigned() == {"张三", "李四"}
+    assert client.patch(url, json={"add": ["嘉宾 1"], "remove": ["张三"]}).status_code == 200
+    assert counts() == {"张三": 0, "李四": 1, "嘉宾 1": 1}
+    assert client.delete("/api/people", params={"name": "李四"}).status_code == 200
+    assert assigned() == {"嘉宾 1"}
+
+    post.edit_date = post.date + timedelta(seconds=1)
+    post.message = "人物：张三、李四、王小明"
+    assert db.import_channel_file(chat, post.id, describe_message(post))
+    assert counts() == {"张三": 0, "王小明": 1, "嘉宾 1": 1}
+    assert assigned() == {"王小明", "嘉宾 1"}
+    result = client.get("/api/items", params={"person": "嘉宾 1", "scope": "all"}).json()
+    assert [item["id"] for item in result["items"]] == [video["id"]]
+
+    assert client.post("/api/people", json={"name": "李四"}).status_code == 200
+    assert counts()["李四"] == 0
+    assert client.patch(url, json={"add": ["李四"]}).status_code == 200
+    assert counts()["李四"] == 1
+    folder = db.create_folder("folder", None)
+    assert (
+        client.patch(f"/api/items/{folder['id']}/people", json={"add": ["李四"]}).status_code == 400
+    )
+    assert client.delete("/api/people", params={"name": "嘉宾 1"}).status_code == 200
+    assert assigned() == {"王小明", "李四"}
+    assert db.get_item(video["id"]) is not None

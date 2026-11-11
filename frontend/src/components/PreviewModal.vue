@@ -35,6 +35,7 @@ const src = computed(() => (props.item ? api.downloadUrl(props.item.id) : ''))
       :download-pending="downloadPending"
       :download-status="downloadStatus"
       :poster="kind === 'video' ? api.thumbnailUrl(item.id, item.updated_at) : undefined"
+      @close="emit('close')"
       @download="emit('download', item)"
     />
     <div v-else-if="open" class="preview-stage">
