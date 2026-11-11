@@ -115,6 +115,12 @@ def test_old_analysis_does_not_overwrite_edited_caption_and_local_credits(workdi
         for _ in range(3):
             with_db.defer_people_ai_job(new_key, 1)
         assert with_db.next_people_ai_job(service.people_model.namespace, 2) is None
+        assert (
+            with_db.conn.execute(
+                "SELECT caption FROM people_ai_jobs WHERE key=?", (new_key,)
+            ).fetchone()["caption"]
+            is None
+        )
         assert with_db.list_video_people("", 10, 0) == (
             [{"name": "李四", "display_name": "李四", "count": 1}],
             1,

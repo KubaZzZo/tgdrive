@@ -1,4 +1,4 @@
-export type FileAction = 'download' | 'share' | 'rename' | 'remove'
+export type FileAction = 'download' | 'share' | 'rename' | 'remove' | 'people'
 export interface TelegramIdentity { id: number; username: string | null; first_name: string | null; bot: boolean }
 export interface TelegramProfile { id: string; chat_id: string; user_id: number; username: string | null; first_name: string | null; title: string }
 export interface TelegramAccountStatus {
@@ -61,9 +61,13 @@ export interface ItemQuery {
   offset?: number
 }
 
-export interface VideoPerson {
+export interface PersonLabel {
+  key: string
   name: string
   display_name: string
+}
+
+export interface VideoPerson extends PersonLabel {
   count: number
 }
 

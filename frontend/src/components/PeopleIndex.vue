@@ -4,9 +4,13 @@ import { ref, watch } from 'vue'
 import { api } from '@/api/client'
 import type { VideoPerson } from '@/api/types'
 import { useSyncStore } from '@/stores/sync'
+import { useToastStore } from '@/stores/toast'
 import AppIcon from './AppIcon.vue'
+import ConfirmDialog from './ConfirmDialog.vue'
+import PromptDialog from './PromptDialog.vue'
 
 const sync = useSyncStore()
+const toast = useToastStore()
 const query = ref('')
 const page = ref(1)
 const pageSize = 48
@@ -15,6 +19,41 @@ const total = ref(0)
 const loading = ref(true)
 const error = ref('')
 const retry = ref(0)
+const adding = ref(false)
+const deleting = ref<VideoPerson | null>(null)
+const saving = ref(false)
+
+async function createLabel(name: string): Promise<void> {
+  if (saving.value) return
+  saving.value = true
+  try {
+    await api.createPeopleLabel(name)
+    adding.value = false
+    query.value = name
+    page.value = 1
+    retry.value++
+    toast.success('标签已保存')
+  } catch (cause) {
+    toast.error(cause instanceof Error ? cause.message : '新增标签失败')
+  } finally {
+    saving.value = false
+  }
+}
+
+async function deleteLabel(): Promise<void> {
+  if (!deleting.value || saving.value) return
+  saving.value = true
+  try {
+    await api.deletePeopleLabel(deleting.value.name)
+    deleting.value = null
+    retry.value++
+    toast.success('标签已删除')
+  } catch (cause) {
+    toast.error(cause instanceof Error ? cause.message : '删除标签失败')
+  } finally {
+    saving.value = false
+  }
+}
 
 watch(
   [query, page, () => sync.status?.revision ?? 0, retry],
@@ -48,9 +87,11 @@ watch(
   <div class="library-controls">
     <div class="search-field">
       <AppIcon name="search" :size="19" />
-      <label class="sr-only" for="people-search">搜索人名</label>
-      <input id="people-search" v-model="query" type="search" placeholder="输入中文名或原名…" maxlength="80" @input="page = 1" />
+      <label class="sr-only" for="people-search">搜索标签</label>
+      <input id="people-search" v-model="query" type="search" placeholder="搜索人物标签…" maxlength="80" @input="page = 1" />
     </div>
+    <a class="ghost people-videos-link" href="#people?videos=1">全部视频</a>
+    <button class="primary" type="button" @click="adding = true">新增标签</button>
   </div>
   <div v-if="error" class="inline-error" role="alert">
     <span>{{ error }}</span>
@@ -61,18 +102,20 @@ watch(
   </div>
   <template v-else-if="people.length">
     <div class="people-grid">
-      <a v-for="person in people" :key="person.name" class="person-card" :href="`#people?name=${encodeURIComponent(person.name)}`">
-        <span class="file-art video"><AppIcon name="people" :size="21" /></span>
-        <span class="person-card-label">
-          <strong>{{ person.display_name }}</strong>
-          <small v-if="person.display_name !== person.name">{{ person.name }}</small>
-          <small>{{ person.count }} 部视频</small>
-        </span>
-        <AppIcon name="chevron" :size="14" />
-      </a>
+      <div v-for="person in people" :key="person.key" class="person-card">
+        <a class="person-card-link" :href="`#people?name=${encodeURIComponent(person.name)}`">
+          <span class="file-art video"><AppIcon name="people" :size="21" /></span>
+          <span class="person-card-label">
+            <strong>{{ person.display_name }}</strong>
+            <small v-if="person.display_name !== person.name">{{ person.name }}</small>
+            <small>{{ person.count }} 部视频</small>
+          </span>
+        </a>
+        <button class="text-btn danger-text" type="button" :aria-label="`删除标签 ${person.display_name}`" @click="deleting = person">删除</button>
+      </div>
     </div>
     <footer v-if="total > pageSize" class="pagination">
-      <span>{{ total }} 位人物</span>
+      <span>{{ total }} 个标签</span>
       <div>
         <button class="ghost" type="button" :disabled="page <= 1" @click="page--">上一页</button>
         <span>{{ page }} / {{ Math.ceil(total / pageSize) }}</span>
@@ -82,9 +125,13 @@ watch(
   </template>
   <div v-else class="empty">
     <span class="empty-art"><AppIcon :name="query.trim() ? 'search' : 'people'" :size="42" /></span>
-    <h2>{{ query.trim() ? '没有找到匹配的人名' : '还没有识别到人物' }}</h2>
-    <p>{{ query.trim() ? '试试只输入名字的一部分。' : '在频道视频描述里写上「人物：张三、李四」，同步后就能在这里查看。' }}</p>
+    <h2>{{ query.trim() ? '没有找到匹配的标签' : '还没有人物标签' }}</h2>
   </div>
+  <PromptDialog :open="adding" title="新增人物标签" label="标签名称" :max-length="80"
+    confirm-text="新增" @close="adding = false" @confirm="createLabel" />
+  <ConfirmDialog :open="!!deleting" title="删除人物标签"
+    :message="`确定删除「${deleting?.display_name ?? ''}」？此标签会从所有关联视频上移除，视频本身会保留。`"
+    confirm-text="删除" danger @close="deleting = null" @confirm="deleteLabel" />
 </template>
 
 <style scoped>
@@ -105,6 +152,16 @@ watch(
   text-decoration: none;
 }
 .person-card:hover { border-color: var(--accent); }
+.person-card-link {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+  color: inherit;
+  text-decoration: none;
+}
+.people-videos-link { display: inline-flex; align-items: center; text-decoration: none; }
 .person-card-label { display: grid; gap: 4px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .person-card-label small { color: var(--muted); }
 </style>

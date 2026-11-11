@@ -126,7 +126,7 @@ def test_bot_fallback_imports_once_and_serves_byte_ranges(
         assert client.post("/api/sync", json={"full": True}).status_code == 409
         [item] = client.get("/api/items").json()["items"]
         assert client.get("/api/people").json() == {
-            "people": [{"name": "李四", "display_name": "李四", "count": 1}],
+            "people": [{"key": "李四", "name": "李四", "display_name": "李四", "count": 1}],
             "total": 1,
         }
         thumbnail = client.get(f"/api/files/{item['id']}/thumbnail")

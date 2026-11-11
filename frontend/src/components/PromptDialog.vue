@@ -11,8 +11,9 @@ const props = withDefaults(
     initial?: string
     confirmText?: string
     placeholder?: string
+    maxLength?: number
   }>(),
-  { initial: '', confirmText: '确定', placeholder: '' },
+  { initial: '', confirmText: '确定', placeholder: '', maxLength: 255 },
 )
 const emit = defineEmits<{ close: []; confirm: [value: string] }>()
 const value = ref('')
@@ -39,7 +40,7 @@ function submit(): void {
   <BaseModal :open="open" :title="title" @close="emit('close')">
     <form class="dialog-form" @submit.prevent="submit">
       <label>{{ label }}</label>
-      <input ref="input" v-model="value" :placeholder="placeholder" maxlength="255" required />
+      <input ref="input" v-model="value" :placeholder="placeholder" :maxlength="maxLength" required />
     </form>
     <template #footer>
       <button class="ghost" type="button" @click="emit('close')">取消</button>

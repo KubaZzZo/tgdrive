@@ -27,6 +27,7 @@ const module = computed(() => {
   if (page === '#images') return 'images'
   return 'drive'
 })
+const peopleVideos = computed(() => module.value === 'people' && new URLSearchParams(hash.value.split('?', 2)[1]).get('videos') === '1')
 const person = computed(() => {
   if (module.value !== 'people') return undefined
   const [, query] = hash.value.split('?', 2)
@@ -41,7 +42,9 @@ function updateRoute(): void {
 async function enterApp(): Promise<void> {
   if (entered.value) return
   entered.value = true
-  await (person.value === undefined
+  await (peopleVideos.value
+    ? drive.selectView('video')
+    : person.value === undefined
     ? drive.selectView('all')
     : drive.selectView('people', person.value))
   sync.start()
@@ -95,7 +98,7 @@ onBeforeUnmount(() => {
     <AppHeader :module="module" />
     <StorageWarning :storage="auth.storage" />
     <main class="main" :class="{ 'has-transfers': uploads.hasJobs }">
-      <FileBrowser v-if="module !== 'images'" :person="person" />
+      <FileBrowser v-if="module !== 'images'" :person="person" :people-videos="peopleVideos" />
       <ImageHost v-else />
     </main>
     <UploadPanel />

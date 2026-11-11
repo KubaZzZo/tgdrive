@@ -16,7 +16,7 @@ const props = defineProps<{
   src: string; itemId: string; kind: 'video' | 'audio'; size: number; version: string; mime: string
   poster?: string; downloadPending?: boolean; downloadStatus?: string
 }>()
-const emit = defineEmits<{ download: [] }>()
+const emit = defineEmits<{ download: []; close: [] }>()
 type SafariVideo = HTMLVideoElement & {
   webkitDisplayingFullscreen?: boolean
   webkitSupportsFullscreen?: boolean
@@ -94,6 +94,12 @@ const pipActive = ref(false)
 const settingsOpen = ref(false)
 const settingsButton = ref<HTMLButtonElement | null>(null)
 const settingsId = `media-settings-${props.itemId}`
+const closeTimerPresets = [15, 30, 60]
+const closeTimerChoice = ref<number | 'custom'>(15)
+const customCloseMinutes = ref<number | string>('')
+const closeSeconds = ref(0)
+let closeDeadline = 0
+let closeTimeout: ReturnType<typeof setTimeout> | undefined
 let orientationLocked = false
 const videoElement = () => props.kind === 'video' ? player.value as SafariVideo | null : null
 let restored = false
@@ -106,6 +112,30 @@ let controller = new AbortController()
 let failureCheck: AbortSignal | undefined
 const streaming = ref(false)
 
+function cancelCloseTimer(): void {
+  clearTimeout(closeTimeout)
+  closeDeadline = 0
+  closeSeconds.value = 0
+}
+function updateCloseTimer(): void {
+  if (!closeDeadline) return
+  clearTimeout(closeTimeout)
+  const remaining = closeDeadline - Date.now()
+  if (remaining <= 0) {
+    cancelCloseTimer()
+    emit('close')
+    return
+  }
+  closeSeconds.value = Math.ceil(remaining / 1000)
+  closeTimeout = setTimeout(updateCloseTimer, remaining % 1000 || 1000)
+}
+function startCloseTimer(): void {
+  const minutes = closeTimerChoice.value === 'custom' ? Number(customCloseMinutes.value) : closeTimerChoice.value
+  const deadline = Date.now() + minutes * 60_000
+  if (!Number.isInteger(minutes) || minutes < 1 || !Number.isSafeInteger(deadline)) return
+  closeDeadline = deadline
+  updateCloseTimer()
+}
 function save(): void {
   const media = player.value
   if (!media || media.seeking || (resumePending && media.currentTime < 2)) return
@@ -388,16 +418,19 @@ onMounted(() => {
   start(true)
   window.addEventListener('pagehide', save)
   document.addEventListener('visibilitychange', save)
+  if (props.kind === 'video') document.addEventListener('visibilitychange', updateCloseTimer)
   document.addEventListener('fullscreenchange', syncPresentation)
 })
 onBeforeUnmount(() => {
   save()
   disposed = true
+  cancelCloseTimer()
   cacheController?.abort()
   controller.abort()
   session?.dispose()
   window.removeEventListener('pagehide', save)
   document.removeEventListener('visibilitychange', save)
+  document.removeEventListener('visibilitychange', updateCloseTimer)
   document.removeEventListener('fullscreenchange', syncPresentation)
   if (orientationLocked) screen.orientation?.unlock?.()
   if (document.fullscreenElement === container.value) void document.exitFullscreen().catch(() => {})
@@ -551,6 +584,21 @@ onBeforeUnmount(() => {
           <label v-if="streaming" class="media-setting">预缓冲时长
             <select v-model.number="bufferSeconds" aria-label="预缓冲时长"><option :value="0">自动</option><option :value="60">最多 60 秒</option><option :value="120">最多 120 秒</option></select>
           </label>
+          <form v-if="kind === 'video'" class="media-close-timer" @submit.prevent="startCloseTimer">
+            <label class="media-setting">定时关闭
+              <select v-model="closeTimerChoice">
+                <option v-for="minutes in closeTimerPresets" :key="minutes" :value="minutes">{{ minutes }} 分钟</option>
+                <option value="custom">自定义</option>
+              </select>
+            </label>
+            <label v-if="closeTimerChoice === 'custom'" class="media-setting">自定义分钟
+              <input v-model.number="customCloseMinutes" type="number" min="1" step="1" required />
+            </label>
+            <div class="media-buttons">
+              <button type="submit">{{ closeSeconds ? '重设定时' : '开始定时' }}</button>
+              <button v-if="closeSeconds" type="button" @click="cancelCloseTimer(); settingsButton?.focus()">取消定时</button>
+            </div>
+          </form>
           <div class="media-buttons media-setting-actions">
             <button v-if="duration" type="button" @click="restart">从头播放</button>
             <button v-if="kind === 'video'" type="button" @click="rotation = (rotation + 90) % 360">旋转视频 {{ rotation }}°</button>
@@ -559,6 +607,7 @@ onBeforeUnmount(() => {
             <button v-if="kind === 'video' && cacheSupported && !cacheBusy" type="button" @click="clearCache">清除本机缓存</button>
           </div>
         </div>
+        <p v-if="closeSeconds" class="media-notice media-close-countdown" role="timer">将在 {{ mediaTime(closeSeconds) }} 后关闭</p>
         <p v-if="notice || cacheBusy || local" class="media-notice" role="status">
           {{ cacheBusy ? '正在缓存到本机 ' + cacheProgress + '%' : notice || '正在播放本机缓存' }}
         </p>
