@@ -40,6 +40,7 @@ async def meta(
 ) -> dict:
     return {
         "app_name": settings.app_name,
+        "version": request.app.version,
         "authenticated": is_authenticated(request),
         "storage": storage.status(),
         "chunk_size": settings.upload_chunk_size,

@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-import logging
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.api.deps import get_db, get_storage
+from app.api.deps import get_db
 from app.auth import require_auth
 from app.categories import Category
 from app.db import Database
 from app.people import MAX_PERSON_LENGTH, person_key
 from app.schemas import FolderBody, PeopleLabelBody, ShareBody, UpdateItemBody, VideoPeopleBody
-from app.storage import TelegramStorage
 
-logger = logging.getLogger("tgdrive.items")
 router = APIRouter(prefix="/api", tags=["items"], dependencies=[Depends(require_auth)])
 
 
@@ -145,41 +142,33 @@ async def create_folder(body: FolderBody, db: Database = Depends(get_db)) -> dic
 async def update_item(
     item_id: str, body: UpdateItemBody, db: Database = Depends(get_db)
 ) -> dict[str, Any]:
-    item = db.get_item(item_id)
+    try:
+        item = db.update_item(item_id, name=body.name, move=body.move, parent_id=body.parent_id)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     if not item:
         raise HTTPException(404, "项目不存在")
-    if body.move:
-        ensure_folder(db, body.parent_id)
-        if body.parent_id and (
-            body.parent_id == item_id or db.is_descendant(body.parent_id, item_id)
-        ):
-            raise HTTPException(400, "不能移动到自身或其子目录")
-        db.move_item(item_id, body.parent_id)
-    if body.name is not None:
-        try:
-            db.rename_item(item_id, body.name)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from None
-    return db.get_item(item_id)  # type: ignore[return-value]
+    return item
 
 
 @router.delete("/items/{item_id}")
 async def delete_item(
     item_id: str,
+    request: Request,
     db: Database = Depends(get_db),
-    storage: TelegramStorage = Depends(get_storage),
 ) -> dict[str, Any]:
-    item = db.get_item(item_id)
-    if not item:
+    runtime = request.state.telegram_runtime
+    chat = runtime.storage.chat
+    result = db.delete_tree(item_id, fallback_chat_id=str(chat) if chat is not None else "")
+    if not result["deleted"]:
         raise HTTPException(404, "项目不存在")
-    result = db.delete_tree(item_id)
     warning = None
     if result["message_ids"]:
-        try:
-            await storage.delete_messages(result["message_ids"])
-        except Exception as exc:
-            logger.exception("Failed to delete Telegram messages")
-            warning = f"数据库已删除，但 Telegram 清理失败: {exc}"
+        await runtime.cleanup.process(result["batch_id"])
+        if db.has_telegram_cleanup(result["batch_id"]):
+            warning = "条目已删除，Telegram 消息仍在等待清理"
     return {"ok": True, "deleted": result["deleted"], "warning": warning}
 
 

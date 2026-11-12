@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import errno
 import secrets
 from pathlib import Path
 from typing import Any
 
-import aiofiles
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
@@ -14,7 +14,7 @@ from app.config import Settings
 from app.db import Database
 from app.schemas import UploadCreateBody
 from app.services.image_host import MAX_IMAGE_SIZE
-from app.services.uploads import UploadService
+from app.services.uploads import UploadService, UploadSpaceError
 from app.storage import TelegramStorage
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"], dependencies=[Depends(require_auth)])
@@ -25,26 +25,36 @@ def public_upload(upload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in upload.items() if key != "temp_path"}
 
 
+def is_disk_full(exc: OSError) -> bool:
+    return exc.errno in {errno.ENOSPC, errno.EDQUOT} or getattr(exc, "winerror", None) in {39, 112}
+
+
 @router.post("")
 async def create_upload(
     body: UploadCreateBody,
     db: Database = Depends(get_db),
     settings: Settings = Depends(get_settings),
     storage: TelegramStorage = Depends(require_storage),
+    uploads: UploadService = Depends(get_upload_service),
 ) -> dict[str, Any]:
     if body.image_host and body.size > MAX_IMAGE_SIZE:
         raise HTTPException(413, "图床单张图片不能超过 20 MiB")
-    if body.parent_id:
-        parent = db.get_item(body.parent_id)
-        if not parent:
-            raise HTTPException(404, "目标文件夹不存在")
-        if parent["kind"] != "folder":
-            raise HTTPException(400, "目标不是文件夹")
     if settings.max_file_size and body.size > settings.max_file_size:
         raise HTTPException(413, "文件超过配置的最大大小")
     temp_path = settings.temp_dir / f"upload_{secrets.token_hex(16)}.part"
-    temp_path.touch(exist_ok=False)
+    created = False
     try:
+        await uploads.space.check_admission(settings.temp_dir, body.size)
+        if uploads._closed:
+            raise HTTPException(409, "账号正在切换，请刷新页面后重试")
+        if body.parent_id:
+            parent = db.get_item(body.parent_id)
+            if not parent:
+                raise HTTPException(404, "目标文件夹不存在")
+            if parent["kind"] != "folder":
+                raise HTTPException(400, "目标不是文件夹")
+        temp_path.touch(exist_ok=False)
+        created = True
         upload = db.create_upload(
             parent_id=body.parent_id,
             name=body.name,
@@ -54,9 +64,16 @@ async def create_upload(
             chunk_size=settings.upload_chunk_size,
             image_host=body.image_host,
         )
-    except ValueError as exc:
-        temp_path.unlink(missing_ok=True)
-        raise HTTPException(400, str(exc)) from None
+    except Exception as exc:
+        if created:
+            temp_path.unlink(missing_ok=True)
+        if isinstance(exc, ValueError):
+            raise HTTPException(400, str(exc)) from None
+        if isinstance(exc, UploadSpaceError):
+            raise HTTPException(507, str(exc)) from None
+        if isinstance(exc, OSError) and is_disk_full(exc):
+            raise HTTPException(507, "上传磁盘空间不足，请释放空间后重试") from None
+        raise
     return {
         "id": upload["id"],
         "offset": 0,
@@ -128,20 +145,37 @@ async def upload_chunk(
 
         written = 0
         path = Path(upload["temp_path"])
-        async with aiofiles.open(path, "r+b") as fh:
-            await fh.seek(offset)
-            async for chunk in request.stream():
-                if not chunk:
-                    continue
-                if written + len(chunk) > chunk_limit:
-                    raise HTTPException(413, "分片超过约定大小")
-                await fh.write(chunk)
-                written += len(chunk)
-        if written == 0:
-            raise HTTPException(400, "空分片")
-
-        new_offset = offset + written
-        db.update_upload(upload_id, received=new_offset, state="uploading", error=None)
+        try:
+            with path.open("r+b", buffering=0) as fh:
+                if fh.seek(0, 2) < offset:
+                    raise HTTPException(409, "临时文件不完整，请取消任务后重新上传")
+                fh.truncate(offset)
+                fh.seek(offset)
+                try:
+                    async for chunk in request.stream():
+                        if not chunk:
+                            continue
+                        if written + len(chunk) > chunk_limit:
+                            raise HTTPException(413, "分片超过约定大小")
+                        await uploads.space.write(path.parent, fh, chunk)
+                        written += len(chunk)
+                    if written == 0:
+                        raise HTTPException(400, "空分片")
+                    if content_length is not None and written != declared:
+                        raise HTTPException(400, "分片长度与 Content-Length 不匹配")
+                    new_offset = offset + written
+                    db.update_upload(upload_id, received=new_offset, state="uploading", error=None)
+                except BaseException:
+                    fh.truncate(offset)
+                    raise
+        except FileNotFoundError:
+            raise HTTPException(409, "临时文件不存在，请取消任务后重新上传") from None
+        except UploadSpaceError as exc:
+            raise HTTPException(507, str(exc)) from None
+        except OSError as exc:
+            if is_disk_full(exc):
+                raise HTTPException(507, "上传磁盘空间不足，请释放空间后重试") from None
+            raise
         return {"offset": new_offset, "received": new_offset, "size": upload["size"]}
 
 

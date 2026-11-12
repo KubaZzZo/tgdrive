@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime, timedelta
+from threading import Event
 
 import pytest
 from conftest import FakeTelegramStorage, make_settings
 from fastapi.testclient import TestClient
+from telethon.errors import MessageDeleteForbiddenError
 
+from app.config import ROOT_DIR
 from app.main import create_app
 
 PASSWORD = "correct-horse-battery-staple"
@@ -34,7 +37,149 @@ def test_health_auth_and_request_id(app_client):
     ok = client.post("/api/login", json={"password": PASSWORD})
     assert ok.status_code == 200
     assert client.get("/api/meta").json()["authenticated"] is True
+    version = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
+    assert client.get("/api/meta").json()["version"] == version
+    assert client.get("/api/openapi.json").json()["info"]["version"] == version
     assert client.get("/api/items").status_code == 200
+
+
+def test_move_and_rename_are_atomic(authenticated_client):
+    client, app, _ = authenticated_client
+    db = app.state.db
+    original = db.create_folder("old", None)
+    target = db.create_folder("target", None)
+    path = f"/api/items/{original['id']}"
+    move = {"move": True, "parent_id": target["id"]}
+
+    response = client.patch(path, json={**move, "name": "invalid/name"})
+    assert response.status_code == 400
+    assert db.get_item(original["id"]) == original
+
+    response = client.patch(path, json={**move, "name": "new"})
+    assert response.status_code == 200
+    assert response.json()["name"] == "new"
+    assert response.json()["parent_id"] == target["id"]
+
+
+def test_failed_telegram_cleanup_retries_after_restart(workdir):
+    class FailingStorage(FakeTelegramStorage):
+        async def delete_messages(self, message_ids):
+            raise RuntimeError("Telegram unavailable")
+
+    settings = make_settings(workdir, channel_sync_enabled=False)
+    storage = FailingStorage()
+    app = create_app(settings, storage=storage)
+    chat_id = str(storage.chat)
+    other_chat_id = "-1009000000000"
+    with TestClient(app) as client:
+        client.post("/api/login", json={"password": PASSWORD})
+        db = app.state.db
+        file = db.create_file(
+            "video.mp4",
+            None,
+            4,
+            None,
+            None,
+            chat_id,
+            [{"part_index": 0, "tg_message_id": 42, "size": 4}],
+        )
+        deleted = client.delete(f"/api/items/{file['id']}")
+        assert deleted.status_code == 200
+        assert deleted.json()["warning"]
+        assert db.get_item(file["id"]) is None
+        assert db.due_telegram_cleanup(chat_id, time.time()) == []
+        [job] = db.due_telegram_cleanup(chat_id, time.time() + 60)
+        assert job["message_id"] == 42
+        assert job["attempts"] == 1
+        assert "Telegram unavailable" in job["last_error"]
+        assert not db.import_channel_file(chat_id, 42, {})
+        other_file = db.create_file(
+            "other.mp4",
+            None,
+            4,
+            None,
+            None,
+            other_chat_id,
+            [{"part_index": 0, "tg_message_id": 42, "size": 4}],
+        )
+        other_batch = db.delete_tree(other_file["id"])["batch_id"]
+
+    class RecoveredStorage(FakeTelegramStorage):
+        async def delete_messages(self, message_ids):
+            await super().delete_messages(message_ids)
+            retried.set()
+
+    retried = Event()
+    recovered = RecoveredStorage()
+    restarted = create_app(settings, storage=recovered)
+    db = restarted.state.db
+    assert db.has_telegram_cleanup(job["batch_id"])
+    # Advance the queued job past its backoff without waiting in real time.
+    with db.conn:
+        db.conn.execute("UPDATE telegram_cleanup SET retry_at=0")
+    with TestClient(restarted) as client:
+        assert retried.wait(5)
+        client.portal.call(restarted.state.accounts.current.cleanup.process)
+        assert recovered.deleted_message_ids == [42]
+        assert not db.has_telegram_cleanup(job["batch_id"])
+        assert db.has_telegram_cleanup(other_batch)
+
+
+def test_upload_temp_quota_checks_other_tasks_on_create_and_write(workdir):
+    settings = make_settings(workdir, upload_temp_max_mib=1, upload_temp_min_free_mib=0)
+    app = create_app(settings, storage=FakeTelegramStorage())
+    with TestClient(app) as client:
+        client.post("/api/login", json={"password": PASSWORD})
+        payload = {"name": "data.bin", "size": 8}
+        task = client.post("/api/uploads", json=payload).json()
+        path = f"/api/uploads/{task['id']}"
+        other_upload = settings.temp_dir / "upload_other_workspace.part"
+        with other_upload.open("wb") as file:
+            file.truncate(1024**2 - 7)
+        assert client.post("/api/uploads", json=payload).status_code == 507
+        assert (
+            client.patch(path, headers={"Upload-Offset": "0"}, content=b"12345678").status_code
+            == 507
+        )
+        assert client.get(path).json()["received"] == 0
+        other_upload.unlink()
+        assert (
+            client.patch(path, headers={"Upload-Offset": "0"}, content=b"12345678").status_code
+            == 200
+        )
+
+
+def test_telegram_cleanup_isolates_an_undeletable_message(authenticated_client, monkeypatch):
+    client, app, storage = authenticated_client
+    db = app.state.db
+    delete_messages = storage.delete_messages
+
+    async def delete_with_restriction(message_ids):
+        if 42 in message_ids:
+            raise MessageDeleteForbiddenError(None)
+        await delete_messages(message_ids)
+
+    monkeypatch.setattr(storage, "delete_messages", delete_with_restriction)
+    chat_id = str(storage.chat)
+    file = db.create_file(
+        "video.mp4",
+        None,
+        8,
+        None,
+        None,
+        chat_id,
+        [
+            {"part_index": 0, "tg_message_id": 42, "size": 4},
+            {"part_index": 1, "tg_message_id": 43, "size": 4},
+        ],
+    )
+    deleted = client.delete(f"/api/items/{file['id']}")
+    assert deleted.status_code == 200
+    assert deleted.json()["warning"]
+    assert storage.deleted_message_ids == [43]
+    [job] = db.due_telegram_cleanup(chat_id, time.time() + 60)
+    assert job["message_id"] == 42
+    assert job["attempts"] == 1
 
 
 def test_login_rate_limit(workdir):

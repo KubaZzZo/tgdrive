@@ -113,6 +113,7 @@ export interface StorageStatus {
 export interface Meta {
   workspace_is_default?: boolean
   app_name: string
+  version: string
   authenticated: boolean
   storage: StorageStatus
   chunk_size: number

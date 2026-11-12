@@ -6,7 +6,7 @@ import io
 import logging
 import re
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qs
@@ -28,6 +28,7 @@ from app.config import Settings
 from app.db import Database
 from app.network import get_proxy
 from app.services.channel_sync import ChannelSyncService
+from app.services.telegram_cleanup import TelegramCleanup
 from app.services.uploads import UploadService
 from app.storage import TelegramStorage
 
@@ -42,6 +43,10 @@ class Runtime:
     sync: ChannelSyncService
     leases: int = 0
     retired: bool = False
+    cleanup: TelegramCleanup = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.cleanup = TelegramCleanup(self.db, self.storage)
 
 
 def account_settings(settings: Settings, profile: dict | None) -> Settings:
@@ -87,6 +92,7 @@ class AccountManager:
         return task
 
     async def start(self) -> None:
+        self.current.cleanup.start()
         storage = self.current.storage
         if storage.status()["connected"] and hasattr(storage, "me"):
             try:
@@ -499,22 +505,27 @@ class AccountManager:
                     candidate,
                     self.settings.upload_stale_hours,
                     self.settings.upload_concurrency,
+                    space=old.uploads.space,
+                    locks=old.uploads.locks,
                 ),
                 ChannelSyncService(db, candidate, self.settings),
             )
             await old.sync.shutdown()
             db.recover_interrupted_uploads()
             await asyncio.wait_for(new.sync.start(), 30)
+            await old.cleanup.stop()
             self.control.save_telegram_profile(profile, key)
         except BaseException:
             if new:
                 await new.sync.shutdown()
             old.uploads._closed = False
+            old.cleanup.start()
             old.sync._full = True
             if old.sync.state == "stopped":
                 await old.sync.start()
             self.switching = False
             raise
+        new.cleanup.start()
         new.uploads.start()
         self.current = new
         self.app.state.db, self.app.state.storage = db, candidate
@@ -532,6 +543,7 @@ class AccountManager:
             self.task(self._dispose(old))
 
     async def _dispose(self, runtime: Runtime) -> None:
+        await runtime.cleanup.stop()
         await runtime.uploads.shutdown()
         await runtime.storage.stop()
         self.retired.discard(runtime)
@@ -540,6 +552,7 @@ class AccountManager:
         async with self.lock:
             await self._cancel()
         await self.current.sync.shutdown()
+        await self.current.cleanup.stop()
         await self.current.uploads.shutdown()
         await self.current.storage.stop()
         if self.tasks:
