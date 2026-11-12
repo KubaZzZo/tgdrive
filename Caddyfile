@@ -36,9 +36,18 @@
 	header @assets Cache-Control "public, max-age=31536000, immutable"
 
 	# 分享撤销/过期必须回源检查。defer 覆盖上游的 public 缓存头。
-	@private path /api /api/* /s /s/* /i/*
+	@private {
+		path /api /api/* /s /s/* /i/*
+		not path_regexp ^/api/files/[^/]+/thumbnail$
+	}
 	header @private {
 		Cache-Control "private, no-store"
+		Cloudflare-CDN-Cache-Control "no-store"
+		defer
+	}
+	@thumbnail path_regexp ^/api/files/[^/]+/thumbnail$
+	header @thumbnail {
+		?Cache-Control "private, no-store"
 		Cloudflare-CDN-Cache-Control "no-store"
 		defer
 	}

@@ -103,6 +103,7 @@ else
     add-apt-repository -y ppa:deadsnakes/ppa && apt-get update -y
     apt-get install -y python3.12 python3.12-venv python3.12-dev
   }
+  apt-get install -y --no-install-recommends ffmpeg
   [[ -d "$APP_DIR/.venv" ]] || python3.12 -m venv "$APP_DIR/.venv"
   "$APP_DIR/.venv/bin/pip" install -q --upgrade pip
   "$APP_DIR/.venv/bin/pip" install -q -r "$APP_DIR/requirements.txt"

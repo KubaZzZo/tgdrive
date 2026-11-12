@@ -132,6 +132,41 @@ def test_thumbnail_requires_auth_and_does_not_download_video(authenticated_clien
     assert client.get(f"/api/files/{item_id}/thumbnail").status_code == 401
 
 
+def test_missing_telegram_cover_uses_bounded_server_sample(authenticated_client, monkeypatch):
+    from app.api.routes import files
+    from app.services.thumbnails import VIDEO_SAMPLE_BYTES
+
+    client, app, storage = authenticated_client
+    size = VIDEO_SAMPLE_BYTES * 2
+    item = app.state.db.create_file(
+        "sample.mp4",
+        None,
+        size,
+        "video/mp4",
+        None,
+        str(storage.chat),
+        [{"part_index": 0, "tg_message_id": 1, "size": size}],
+    )
+
+    async def missing_cover(_message_id):
+        return None
+
+    async def sample(_message_id, offset, length):
+        assert offset == 0 and length == VIDEO_SAMPLE_BYTES
+        yield bytes(length)
+
+    async def render(data):
+        assert len(data) == VIDEO_SAMPLE_BYTES
+        return b"\xff\xd8\xff\xd9", "image/jpeg"
+
+    storage.thumbnail = missing_cover
+    storage.iter_download = sample
+    monkeypatch.setattr(files, "video_thumbnail", render)
+    result = client.get(f"/api/files/{item['id']}/thumbnail")
+    assert result.status_code == 200
+    assert result.content == b"\xff\xd8\xff\xd9"
+
+
 def test_telegram_thumbnail_fetches_bytes_and_selects_static_size():
     from types import SimpleNamespace
 

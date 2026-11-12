@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import type { BatchItemResult, DriveItem, FileAction, FileCategory } from '@/api/types'
@@ -9,18 +9,19 @@ import { useToastStore } from '@/stores/toast'
 import { useUploadStore } from '@/stores/uploads'
 import { formatBytes, previewKind } from '@/utils/format'
 import { groupFolderFiles } from '@/utils/folderUpload'
-import AdvancedSearchDialog from './AdvancedSearchDialog.vue'
 import AppIcon from './AppIcon.vue'
 import BaseModal from './BaseModal.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import FileTable from './FileTable.vue'
-import MoveDialog from './MoveDialog.vue'
-import PeopleIndex from './PeopleIndex.vue'
-import PreviewModal from './PreviewModal.vue'
 import PromptDialog from './PromptDialog.vue'
-import ShareDialog from './ShareDialog.vue'
-import TrashDialog from './TrashDialog.vue'
-import VideoPeopleDialog from './VideoPeopleDialog.vue'
+
+const AdvancedSearchDialog = defineAsyncComponent(() => import('./AdvancedSearchDialog.vue'))
+const MoveDialog = defineAsyncComponent(() => import('./MoveDialog.vue'))
+const PeopleIndex = defineAsyncComponent(() => import('./PeopleIndex.vue'))
+const PreviewModal = defineAsyncComponent(() => import('./PreviewModal.vue'))
+const ShareDialog = defineAsyncComponent(() => import('./ShareDialog.vue'))
+const TrashDialog = defineAsyncComponent(() => import('./TrashDialog.vue'))
+const VideoPeopleDialog = defineAsyncComponent(() => import('./VideoPeopleDialog.vue'))
 
 const drive = useDriveStore()
 const uploads = useUploadStore()
@@ -636,6 +637,7 @@ watch(() => props.routeRevision, () => {
     <AdvancedSearchDialog v-if="advancedOpen" :filters="drive.filters"
       @close="advancedOpen = false" @apply="applyFilters" />
     <PreviewModal
+      v-if="previewOpen && previewTarget"
       :open="previewOpen"
       :item="previewTarget"
       :download-pending="!!previewTarget && pendingDownloads.has(previewTarget.id)"

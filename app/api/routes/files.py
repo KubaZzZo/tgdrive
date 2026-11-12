@@ -15,6 +15,7 @@ import anyio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from starlette.types import Send
+from telethon.errors import RPCError
 
 from app.api.deps import get_db, get_settings, get_storage
 from app.auth import require_auth
@@ -22,7 +23,9 @@ from app.config import Settings
 from app.db import Database
 from app.ranges import parse_range
 from app.services.cdn import CDNMonitor
+from app.services.image_host import MAX_IMAGE_SIZE
 from app.services.telegram_bot import MAX_BOT_DOWNLOAD, BotAPIError
+from app.services.thumbnails import VIDEO_SAMPLE_BYTES, Thumbnail, image_thumbnail, video_thumbnail
 from app.storage import PREFETCH_MIN_BYTES, TelegramStorage
 
 router = APIRouter(tags=["files"])
@@ -83,7 +86,7 @@ async def iter_item_range(
                     yield chunk
 
 
-async def trace_media_range(stream, request_id: str, expected: int):
+async def trace_media_range(stream, request_id: str, expected: int, mode: str):
     started = perf_counter()
     first_ms = None
     sent = 0
@@ -96,7 +99,8 @@ async def trace_media_range(stream, request_id: str, expected: int):
                 yield chunk
     finally:
         logger.info(
-            "Media probe origin_first_ms=%s origin_total_ms=%.1f bytes_yielded=%d expected=%d",
+            "Media %s origin_first_ms=%s origin_total_ms=%.1f bytes_yielded=%d expected=%d",
+            mode,
             first_ms,
             (perf_counter() - started) * 1000,
             sent,
@@ -187,12 +191,28 @@ async def stream_item(
         headers["Content-Range"] = f"bytes {start}-{end - 1}/{size}"
     if request.method == "HEAD" or not length:
         return Response(status_code=206 if partial else 200, media_type=mime, headers=headers)
+    probe = request.headers.get("X-TGDrive-Media-Probe") == "1"
+    trace = (
+        not public
+        and inline
+        and mime.startswith("video/")
+        and (start == 0 or (probe and partial and length <= 1024 * 1024))
+    )
+    mode = "probe" if probe else "initial-range"
     if bot and bot_file_id:
+        started = perf_counter()
         try:
             data, received = await bot.read(bot_file_id, size, start, end)
         except BotAPIError as exc:
             raise HTTPException(502, str(exc)) from None
         request.app.state.traffic.record("telegram", inbound=received)
+        if trace:
+            logger.info(
+                "Media %s bot_read_ms=%.1f bytes_received=%d",
+                mode,
+                (perf_counter() - started) * 1000,
+                received,
+            )
         await cdn.charge(len(data))
         return Response(data, status_code=206 if partial else 200, media_type=mime, headers=headers)
     cache = request.app.state.media_cache
@@ -206,14 +226,8 @@ async def stream_item(
         )
     else:
         stream = iter_item_range(db, storage, item, start, end, parts, cdn, prefetch=not inline)
-    if (
-        not public
-        and partial
-        and 0 < length <= 1024 * 1024
-        and mime.startswith("video/")
-        and request.headers.get("X-TGDrive-Media-Probe") == "1"
-    ):
-        stream = trace_media_range(stream, request.state.request_id, length)
+    if trace:
+        stream = trace_media_range(stream, request.state.request_id, length, mode)
     return FileStreamingResponse(
         stream,
         status_code=206 if partial else 200,
@@ -246,39 +260,95 @@ async def file_thumbnail(
     storage: TelegramStorage = Depends(get_storage),
 ) -> Response:
     item = db.get_item(item_id)
-    if not item or item.get("category") != "video":
-        raise HTTPException(404, "视频不存在")
-    await request.app.state.cdn.check()
+    if not item or item.get("category") not in {"video", "image"}:
+        raise HTTPException(404, "封面不存在", headers={"Cache-Control": "no-store"})
+    cdn = request.app.state.cdn
+    await cdn.check()
+    key = (db.path, item_id, item["updated_at"])
+    try:
+        result = await request.app.state.thumbnails.get(
+            key, lambda: generate_thumbnail(item, request, db, storage)
+        )
+    except (TimeoutError, OSError, RPCError, BotAPIError):
+        result = None
+    if not result:
+        raise HTTPException(404, "暂无封面", headers={"Cache-Control": "no-store"})
+    data, mime = result
+    etag = '"' + hashlib.sha256(data).hexdigest() + '"'
+    headers = {
+        "Cache-Control": "private, no-cache",
+        "Cloudflare-CDN-Cache-Control": "no-store",
+        "ETag": etag,
+        "X-Content-Type-Options": "nosniff",
+    }
+    if any(
+        tag.strip().removeprefix("W/") in {"*", etag}
+        for tag in request.headers.get("if-none-match", "").split(",")
+    ):
+        return Response(status_code=304, headers=headers)
+    await cdn.charge(len(data))
+    return Response(data, media_type=mime, headers=headers)
+
+
+async def generate_thumbnail(
+    item: dict[str, Any],
+    request: Request,
+    db: Database,
+    storage: TelegramStorage,
+) -> Thumbnail | None:
     bot = getattr(request.state.telegram_runtime.sync, "bot", None)
-    cover_id = db.bot_file_id(item_id, bot.id, cover=True) if bot else None
-    data = None
-    mime = "image/jpeg"
+    item_id = item["id"]
+    video = item["category"] == "video"
     connected = storage.status()["connected"]
-    if bot and cover_id:
-        try:
-            cover = await bot.thumbnail(cover_id)
-            request.app.state.traffic.record("telegram", inbound=len(cover))
-            if cover.startswith(b"\xff\xd8\xff"):
-                data = cover
-            elif cover.startswith(b"\x89PNG\r\n\x1a\n"):
-                data, mime = cover, "image/png"
-            elif cover.startswith(b"RIFF") and cover[8:12] == b"WEBP":
-                data, mime = cover, "image/webp"
-        except BotAPIError as exc:
-            if not connected:
-                raise HTTPException(502, str(exc)) from None
-    if not data and connected:
-        parts = db.get_parts(item_id)
+    parts = db.get_parts(item_id) if connected else []
+    if video:
+        cover_id = db.bot_file_id(item_id, bot.id, cover=True) if bot else None
+        if bot and cover_id:
+            with anyio.move_on_after(3):
+                try:
+                    cover = await bot.thumbnail(cover_id)
+                except BotAPIError:
+                    pass
+                else:
+                    request.app.state.traffic.record("telegram", inbound=len(cover))
+                    if cover.startswith(b"\xff\xd8\xff"):
+                        return cover, "image/jpeg"
+                    if cover.startswith(b"\x89PNG\r\n\x1a\n"):
+                        return cover, "image/png"
+                    if cover.startswith(b"RIFF") and cover[8:12] == b"WEBP":
+                        return cover, "image/webp"
         if parts:
-            data = await storage.thumbnail(int(parts[0]["tg_message_id"]))
-    if not data:
-        raise HTTPException(404, "Telegram 未提供封面")
-    await request.app.state.cdn.charge(len(data))
-    return Response(
-        data,
-        media_type=mime,
-        headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff"},
-    )
+            with anyio.move_on_after(3):
+                try:
+                    cover = await storage.thumbnail(int(parts[0]["tg_message_id"]))
+                except (OSError, RPCError):
+                    pass
+                else:
+                    if cover:
+                        return cover, "image/jpeg"
+    size = int(item["size"])
+    limit = VIDEO_SAMPLE_BYTES if video else MAX_IMAGE_SIZE
+    if size <= 0 or (not video and size > limit):
+        return None
+    if parts:
+        end = min(size, limit)
+        sample = bytearray()
+        async with aclosing(iter_item_range(db, storage, item, 0, end, parts)) as stream:
+            async for chunk in stream:
+                if len(sample) + len(chunk) > end:
+                    return None
+                sample.extend(chunk)
+        if len(sample) != end:
+            return None
+        data = bytes(sample)
+    elif bot and size <= limit and (file_id := db.bot_file_id(item_id, bot.id)):
+        data, received = await bot.read(file_id, size, 0, size)
+        request.app.state.traffic.record("telegram", inbound=received)
+    else:
+        return None
+    if video:
+        return await video_thumbnail(data)
+    return await anyio.to_thread.run_sync(image_thumbnail, data)
 
 
 def share_is_valid(share: dict[str, Any]) -> bool:

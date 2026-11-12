@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import type { DriveItem } from '@/api/types'
 import { formatBytes, previewKind } from '@/utils/format'
 import BaseModal from './BaseModal.vue'
-import MediaPlayer from './MediaPlayer.vue'
+
+const MediaPlayer = defineAsyncComponent(() => import('./MediaPlayer.vue'))
 
 const props = defineProps<{ open: boolean; item: DriveItem | null; downloadPending: boolean; downloadStatus: string }>()
 const emit = defineEmits<{ close: []; download: [item: DriveItem] }>()

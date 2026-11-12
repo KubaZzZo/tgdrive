@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, defineAsyncComponent, ref } from 'vue'
 
 import ChannelSyncPanel from './ChannelSyncPanel.vue'
 import TrafficPanel from './TrafficPanel.vue'
-import TelegramAccountPanel from './TelegramAccountPanel.vue'
 import { useAuthStore } from '@/stores/auth'
+import { useSyncStore } from '@/stores/sync'
 
+const TelegramAccountPanel = defineAsyncComponent(() => import('./TelegramAccountPanel.vue'))
 const auth = useAuthStore()
+const sync = useSyncStore()
+const telegramOpen = ref(false)
+const telegramConnected = computed(() => sync.status?.state !== 'auth_required' && auth.storage?.connected)
 defineProps<{ module: 'drive' | 'people' | 'images' }>()
 const loggingOut = ref(false)
 
@@ -35,7 +39,11 @@ async function logout(): Promise<void> {
     <div class="top-actions">
       <TrafficPanel />
       <ChannelSyncPanel />
-      <TelegramAccountPanel />
+      <button class="ghost telegram-button" :class="{ 'telegram-offline': !telegramConnected }" @click="telegramOpen = true">
+        <span class="telegram-status-dot" :class="{ online: telegramConnected }" />
+        <span class="telegram-label-desktop">Telegram 账号</span><span class="telegram-label-mobile">账号</span>
+      </button>
+      <TelegramAccountPanel v-if="telegramOpen" @close="telegramOpen = false" />
       <button class="ghost" type="button" :disabled="loggingOut" @click="logout">退出</button>
     </div>
   </header>

@@ -283,8 +283,9 @@ async function seekOffset(
   return best.offset
 }
 
-export interface MediaSession { streaming: boolean; remuxed?: boolean; dispose: () => void }
+export interface MediaSession { streaming: boolean; dispose: () => void }
 export interface MediaPrefix { bytes: Uint8Array; etag: string }
+export type MediaStage = 'response-headers' | 'first-byte' | 'probe-complete' | 'remux-ready' | 'source-open'
 interface SegmentCache {
   list: (etag: string) => Promise<VideoSegment[]>
   read: (etag: string, start: number, end: number) => Promise<Uint8Array<ArrayBuffer> | null>
@@ -313,25 +314,20 @@ export async function attachMedia(
     size?: number; prefix?: MediaPrefix; onPrefix?: (prefix: MediaPrefix) => void
     onSeekUnavailable?: () => void
     segments?: SegmentCache
-    remux?: boolean
+    onStage?: (stage: MediaStage, requestId?: string) => void
   } = {},
 ): Promise<MediaSession> {
-  const native = () => {
-    const objectUrl = options.file ? URL.createObjectURL(options.file) : null
-    if (!signal.aborted) media.src = objectUrl ?? url
-    return { streaming: false, dispose: () => { if (objectUrl) URL.revokeObjectURL(objectUrl) } }
-  }
   // iPhone exposes ManagedMediaSource rather than the desktop MediaSource API.
   const ManagedSource = (globalThis as typeof globalThis & {
     ManagedMediaSource?: typeof MediaSource
   }).ManagedMediaSource
   const Source = ManagedSource ?? (typeof MediaSource !== 'undefined' ? MediaSource : undefined)
-  if (!Source) return native()
+  if (!Source) throw new Error('MediaSource unavailable')
   const transfer = new MediaTransfer(Source === ManagedSource ? 24 : 48)
   let rangeVersion: string | null = options.prefix?.etag ?? null
   let size = 0
   let cachedSegments: VideoSegment[] = []
-  const range = async (start: number, end: number, requestSignal = signal, allowCache = false) => {
+  const range = async (start: number, end: number, requestSignal = signal, allowCache = false, probe = false) => {
     requestSignal.throwIfAborted()
     if (options.file) return { reader: options.file.slice(start, end + 1).stream().getReader(), size: options.file.size, end, latency: 0, local: true }
     const segmentCache = options.segments
@@ -349,9 +345,12 @@ export async function attachMedia(
       }
     }
     const headers: Record<string, string> = { Range: `bytes=${start}-${end}` }
+    if (probe) headers['X-TGDrive-Media-Probe'] = '1'
     if (rangeVersion) headers['If-Range'] = rangeVersion
     const started = performance.now()
     const response = await fetch(url, { headers, signal: requestSignal })
+    const requestId = response.headers.get('X-Request-ID') ?? undefined
+    if (probe) options.onStage?.('response-headers', requestId)
     const latency = performance.now() - started
     if (response.status !== 206 || !response.body) {
       await response.body?.cancel()
@@ -366,34 +365,38 @@ export async function attachMedia(
       await response.body.cancel(); throw new Error('Media changed during playback')
     }
     rangeVersion = version
-    return { reader: response.body.getReader(), size: Number(match[3]), end: Number(match[2]), latency, local: false }
+    return { reader: response.body.getReader(), size: Number(match[3]), end: Number(match[2]), latency, local: false, requestId }
   }
   const readHeader = async () => {
     if (options.prefix && options.size) return { first: options.prefix.bytes, size: options.size }
-    const initial = await range(0, 65535)
-    const first = await readMediaBytes(initial.reader, Math.min(65536, initial.size))
-    transfer.sample(0, 0, initial.latency)
-    return { first, size: initial.size }
+    return withMediaTimeout(signal, 4_000, async request => {
+      const initial = await range(0, 65535, request, false, true)
+      const first = await readMediaBytes(initial.reader, Math.min(65536, initial.size),
+        initial.local ? undefined : () => options.onStage?.('first-byte', initial.requestId))
+      transfer.sample(0, 0, initial.latency)
+      return { first, size: initial.size }
+    })
   }
-  let first: Uint8Array
-  try {
-    ({ first, size } = await readHeader())
-  } catch { return native() }
+  const header = await readHeader()
+  signal.throwIfAborted()
+  const { first } = header
+  size = header.size
   const type = fragmentedMp4Type(first)
-  if (!type && options.remux && !signal.aborted && !options.file && strongMediaTag(rangeVersion) &&
+  options.onStage?.('probe-complete')
+  if (!type && !options.file && strongMediaTag(rangeVersion) &&
     boxes(first, 0, first.length).some(box => box.type === 'ftyp')) {
-    try {
-      const { attachOrdinaryMp4 } = await import('./ordinaryMp4')
-      const remuxed = await attachOrdinaryMp4(
-        media, Source, Source === ManagedSource, first, size, signal, range, onError, options.bufferSeconds,
-      )
-      if (remuxed) return remuxed
-    } catch { return native() }
+    const { attachOrdinaryMp4 } = await import('./ordinaryMp4')
+    const remuxed = await attachOrdinaryMp4(
+      media, Source, Source === ManagedSource, first, size, signal, range, onError, options.bufferSeconds, options.onStage,
+    )
+    if (remuxed) return remuxed
   }
-  if (!type || !Source.isTypeSupported(type) || signal.aborted) return native()
+  signal.throwIfAborted()
+  if (!type || !Source.isTypeSupported(type)) throw new Error('Media format unavailable in compatibility mode')
   if (!options.prefix && rangeVersion) options.onPrefix?.({ bytes: first, etag: rangeVersion })
   const managed = Source === ManagedSource
   const source = new Source() as MediaSource & { readonly streaming?: boolean }
+  if (options.onStage) source.addEventListener('sourceopen', () => options.onStage?.('source-open'), { once: true, signal })
   // Without an HLS AirPlay alternative, WebKit requires remote playback to be
   // disabled *before* attaching MMS or it never opens on iPhone.
   const previousRemotePlayback = media.disableRemotePlayback
@@ -428,10 +431,9 @@ export async function attachMedia(
     return readMediaBytes(reader, to - from + 1)
   }
   const pump = async () => {
-    const deadline = Date.now() + 15000
     while (source.readyState !== 'open') {
       if (signal.aborted) return
-      if (Date.now() > deadline || media.error) throw new Error('Media source did not open')
+      if (media.error) throw new Error('Media source did not open')
       await wait()
     }
     const buffer = source.addSourceBuffer(type)

@@ -48,13 +48,16 @@ export function strongMediaTag(tag: string | null): tag is string {
   return tag !== null && /^"[^"]+"$/.test(tag)
 }
 
-export async function readMediaBytes(reader: ReadableStreamDefaultReader<Uint8Array>, length: number): Promise<Uint8Array<ArrayBuffer>> {
+export async function readMediaBytes(
+  reader: ReadableStreamDefaultReader<Uint8Array>, length: number, onFirstByte?: () => void,
+): Promise<Uint8Array<ArrayBuffer>> {
   const bytes = new Uint8Array(length)
   let offset = 0
   try {
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
+      if (offset === 0 && value.length) onFirstByte?.()
       if (offset + value.length > length) throw new Error('Oversized media segment')
       bytes.set(value, offset)
       offset += value.length
@@ -72,7 +75,14 @@ export async function withMediaTimeout<T>(
   const abort = () => controller.abort(parent.reason)
   parent.addEventListener('abort', abort, { once: true })
   const timer = setTimeout(() => controller.abort(new DOMException('Media request timed out', 'TimeoutError')), milliseconds)
-  try { return await operation(controller.signal) }
+  try {
+    const result = await operation(controller.signal)
+    controller.signal.throwIfAborted()
+    return result
+  } catch (cause) {
+    controller.signal.throwIfAborted()
+    throw cause
+  }
   finally {
     clearTimeout(timer)
     parent.removeEventListener('abort', abort)

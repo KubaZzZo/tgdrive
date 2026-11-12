@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { acquireCoverSlot, holdCoverQueue } from '../src/utils/coverQueue.ts'
 
-test('cover extraction is bounded across cards and cancelled waiters are removed', async () => {
+test('cover requests are bounded across cards and cancelled waiters are removed', async () => {
   const first = await acquireCoverSlot(new AbortController().signal)
   const second = await acquireCoverSlot(new AbortController().signal)
   const cancelled = new AbortController()
@@ -20,17 +20,13 @@ test('cover extraction is bounded across cards and cancelled waiters are removed
   after()
 })
 
-test('foreground playback suspends active covers and holds queued covers until it closes', async () => {
-  let stopped = false
-  const release = await acquireCoverSlot(new AbortController().signal, () => {
-    stopped = true
-    release()
-  })
+test('foreground playback holds new cover requests until it closes', async () => {
+  const release = await acquireCoverSlot(new AbortController().signal)
   const resume = holdCoverQueue()
   let started = false
   const next = acquireCoverSlot(new AbortController().signal).then(slot => { started = true; return slot })
   await Promise.resolve()
-  assert.ok(stopped)
+  release()
   assert.equal(started, false)
   resume(); resume()
   ;(await next)()

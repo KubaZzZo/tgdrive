@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from io import BytesIO
 
 import pytest
+from PIL import Image
 
 from app.db import Database
 from app.services.image_host import MAX_IMAGE_SIZE, image_mime
@@ -22,6 +24,28 @@ def image(app, storage, data=PNG, name="photo.png"):
         str(storage.chat),
         [{"part_index": 0, "tg_message_id": message, "size": len(data)}],
     )
+
+
+def test_thumbnail_is_small_private_and_reused(authenticated_client):
+    client, app, storage = authenticated_client
+    source = BytesIO()
+    Image.new("RGBA", (800, 400), (255, 0, 0, 128)).save(source, "PNG")
+    item = image(app, storage, source.getvalue())
+    url = f"/api/files/{item['id']}/thumbnail"
+    response = client.get(url)
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "private, no-cache"
+    assert response.headers["cloudflare-cdn-cache-control"] == "no-store"
+    with Image.open(BytesIO(response.content)) as thumbnail:
+        assert thumbnail.format == "WEBP"
+        assert thumbnail.size == (320, 160)
+        assert thumbnail.getpixel((0, 0))[3] == 128
+    storage.files.clear()
+    assert client.get(url).content == response.content
+    conditional = {"If-None-Match": response.headers["etag"]}
+    assert client.get(url, headers=conditional).status_code == 304
+    client.cookies.clear()
+    assert client.get(url, headers=conditional).status_code == 401
 
 
 def test_publish_anonymous_range_revoke_and_republish(authenticated_client):

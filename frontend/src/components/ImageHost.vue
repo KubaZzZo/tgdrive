@@ -146,7 +146,7 @@ onBeforeUnmount(() => { generation++; clearTimeout(timer); window.removeEventLis
     </div>
     <div v-else class="image-grid">
       <article v-for="item in images" :key="item.id" class="image-card">
-        <div class="image-preview"><img :src="api.downloadUrl(item.id)" :alt="item.name" loading="lazy" /></div>
+        <div class="image-preview"><img :src="api.thumbnailUrl(item.id, item.updated_at)" :alt="item.name" loading="lazy" decoding="async" /></div>
         <div class="image-info"><strong :title="item.name">{{ item.name }}</strong><span>{{ formatBytes(item.size) }}</span></div>
         <div class="image-actions">
           <template v-if="mode === 'published'">

@@ -120,6 +120,7 @@ def exercise(
             ("unindexed first seek", "unindexed.mp4"),
             ("unindexed disk resume after reload", "unindexed.mp4"),
             ("indexed first seek", "indexed.mp4"),
+            ("ordinary MP4 native", "ordinary.mp4"),
             ("ordinary MP4 remux", "ordinary.mp4"),
         ]:
             item_id, data = files[name]
@@ -127,6 +128,11 @@ def exercise(
             if warm:
                 page.reload()
             ordinary = name == "ordinary.mp4"
+            native = label == "ordinary MP4 native"
+            page.evaluate(
+                "mode => localStorage.setItem('tgdrive_playback_mode', mode)",
+                "auto" if native else "compat",
+            )
             requests = []
             unexpected_ranges = []
 
@@ -180,9 +186,16 @@ def exercise(
                 - started
             )
             startup_requests = len(requests)
+            startup_open_ranges = len(unexpected_ranges)
             elapsed = None
             probes = []
-            if warm:
+            if native:
+                assert video.evaluate("video => !video.src.startsWith('blob:')")
+                assert not any(
+                    method == "GET" and start == 0 and end == 65535
+                    for method, start, end in requests
+                ), requests
+            elif warm:
                 assert resume_position is not None and anchor is not None
                 assert ("HEAD", 0, 0) in requests, requests
                 assert not any(
@@ -271,15 +284,66 @@ def exercise(
                 "seek_to_frame_ms": round(elapsed) if elapsed is not None else None,
                 "rebuffer_ms": round(stalled_ms),
                 "play_window_ms": play_ms,
-                "startup_range_requests": startup_requests,
+                "startup_range_requests": startup_requests + startup_open_ranges,
                 "probe_requests": None if warm else len(probes),
                 "probe_bytes": None if warm else sum(end - start + 1 for start, end in probes),
                 "bytes_sent_on_cancelled_reads": storage.cancelled_bytes - before_cancel,
             }
             samples.append(sample)
             print(json.dumps(sample), flush=True)
+        item_id, data = files["ordinary.mp4"]
+        verify_startup_fallback(page, item_id, len(data))
         browser.close()
     return samples
+
+
+def verify_startup_fallback(page, item_id: str, size: int) -> None:
+    page.evaluate("localStorage.removeItem('tgdrive_playback_v1')")
+    for phase in ("headers", "body", "first-frame"):
+        page.evaluate(
+            """([itemId, size, phase]) => {
+                window.probeStats = { started: 0, cancelled: 0 };
+                const original = window.fetch;
+                window.restoreFetch = () => { window.fetch = original; };
+                window.fetch = (url, init) => {
+                    const probe = init?.headers?.['X-TGDrive-Media-Probe'];
+                    const block = phase === 'first-frame'
+                        ? !probe && init?.headers?.Range && !init.headers.Range.startsWith('bytes=65536-')
+                        : probe;
+                    if (typeof url !== 'string' || !url.includes(`/files/${itemId}/download`) || !block)
+                        return original(url, init);
+                    probeStats.started++;
+                    function onAbort(reject) {
+                        init.signal.addEventListener('abort', () => {
+                            probeStats.cancelled++;
+                            reject(init.signal.reason);
+                        }, { once: true });
+                    }
+                    if (phase !== 'body') return new Promise((_, reject) => onAbort(reject));
+                    return Promise.resolve(new Response(new ReadableStream({
+                        start(controller) {
+                            controller.enqueue(new Uint8Array(1));
+                            onAbort(reason => controller.error(reason));
+                        },
+                    }), { status: 206, headers: { 'Content-Range': `bytes 0-65535/${size}` } }));
+                };
+            }""",
+            [item_id, size, phase],
+        )
+        page.get_by_role("button", name="ordinary.mp4", exact=True).click()
+        video = page.locator(".media-screen video")
+        page.wait_for_function(
+            """() => {
+                const video = document.querySelector('.media-screen video');
+                return video?.readyState >= 2 && video.src.includes('/download');
+            }""",
+            timeout=13000,
+        )
+        assert page.evaluate("probeStats") == {"started": 1, "cancelled": 1}, phase
+        assert page.evaluate("localStorage.getItem('tgdrive_playback_mode')") == "compat"
+        page.get_by_role("button", name="关闭", exact=True).click()
+        video.wait_for(state="detached")
+        page.evaluate("restoreFetch()")
 
 
 def main() -> None:

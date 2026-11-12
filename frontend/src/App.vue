@@ -1,18 +1,19 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 import AppHeader from '@/components/AppHeader.vue'
 import FileBrowser from '@/components/FileBrowser.vue'
-import ImageHost from '@/components/ImageHost.vue'
 import LoginView from '@/components/LoginView.vue'
 import StorageWarning from '@/components/StorageWarning.vue'
 import ToastHost from '@/components/ToastHost.vue'
-import UploadPanel from '@/components/UploadPanel.vue'
 import { useSyncStore } from '@/stores/sync'
 import { useAuthStore } from '@/stores/auth'
 import { useDriveStore } from '@/stores/drive'
 import { useToastStore } from '@/stores/toast'
 import { useUploadStore } from '@/stores/uploads'
+
+const ImageHost = defineAsyncComponent(() => import('@/components/ImageHost.vue'))
+const UploadPanel = defineAsyncComponent(() => import('@/components/UploadPanel.vue'))
 
 const sync = useSyncStore()
 const auth = useAuthStore()
@@ -107,7 +108,7 @@ onBeforeUnmount(() => {
       <FileBrowser v-if="module !== 'images'" :route-revision="routeRevision" :people-videos="peopleVideos" />
       <ImageHost v-else />
     </main>
-    <UploadPanel />
+    <UploadPanel v-if="uploads.hasJobs" />
   </div>
   <div v-else class="boot-screen">
     <div class="brand-mark">TG</div>

@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { mediaFailure } from '@/api/client'
-import { mediaTime, playbackPosition, savePlayback } from '@/utils/playback'
-import { attachMedia, type MediaPrefix, type MediaSession } from '@/utils/fragmentedMp4'
+import {
+  mediaTime, playbackPaths, playbackPosition, savedPlaybackMode, savePlayback, savePlaybackMode, type PlaybackPath,
+} from '@/utils/playback'
+import type { MediaPrefix, MediaSession } from '@/utils/fragmentedMp4'
 import {
   cacheVideo, cacheVideoPrefix, cacheVideoSegment, cachedVideo, cachedVideoSegments,
   clearVideoCache, deviceCacheAvailable, readCachedVideoSegment,
 } from '@/utils/deviceCache'
-import { holdCoverQueue } from '@/utils/coverQueue'
 import { formatBytes } from '@/utils/format'
+import { holdCoverQueue } from '@/utils/coverQueue'
 import { withMediaTimeout } from '@/utils/mediaTransfer'
 import AppIcon from './AppIcon.vue'
 
@@ -32,10 +34,9 @@ const cacheProgress = ref(0)
 const local = ref(false)
 const downloaded = ref(false)
 const bufferSeconds = ref(0)
-const playbackMode = ref('auto')
+const playbackMode = ref(savedPlaybackMode())
 let localFile: Blob | undefined
 let releaseLocal: (() => void) | undefined
-let releaseCovers: (() => void) | undefined
 let cacheController: AbortController | undefined
 const cacheKey = () => `${props.src}|${props.version}`
 async function cacheHere(): Promise<void> {
@@ -107,10 +108,18 @@ let resumePending = false
 let lastSaved = 0
 let disposed = false
 let session: MediaSession | undefined
-let setup: Promise<void> | undefined
 let controller = new AbortController()
-let failureCheck: AbortSignal | undefined
 const streaming = ref(false)
+const startupBudgetMs = 15_000
+let startupTimer: ReturnType<typeof setTimeout> | undefined
+let startupStarted = 0
+let startupDeadline = 0
+let paths: PlaybackPath[] = []
+let prefix: MediaPrefix | undefined
+let playRequested = false
+let active: { path: PlaybackPath; started: number; ready: boolean } | undefined
+let releaseCovers: (() => void) | undefined
+let frameCallback: number | undefined
 
 function cancelCloseTimer(): void {
   clearTimeout(closeTimeout)
@@ -138,7 +147,7 @@ function startCloseTimer(): void {
 }
 function save(): void {
   const media = player.value
-  if (!media || media.seeking || (resumePending && media.currentTime < 2)) return
+  if (!media || !restored || media.seeking || (resumePending && media.currentTime < 2)) return
   resumePending = false
   savePlayback(props.itemId, media.currentTime, media.duration)
 }
@@ -157,6 +166,7 @@ function metadata(): void {
       notice.value = `已恢复至 ${mediaTime(position)}`
     }
   }
+  if (props.kind === 'audio') ready()
 }
 function syncPresentation(): void {
   const video = videoElement()
@@ -182,17 +192,22 @@ function update(): void {
   }
 }
 async function toggle(): Promise<void> {
-  await setup
   const media = player.value
-  if (!media) return
-  if (media.paused) {
+  if (!media || !active) return
+  playRequested = media.paused
+  if (playRequested) await playAttached()
+  else media.pause()
+}
+async function playAttached(): Promise<void> {
+  const media = player.value
+  const signal = controller.signal
+  if (playRequested && media?.getAttribute('src')) {
     try {
       await media.play()
-      error.value = ''
     } catch {
-      notice.value = '请点击播放器中的播放按钮，或等待缓冲完成。'
+      if (!signal.aborted) notice.value = '请点击播放器中的播放按钮，或等待缓冲完成。'
     }
-  } else media.pause()
+  }
 }
 function seek(value: number): void {
   const media = player.value
@@ -281,11 +296,9 @@ async function pictureInPicture(): Promise<void> {
   }
 }
 function failed(): void {
-  if (disposed) return
   const code = player.value?.error?.code
-  if (!code) return
-  if (fallbackFromRemux()) return
-  reportFailure(
+  if (!code || !active) return
+  recover('media-error',
     code === 2
       ? '媒体传输中断，请重试加载。'
       : '浏览器无法解码此文件，可以下载后使用本地播放器观看。',
@@ -293,35 +306,107 @@ function failed(): void {
 }
 function reportFailure(fallback: string): void {
   const signal = controller.signal
-  if (signal.aborted || disposed) return
   loading.value = false
-  if (localFile) { error.value = fallback; return }
-  if (failureCheck === signal) return
-  failureCheck = signal
-  error.value = '正在检查媒体来源…'
-  void mediaFailure(props.src, fallback, signal).then(message => {
-    if (!signal.aborted && !disposed) error.value = message
-  })
+  error.value = fallback
+  if (localFile) return
+  void withMediaTimeout(signal, 2_000, async check => {
+    const message = await mediaFailure(props.src, fallback, check)
+    if (!check.aborted) error.value = message
+  }).catch(() => {})
 }
-function start(useCache = false): void {
+function resetMedia(): void {
+  clearTimeout(startupTimer)
+  cancelFrameTrace()
+  active = undefined
   controller.abort()
   session?.dispose()
   session = undefined
   controller = new AbortController()
+  const media = player.value
+  if (media) {
+    media.pause()
+    media.removeAttribute('src')
+    media.load()
+  }
+  paused.value = true
+  streaming.value = false
+}
+function trace(stage: string, requestId?: string, timestamp = performance.now()): void {
+  if (!active) return
+  console.debug('[TG Drive] media startup', {
+    itemId: props.itemId, path: active.path, stage, requestId,
+    elapsedMs: Math.round(timestamp - startupStarted), attemptMs: Math.round(timestamp - active.started),
+  })
+}
+function cancelFrameTrace(): void {
+  if (frameCallback !== undefined) videoElement()?.cancelVideoFrameCallback?.(frameCallback)
+  frameCallback = undefined
+}
+function traceRenderedFrame(signal: AbortSignal): void {
+  frameCallback = videoElement()?.requestVideoFrameCallback?.(now => {
+    if (signal.aborted) return
+    frameCallback = undefined
+    trace('first-frame-rendered', undefined, now)
+  })
+}
+function ready(): void {
+  const media = player.value
+  const attempt = active
+  if (!media || !attempt || media.readyState < (props.kind === 'audio' ? 1 : 2) || media.seeking) return
+  loading.value = false
+  if (attempt.ready) return
+  attempt.ready = true
+  clearTimeout(startupTimer)
+  if (attempt.path === 'native' && !localFile) {
+    const url = new URL(props.src, location.href).href
+    const request = (performance.getEntriesByName(url, 'resource') as PerformanceResourceTiming[])
+      .find(entry => entry.startTime >= attempt.started && entry.initiatorType === props.kind && entry.responseStart > 0)
+    if (request) trace('first-byte', undefined, request.responseStart)
+  }
+  trace(props.kind === 'audio' ? 'metadata-ready' : 'first-frame-ready')
+}
+function recover(reason: string, message: string): void {
+  if (!active) return
+  trace(reason)
+  save()
+  if (active.ready) startupDeadline = performance.now() + startupBudgetMs
+  const next = (!active.ready || active.path === 'compat') && performance.now() < startupDeadline && paths.shift()
+  if (next) {
+    notice.value = next === 'native' ? '正在切换到浏览器原生播放…' : '正在切换到兼容播放…'
+    void startAttempt(next)
+  } else {
+    resetMedia()
+    reportFailure(message)
+  }
+}
+function start(useCache = false): void {
+  notice.value = ''
+  playRequested = false
+  prefix = undefined
+  paths = playbackPaths(playbackMode.value, props.kind, props.mime)
+  startupStarted = performance.now()
+  startupDeadline = startupStarted + startupBudgetMs
+  void startAttempt(paths.shift()!, useCache)
+}
+async function startAttempt(path: PlaybackPath, useCache = false): Promise<void> {
+  resetMedia()
+  restored = false
+  resumePending = false
+  duration.value = 0
+  current.value = 0
+  loading.value = true
   error.value = ''
   const signal = controller.signal
   const media = player.value
   if (!media) return
-  media.pause()
-  media.removeAttribute('src')
-  media.load()
-  streaming.value = false
-  setup = (async () => {
-    let prefix: MediaPrefix | undefined
-    const native = props.kind === 'audio' || playbackMode.value === 'native' ||
-      /^video\/(?:webm|ogg|x-matroska|x-msvideo|mpeg)(?:;|$)/i.test(props.mime)
+  active = { path, started: performance.now(), ready: false }
+  trace('start')
+  const remaining = startupDeadline - performance.now()
+  const budget = paths.length ? Math.min(remaining, path === 'native' ? 5_000 : 8_000) : remaining
+  startupTimer = setTimeout(() => recover('startup-timeout', '媒体启动超时，请重试或下载后播放。'), budget)
+  try {
     if (useCache && cacheSupported && props.kind === 'video') {
-      const hit = await cachedVideo(cacheKey(), props.size, !native)
+      const hit = await cachedVideo(cacheKey(), props.size, path === 'compat')
       if (hit) {
         let usingFile = false
         try {
@@ -343,22 +428,25 @@ function start(useCache = false): void {
         finally { if (!usingFile) hit.release() }
       }
     }
-    if (signal.aborted) return
-    if (native) {
+    signal.throwIfAborted()
+    if (path === 'native') {
       if (localFile) {
         const objectUrl = URL.createObjectURL(localFile)
         media.src = objectUrl
         session = { streaming: false, dispose: () => URL.revokeObjectURL(objectUrl) }
       } else media.src = props.src
+      traceRenderedFrame(signal)
+      void playAttached()
       return
     }
+    const { attachMedia } = await import('@/utils/fragmentedMp4')
+    signal.throwIfAborted()
     const key = cacheKey()
     const value = await attachMedia(media, props.src, signal, () => {
-      if (!signal.aborted && !fallbackFromRemux())
-        reportFailure('视频流加载失败，请重试；若仍失败，可切换播放方式。')
+      if (!signal.aborted) recover('stream-error', '视频流加载失败，请重试或下载后播放。')
     }, {
       file: localFile, bufferSeconds: () => bufferSeconds.value || undefined, version: props.version,
-      size: props.size, prefix, remux: true,
+      size: props.size, prefix, onStage: (stage, id) => { if (!signal.aborted) trace(stage, id) },
       onPrefix: cacheSupported ? data => { void cacheVideoPrefix(key, data.bytes, data.etag) } : undefined,
       segments: cacheSupported ? {
         list: etag => cachedVideoSegments(key, etag),
@@ -368,26 +456,24 @@ function start(useCache = false): void {
       onSeekUnavailable: () => { notice.value = '未能在缓冲预算内定位，已返回原进度。可重试或切换播放方式。' },
     })
     if (signal.aborted) value.dispose()
-    else { session = value; streaming.value = value.streaming }
-  })().catch(() => {
-    if (!signal.aborted) reportFailure('视频加载失败，请重试。')
-  })
-}
-function fallbackFromRemux(): boolean {
-  if (!session?.remuxed || playbackMode.value === 'native') return false
-  const wasPlaying = !paused.value
-  playbackMode.value = 'native'
-  retry()
-  notice.value = '兼容播放失败，已切换到浏览器原生播放。'
-  if (wasPlaying) void toggle()
-  return true
+    else {
+      session = value
+      streaming.value = value.streaming
+      traceRenderedFrame(signal)
+      void playAttached()
+    }
+  } catch (cause) {
+    if (!signal.aborted) recover(cause instanceof DOMException && cause.name === 'TimeoutError' ? 'probe-timeout' : 'setup-error',
+      '视频加载失败，请重试或下载后播放。')
+  }
 }
 function retry(): void {
   save()
-  error.value = ''
-  loading.value = true
-  restored = false
   start()
+}
+function changePlaybackMode(): void {
+  savePlaybackMode(playbackMode.value)
+  retry()
 }
 function onKey(event: KeyboardEvent): void {
   if (event.key === 'Escape' && (settingsOpen.value || fullscreenActive.value)) {
@@ -409,7 +495,10 @@ function onKey(event: KeyboardEvent): void {
   if (event.key.toLowerCase() === 'f' && props.kind === 'video') void fullscreen()
 }
 function pause(): void {
+  if (!player.value?.paused) return
   paused.value = true
+  if (!player.value?.getAttribute('src')) return
+  playRequested = false
   save()
 }
 onMounted(() => {
@@ -425,6 +514,8 @@ onBeforeUnmount(() => {
   save()
   disposed = true
   cancelCloseTimer()
+  clearTimeout(startupTimer)
+  cancelFrameTrace()
   cacheController?.abort()
   controller.abort()
   session?.dispose()
@@ -465,20 +556,21 @@ onBeforeUnmount(() => {
           :controls="kind === 'audio'"
           :style="rotation ? { rotate: rotation + 'deg' } : undefined"
           playsinline
-          preload="metadata"
+          :preload="kind === 'video' ? 'auto' : 'metadata'"
           :poster="kind === 'video' ? poster : undefined"
           :aria-label="kind === 'video' ? '视频播放' : '音频播放'"
           @loadedmetadata="metadata"
           @durationchange="metadata"
           @timeupdate="update"
           @seeking="seeking"
-          @seeked="loading = false"
-          @play="paused = false"
+          @seeked="ready"
+          @play="paused = false; playRequested = true"
           @pause="pause"
           @ended="pause"
           @waiting="loading = true"
-          @canplay="loading = false"
-          @playing="loading = false"
+          @loadeddata="ready"
+          @canplay="ready"
+          @playing="ready"
           @error="failed"
           @volumechange="volumeChanged"
           @resize="syncPresentation"
@@ -579,7 +671,7 @@ onBeforeUnmount(() => {
             <input class="media-volume" aria-label="音量" type="range" min="0" max="1" step=".05" v-model.number="volume" @input="changeVolume" />
           </label>
           <label v-if="kind === 'video'" class="media-setting">播放方式
-            <select v-model="playbackMode" aria-label="播放方式" @change="retry"><option value="auto">兼容模式</option><option value="native">浏览器原生</option></select>
+            <select v-model="playbackMode" aria-label="播放方式" @change="changePlaybackMode"><option value="auto">自动</option><option value="compat">兼容模式</option><option value="native">浏览器原生</option></select>
           </label>
           <label v-if="streaming" class="media-setting">预缓冲时长
             <select v-model.number="bufferSeconds" aria-label="预缓冲时长"><option :value="0">自动</option><option :value="60">最多 60 秒</option><option :value="120">最多 120 秒</option></select>

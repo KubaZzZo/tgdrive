@@ -22,6 +22,7 @@ from app.services.accounts import AccountManager, Runtime, WorkspaceMiddleware, 
 from app.services.cdn import CDNMonitor
 from app.services.channel_sync import ChannelSyncService
 from app.services.media_cache import MIB, MediaSliceCache
+from app.services.thumbnails import ThumbnailCache
 from app.services.traffic import TrafficMiddleware, TrafficMonitor
 from app.services.uploads import UploadService, UploadSpace
 from app.storage import TelegramStorage
@@ -106,6 +107,7 @@ def create_app(
     app.state.storage = telegram
     app.state.traffic = traffic
     app.state.cdn = cdn
+    app.state.thumbnails = ThumbnailCache()
     app.state.media_cache = MediaSliceCache(
         cfg.media_cache_dir or cfg.data_dir / "media-slices",
         cfg.media_cache_max_mib * MIB,

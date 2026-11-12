@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { beforeEach, test } from 'node:test'
-import { mediaTime, playbackPosition, savePlayback } from '../src/utils/playback.ts'
+import { mediaTime, playbackPaths, playbackPosition, savedPlaybackMode, savePlayback, savePlaybackMode } from '../src/utils/playback.ts'
 const values = new Map<string, string>()
 Object.assign(globalThis, {
   localStorage: {
@@ -9,6 +9,14 @@ Object.assign(globalThis, {
   },
 })
 beforeEach(() => values.clear())
+test('automatic MP4 uses native first and saved manual modes control the order', () => {
+  assert.deepEqual(playbackPaths(savedPlaybackMode(), 'video', 'video/mp4'), ['native', 'compat'])
+  savePlaybackMode('compat')
+  assert.deepEqual(playbackPaths(savedPlaybackMode(), 'video', 'video/mp4'), ['compat', 'native'])
+  savePlaybackMode('native')
+  assert.deepEqual(playbackPaths(savedPlaybackMode(), 'video', 'video/mp4'), ['native'])
+  assert.deepEqual(playbackPaths('auto', 'audio', 'audio/mpeg'), ['native'])
+})
 test('playback progress restores valid positions and clears near the end', () => {
   savePlayback('video', 34, 120)
   assert.equal(playbackPosition('video', 120), 34)

@@ -180,7 +180,7 @@ def test_authenticated_media_probe_preserves_range_and_correlates_timing(
     assert response.status_code == 206 and response.content == b"cdefgh"
     assert len(calls) == 1
     args, kwargs = calls[0]
-    assert args[1] >= 0 and args[-2:] == (6, 6)
+    assert args[1] == "probe" and args[2] >= 0 and args[-2:] == (6, 6)
     assert kwargs["extra"]["request_id"] == response.headers["X-Request-ID"]
     assert client.get(url, headers={"Range": "bytes=2-7"}).status_code == 206
     assert len(calls) == 1

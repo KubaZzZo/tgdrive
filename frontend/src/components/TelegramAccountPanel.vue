@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api, ApiError, reloadAfterWorkspaceChange } from '@/api/client'
 import type { TelegramAccountStatus, TelegramChannel, TelegramLogin } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
@@ -10,7 +10,7 @@ import BaseModal from './BaseModal.vue'
 const auth = useAuthStore()
 const sync = useSyncStore()
 const uploads = useUploadStore()
-const open = ref(false)
+const emit = defineEmits<{ close: [] }>()
 const account = ref<TelegramAccountStatus | null>(null)
 const authRequired = computed(() => sync.status?.state === 'auth_required')
 const connected = computed(() => !authRequired.value && (account.value?.connected ?? auth.storage?.connected))
@@ -34,12 +34,10 @@ let timer: ReturnType<typeof setTimeout> | undefined
 let generation = 0
 let channelsRequested = false
 
-async function show(): Promise<void> {
-  open.value = true
-  error.value = ''
+onMounted(async () => {
   try { account.value = await api.telegramAccounts() }
   catch (cause) { error.value = cause instanceof Error ? cause.message : '读取账号失败' }
-}
+})
 function message(cause: unknown): void { error.value = cause instanceof Error ? cause.message : '操作失败，请重试' }
 function updateJob(result: TelegramLogin): void {
   job.value = result
@@ -67,7 +65,7 @@ async function begin(): Promise<void> {
 }
 function poll(version: number): void {
   timer = setTimeout(async () => {
-    if (!open.value || !job.value || version !== generation) return
+    if (!job.value || version !== generation) return
     try {
       const result = await api.telegramLoginStatus(job.value.id)
       if (version !== generation) return
@@ -173,18 +171,14 @@ async function close(): Promise<void> {
   password.value = ''
   const old = job.value
   job.value = null
-  open.value = false
+  emit('close')
   if (old) { try { await api.telegramCancelLogin(old.id) } catch { /* Expires server-side in 10 minutes. */ } }
 }
 onBeforeUnmount(() => { generation++; clearTimeout(timer); password.value = '' })
 </script>
 
 <template>
-  <button class="ghost telegram-button" :class="{ 'telegram-offline': !connected }" @click="show">
-    <span class="telegram-status-dot" :class="{ online: connected }" />
-    <span class="telegram-label-desktop">Telegram 账号</span><span class="telegram-label-mobile">账号</span>
-  </button>
-  <BaseModal :open="open" title="Telegram 账号与存储频道" wide @close="close">
+  <BaseModal open title="Telegram 账号与存储频道" wide @close="close">
     <div class="telegram-panel">
       <p v-if="account"><strong>{{ account.account?.first_name || account.account?.username || '当前账号' }}</strong> · {{ authRequired ? '需要重新登录' : connected ? '已连接' : '未连接' }}<br /><span class="muted">存储频道：{{ account.chat_id || '尚未配置' }}</span></p>
       <p class="muted">每个频道独立保存目录、上传任务和同步记录；切回原频道可继续访问原文件及分享链接。VPS 流量用量始终全局累计。</p>

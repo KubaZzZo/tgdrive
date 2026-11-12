@@ -1,5 +1,5 @@
 import { createFile, MP4BoxBuffer } from 'mp4box'
-import { boxes, type MediaSession } from './fragmentedMp4'
+import { boxes, type MediaSession, type MediaStage } from './fragmentedMp4'
 import { MediaTransfer, readMediaBytes, withMediaTimeout } from './mediaTransfer'
 
 const MiB = 1024 * 1024
@@ -89,6 +89,7 @@ export async function attachOrdinaryMp4(
   media: HTMLMediaElement, Source: typeof MediaSource, managed: boolean, prefix: Uint8Array,
   size: number, signal: AbortSignal, read: ReadRange, onError: () => void,
   bufferSeconds?: () => number | undefined,
+  onStage?: (stage: MediaStage) => void,
 ): Promise<MediaSession | null> {
   signal.throwIfAborted()
   const end = movieEnd(prefix, size)
@@ -96,7 +97,7 @@ export async function attachOrdinaryMp4(
   const header = new Uint8Array(end)
   header.set(prefix.subarray(0, end))
   try {
-    await withMediaTimeout(signal, 25_000, async request => {
+    await withMediaTimeout(signal, 4_000, async request => {
       if (prefix.length >= end) return
       const range = await read(prefix.length, end - 1, request)
       if (range.size !== size) {
@@ -142,8 +143,10 @@ export async function attachOrdinaryMp4(
   let initial: ReturnType<typeof parser>
   try { initial = parser(true) } catch { return null }
   if (!initial || signal.aborted) return null
+  onStage?.('remux-ready')
 
   const source = new Source() as MediaSource & { readonly streaming?: boolean }
+  if (onStage) source.addEventListener('sourceopen', () => onStage('source-open'), { once: true, signal })
   const objectUrl = URL.createObjectURL(source)
   const previousRemotePlayback = media.disableRemotePlayback
   if (managed) media.disableRemotePlayback = true
@@ -175,9 +178,8 @@ export async function attachOrdinaryMp4(
     let state = initial
     if (!state) return
     initial = null
-    const deadline = performance.now() + 15_000
     while (source.readyState !== 'open' || (managed && source.streaming === false)) {
-      if (performance.now() > deadline || media.error) throw new Error('Media source did not open')
+      if (media.error) throw new Error('Media source did not open')
       await wait(signal)
     }
     const buffer = source.addSourceBuffer(state.type)
@@ -297,5 +299,5 @@ export async function attachOrdinaryMp4(
     }
   }
   void pump().catch(() => { if (!signal.aborted && !disposed) onError() })
-  return { streaming: true, remuxed: true, dispose }
+  return { streaming: true, dispose }
 }
