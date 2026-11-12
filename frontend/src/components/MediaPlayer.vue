@@ -111,9 +111,9 @@ let session: MediaSession | undefined
 let controller = new AbortController()
 const streaming = ref(false)
 const startupBudgetMs = 15_000
+const nativeVideoStartupLimitMs = 180_000
 let startupTimer: ReturnType<typeof setTimeout> | undefined
 let startupStarted = 0
-let startupDeadline = 0
 let paths: PlaybackPath[] = []
 let prefix: MediaPrefix | undefined
 let playRequested = false
@@ -154,6 +154,7 @@ function save(): void {
 function metadata(): void {
   const media = player.value
   if (!media) return
+  startupProgress()
   syncPresentation()
   media.playbackRate = rate.value
   duration.value = Number.isFinite(media.duration) ? media.duration : 0
@@ -369,8 +370,7 @@ function recover(reason: string, message: string): void {
   if (!active) return
   trace(reason)
   save()
-  if (active.ready) startupDeadline = performance.now() + startupBudgetMs
-  const next = (!active.ready || active.path === 'compat') && performance.now() < startupDeadline && paths.shift()
+  const next = (!active.ready || active.path === 'compat') && paths.shift()
   if (next) {
     notice.value = next === 'native' ? '正在切换到浏览器原生播放…' : '正在切换到兼容播放…'
     void startAttempt(next)
@@ -385,8 +385,18 @@ function start(useCache = false): void {
   prefix = undefined
   paths = playbackPaths(playbackMode.value, props.kind, props.mime)
   startupStarted = performance.now()
-  startupDeadline = startupStarted + startupBudgetMs
   void startAttempt(paths.shift()!, useCache)
+}
+function waitForStartup(budget: number): void {
+  clearTimeout(startupTimer)
+  startupTimer = setTimeout(() => recover('startup-timeout', '媒体启动超时，请重试或下载后播放。'), budget)
+}
+function startupProgress(): void {
+  if (!active || active.ready || active.path !== 'native' || props.kind !== 'video' || localFile ||
+    !player.value?.getAttribute('src')) return
+  // Native playback can read a large MP4 index from the tail before reporting metadata.
+  const remaining = active.started + nativeVideoStartupLimitMs - performance.now()
+  waitForStartup(Math.max(0, Math.min(startupBudgetMs, remaining)))
 }
 async function startAttempt(path: PlaybackPath, useCache = false): Promise<void> {
   resetMedia()
@@ -401,9 +411,7 @@ async function startAttempt(path: PlaybackPath, useCache = false): Promise<void>
   if (!media) return
   active = { path, started: performance.now(), ready: false }
   trace('start')
-  const remaining = startupDeadline - performance.now()
-  const budget = paths.length ? Math.min(remaining, path === 'native' ? 5_000 : 8_000) : remaining
-  startupTimer = setTimeout(() => recover('startup-timeout', '媒体启动超时，请重试或下载后播放。'), budget)
+  waitForStartup(path === 'compat' && paths.length ? 8_000 : startupBudgetMs)
   try {
     if (useCache && cacheSupported && props.kind === 'video') {
       const hit = await cachedVideo(cacheKey(), props.size, path === 'compat')
@@ -560,6 +568,7 @@ onBeforeUnmount(() => {
           :poster="kind === 'video' ? poster : undefined"
           :aria-label="kind === 'video' ? '视频播放' : '音频播放'"
           @loadedmetadata="metadata"
+          @progress="startupProgress"
           @durationchange="metadata"
           @timeupdate="update"
           @seeking="seeking"

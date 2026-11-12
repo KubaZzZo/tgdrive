@@ -26,9 +26,13 @@ TARGET = 112
 sys.path[:0] = [str(ROOT), str(ROOT / "tests")]
 
 
-def make_video(ffmpeg: str, path: Path, *, indexed: bool | None) -> bytes:
+def make_video(ffmpeg: str, path: Path, *, indexed: bool | None, tail_index: bool = False) -> bytes:
     ordinary = indexed is None
-    flags = "+faststart" if ordinary else "+frag_keyframe+empty_moov+default_base_moof"
+    flags = (
+        ("0" if tail_index else "+faststart")
+        if ordinary
+        else "+frag_keyframe+empty_moov+default_base_moof"
+    )
     if indexed:
         flags += "+global_sidx"
     subprocess.run(
@@ -65,6 +69,7 @@ def make_video(ffmpeg: str, path: Path, *, indexed: bool | None) -> bytes:
     data = bytearray(path.read_bytes())
     if ordinary:
         movie = data.index(b"moov") - 4
+        assert (movie > len(data) // 2) == tail_index
         assert movie + struct.unpack_from(">I", data, movie)[0] > 65536
         return bytes(data)
     # Empty-movie FFmpeg fixtures leave the duration at zero. Set the movie
@@ -293,8 +298,40 @@ def exercise(
             print(json.dumps(sample), flush=True)
         item_id, data = files["ordinary.mp4"]
         verify_startup_fallback(page, item_id, len(data))
+        verify_slow_native_start(page, cdp)
         browser.close()
     return samples
+
+
+def verify_slow_native_start(page, cdp) -> None:
+    page.evaluate("localStorage.setItem('tgdrive_playback_mode', 'auto')")
+    cdp.send(
+        "Network.emulateNetworkConditions",
+        {"offline": False, "latency": 100, "downloadThroughput": 10000, "uploadThroughput": -1},
+    )
+    start = time.monotonic()
+    page.get_by_role("button", name="tail-index.mp4", exact=True).click()
+    try:
+        page.wait_for_function(
+            """() => {
+                const video = document.querySelector('.media-screen video');
+                return video?.readyState >= 2 && video.src.includes('/download');
+            }""",
+            timeout=60000,
+        )
+        elapsed = time.monotonic() - start
+        assert elapsed > 15, "Fixture must take longer than the startup inactivity window"
+        print(
+            json.dumps(
+                {"case": "slow native MP4 with tail index", "first_frame_ms": round(elapsed * 1000)}
+            )
+        )
+    finally:
+        cdp.send(
+            "Network.emulateNetworkConditions",
+            {"offline": False, "latency": 0, "downloadThroughput": -1, "uploadThroughput": -1},
+        )
+        page.get_by_role("button", name="关闭", exact=True).click()
 
 
 def verify_startup_fallback(page, item_id: str, size: int) -> None:
@@ -386,9 +423,17 @@ def main() -> None:
         app = create_app(make_settings(path, frontend_dist=ROOT / "static/dist"), storage=storage)
         files = {}
         for message_id, (name, indexed) in enumerate(
-            [("unindexed.mp4", False), ("indexed.mp4", True), ("ordinary.mp4", None)], start=1
+            [
+                ("unindexed.mp4", False),
+                ("indexed.mp4", True),
+                ("ordinary.mp4", None),
+                ("tail-index.mp4", None),
+            ],
+            start=1,
         ):
-            data = make_video(args.ffmpeg, path / name, indexed=indexed)
+            data = make_video(
+                args.ffmpeg, path / name, indexed=indexed, tail_index=name == "tail-index.mp4"
+            )
             storage.files[message_id] = data
             item = app.state.db.create_file(
                 name,
