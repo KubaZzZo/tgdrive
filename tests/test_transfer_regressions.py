@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from conftest import FakeTelegramStorage, make_settings
+from fastapi import HTTPException
 from telethon import TelegramClient
 from telethon.sessions import MemorySession
 from telethon.tl.types import InputDocumentFileLocation
@@ -94,12 +96,18 @@ def test_canceled_upload_removes_sent_segments(workdir):
     asyncio.run(run())
 
 
-def test_concurrent_chunks_do_not_overwrite_or_regress(workdir):
+@pytest.mark.parametrize("reconnected", [False, True])
+def test_concurrent_chunks_do_not_overwrite_or_regress(workdir, reconnected):
     async def run():
         path = workdir / "data.part"
         path.touch()
         db = Database(workdir / "concurrent.sqlite3")
         service = UploadService(db, FakeTelegramStorage())
+        second_service = (
+            UploadService(db, FakeTelegramStorage(), space=service.space, locks=service.locks)
+            if reconnected
+            else service
+        )
         record = db.create_upload(None, "data.bin", 8, None, str(path), 8)
         entered, release = asyncio.Event(), asyncio.Event()
 
@@ -118,7 +126,9 @@ def test_concurrent_chunks_do_not_overwrite_or_regress(workdir):
             upload_chunk(record["id"], Request(b"AAAAAAAA", True), db, service)
         )
         await asyncio.wait_for(entered.wait(), 2)
-        second = asyncio.create_task(upload_chunk(record["id"], Request(b"BBBB"), db, service))
+        second = asyncio.create_task(
+            upload_chunk(record["id"], Request(b"BBBB"), db, second_service)
+        )
         await asyncio.sleep(0)
         release.set()
         results = await asyncio.gather(first, second)
@@ -126,6 +136,86 @@ def test_concurrent_chunks_do_not_overwrite_or_regress(workdir):
         assert db.get_upload(record["id"])["received"] == 8
         assert path.read_bytes() == b"AAAAAAAA"
         db.close()
+
+    asyncio.run(run())
+
+
+def test_chunk_rolls_back_when_disk_reserve_is_reached(workdir, monkeypatch):
+    async def run():
+        path = workdir / "upload_disk.part"
+        path.write_bytes(b"old")
+        db = Database(workdir / "disk.sqlite3")
+        try:
+            service = UploadService(db, FakeTelegramStorage())
+            record = db.create_upload(None, "data.bin", 8, None, str(path), 8)
+            db.update_upload(record["id"], received=3)
+            free = iter([service.space.min_free_bytes + 4, service.space.min_free_bytes])
+            monkeypatch.setattr(
+                "app.services.uploads.shutil.disk_usage",
+                lambda _: SimpleNamespace(free=next(free)),
+            )
+
+            class Request:
+                headers = {"upload-offset": "3"}
+
+                async def stream(self):
+                    yield b"abc"
+                    yield b"de"
+
+            with pytest.raises(HTTPException) as failure:
+                await upload_chunk(record["id"], Request(), db, service)
+            assert failure.value.status_code == 507
+            assert path.read_bytes() == b"old"
+            assert db.get_upload(record["id"])["received"] == 3
+        finally:
+            db.close()
+
+    asyncio.run(run())
+
+
+def test_repeated_cancellation_waits_for_disk_write_before_rollback(workdir, monkeypatch):
+    async def run():
+        path = workdir / "upload_cancel.part"
+        path.write_bytes(b"old")
+        db = Database(workdir / "canceled-write.sqlite3")
+        service = UploadService(db, FakeTelegramStorage())
+        record = db.create_upload(None, "data.bin", 6, None, str(path), 8)
+        db.update_upload(record["id"], received=3)
+        loop = asyncio.get_running_loop()
+        entered = asyncio.Event()
+        release = Event()
+        original_write = service.space._write
+
+        def delayed_write(directory, file, data):
+            loop.call_soon_threadsafe(entered.set)
+            if not release.wait(5):
+                raise TimeoutError("test did not release the disk write")
+            original_write(directory, file, data)
+
+        monkeypatch.setattr(service.space, "_write", delayed_write)
+
+        class Request:
+            headers = {"upload-offset": "3"}
+
+            async def stream(self):
+                yield b"new"
+
+        task = asyncio.create_task(upload_chunk(record["id"], Request(), db, service))
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            for _ in range(2):
+                task.cancel()
+                await asyncio.sleep(0)
+            assert not task.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert path.read_bytes() == b"old"
+            assert db.get_upload(record["id"])["received"] == 3
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            db.close()
 
     asyncio.run(run())
 

@@ -3,19 +3,77 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import shutil
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from weakref import WeakValueDictionary
+
+from anyio import CancelScope
 
 from app.db import Database
 from app.services.image_host import MAX_IMAGE_SIZE, image_mime
 from app.storage import TelegramStorage
 
 logger = logging.getLogger("tgdrive.uploads")
+
+
+class UploadSpaceError(Exception):
+    pass
+
+
+class UploadSpace:
+    def __init__(self, max_mib: int = 51200, min_free_mib: int = 512):
+        self.max_bytes = max_mib * 1024**2
+        self.min_free_bytes = min_free_mib * 1024**2
+        self._lock = asyncio.Lock()
+
+    def _check(self, directory: Path, growth: int) -> None:
+        if self.max_bytes:
+            used = 0
+            for path in directory.glob("upload_*.part"):
+                try:
+                    used += path.stat().st_size
+                except FileNotFoundError:
+                    # A finished or canceled upload may have released space.
+                    continue
+            if used + growth > self.max_bytes:
+                raise UploadSpaceError("上传临时目录额度不足，请等待现有任务完成或取消后重试")
+        if shutil.disk_usage(directory).free < self.min_free_bytes + growth:
+            raise UploadSpaceError("上传磁盘可用空间不足，请释放空间后重试")
+
+    async def check_admission(self, directory: Path, size: int) -> None:
+        async with self._lock:
+            await asyncio.to_thread(self._check, directory, size)
+
+    def _write(self, directory: Path, file: BinaryIO, data: bytes) -> None:
+        self._check(directory, len(data))
+        if file.write(data) != len(data):
+            raise UploadSpaceError("上传磁盘空间不足，请释放空间后重试")
+
+    async def write(self, directory: Path, file: BinaryIO, data: bytes) -> None:
+        async with self._lock:
+            write = asyncio.get_running_loop().run_in_executor(
+                None, self._write, directory, file, data
+            )
+            try:
+                await asyncio.shield(write)
+            except asyncio.CancelledError:
+                # Let the disk write settle before the caller rolls back and closes the file.
+                with CancelScope(shield=True):
+                    while not write.done():
+                        try:
+                            await asyncio.shield(write)
+                        except asyncio.CancelledError:
+                            continue
+                        except Exception:
+                            break
+                    if not write.cancelled():
+                        write.exception()
+                raise
 
 
 def file_sha256(path: Path) -> str:
@@ -30,20 +88,27 @@ class UploadService:
     """Run browser-upload finalization outside the request lifecycle."""
 
     def __init__(
-        self, db: Database, storage: TelegramStorage, stale_hours: int = 72, concurrency: int = 2
+        self,
+        db: Database,
+        storage: TelegramStorage,
+        stale_hours: int = 72,
+        concurrency: int = 2,
+        space: UploadSpace | None = None,
+        locks: WeakValueDictionary[str, asyncio.Lock] | None = None,
     ):
         self.db = db
         self.storage = storage
         self.stale_hours = stale_hours
+        self.space = space if space is not None else UploadSpace()
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._closed = False
-        self._locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+        self.locks = locks if locks is not None else WeakValueDictionary[str, asyncio.Lock]()
         self._slots = asyncio.Semaphore(concurrency)
         self._maintenance: asyncio.Task[None] | None = None
 
     @asynccontextmanager
     async def lock(self, upload_id: str) -> AsyncIterator[None]:
-        lock = self._locks.setdefault(upload_id, asyncio.Lock())
+        lock = self.locks.setdefault(upload_id, asyncio.Lock())
         async with lock:
             yield
 

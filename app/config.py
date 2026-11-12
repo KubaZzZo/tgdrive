@@ -103,6 +103,10 @@ class Settings:
         default_factory=lambda: _env_int("MAX_FILE_SIZE", 0)
     )  # 0 = unlimited
     upload_stale_hours: int = field(default_factory=lambda: _env_int("UPLOAD_STALE_HOURS", 72))
+    upload_temp_max_mib: int = field(default_factory=lambda: _env_int("UPLOAD_TEMP_MAX_MIB", 51200))
+    upload_temp_min_free_mib: int = field(
+        default_factory=lambda: _env_int("UPLOAD_TEMP_MIN_FREE_MIB", 512)
+    )
 
     channel_sync_enabled: bool = field(
         default_factory=lambda: _env_bool("CHANNEL_SYNC_ENABLED", True)
@@ -177,6 +181,8 @@ class Settings:
             raise RuntimeError("登录限流配置必须大于 0")
         if self.upload_stale_hours < 0:
             raise RuntimeError("UPLOAD_STALE_HOURS 不能为负数")
+        if self.upload_temp_max_mib < 0 or self.upload_temp_min_free_mib < 0:
+            raise RuntimeError("上传临时目录额度和磁盘保留空间不能为负数")
         if self.is_production:
             if len(self.app_secret) < 32 or self.app_secret == "change-this-secret-in-env":
                 raise RuntimeError("生产环境必须配置至少 32 位的 APP_SECRET")

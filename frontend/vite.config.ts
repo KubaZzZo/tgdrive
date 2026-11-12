@@ -1,10 +1,21 @@
+import { readFileSync } from 'node:fs'
 import { fileURLToPath, URL } from 'node:url'
 
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vite'
 
+const version = readFileSync(new URL('../VERSION', import.meta.url), 'utf8').trim()
+
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    {
+      name: 'app-version',
+      transformIndexHtml() {
+        return [{ tag: 'meta', attrs: { name: 'application-version', content: version } }]
+      },
+    },
+  ],
   base: '/',
   resolve: {
     alias: {

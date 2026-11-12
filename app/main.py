@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.routes import accounts, auth, files, images, items, system, uploads
-from app.config import Settings
+from app.config import ROOT_DIR, Settings
 from app.config import settings as default_settings
 from app.core.errors import install_exception_handlers
 from app.core.logging import configure_logging
@@ -23,10 +23,11 @@ from app.services.cdn import CDNMonitor
 from app.services.channel_sync import ChannelSyncService
 from app.services.media_cache import MIB, MediaSliceCache
 from app.services.traffic import TrafficMiddleware, TrafficMonitor
-from app.services.uploads import UploadService
+from app.services.uploads import UploadService, UploadSpace
 from app.storage import TelegramStorage
 
 logger = logging.getLogger("tgdrive")
+APP_VERSION = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
 
 
 def create_app(
@@ -56,7 +57,11 @@ def create_app(
     traffic.cdn = cdn
     telegram.traffic = traffic
     upload_service = UploadService(
-        database, telegram, cfg.upload_stale_hours, cfg.upload_concurrency
+        database,
+        telegram,
+        cfg.upload_stale_hours,
+        cfg.upload_concurrency,
+        space=UploadSpace(cfg.upload_temp_max_mib, cfg.upload_temp_min_free_mib),
     )
 
     channel_sync = ChannelSyncService(database, telegram, cfg)
@@ -74,7 +79,8 @@ def create_app(
         if telegram.error:
             logger.warning("Telegram unavailable: %s", telegram.error)
         logger.info(
-            "TG Drive started env=%s db_schema=%s storage_configured=%s",
+            "TG Drive started version=%s env=%s db_schema=%s storage_configured=%s",
+            APP_VERSION,
             cfg.app_env,
             database.schema_version(),
             cfg.is_configured,
@@ -89,7 +95,7 @@ def create_app(
 
     app = FastAPI(
         title=cfg.app_name,
-        version="2.1.1",
+        version=APP_VERSION,
         docs_url=None if cfg.is_production else "/api/docs",
         redoc_url=None,
         openapi_url=None if cfg.is_production else "/api/openapi.json",

@@ -8,6 +8,7 @@ COPY frontend/package.json frontend/package-lock.json ./frontend/
 RUN cd frontend && npm ci --no-audit --no-fund
 
 COPY frontend/ ./frontend/
+COPY VERSION ./
 RUN cd frontend && npm run build
 
 # ---- Python 运行阶段 ----
@@ -40,6 +41,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=app:app app/ ./app/
+COPY --chown=app:app VERSION ./
 COPY --chown=app:app scripts/ ./scripts/
 COPY --from=frontend --chown=app:app /src/static/dist/ ./static/dist/
 

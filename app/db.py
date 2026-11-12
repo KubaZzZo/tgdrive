@@ -15,7 +15,7 @@ from app.categories import CATEGORY_LABELS, classify_file, effective_mime
 from app.people import MAX_PERSON_LENGTH, person_key
 from app.person_names import chinese_person_name
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 PEOPLE_AI_MAX_ATTEMPTS = 3
 
 
@@ -296,6 +296,21 @@ class Database:
                                 SELECT 1 FROM video_people p
                                 WHERE p.item_id=e.item_id AND p.person_key=e.person_key))""")
                     self.conn.execute("PRAGMA user_version=14")
+
+            if current < 15:
+                with self.conn:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    self.conn.execute("""CREATE TABLE IF NOT EXISTS telegram_cleanup (
+                        chat_id TEXT NOT NULL, message_id INTEGER NOT NULL,
+                        batch_id TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+                        retry_at REAL NOT NULL DEFAULT 0, last_error TEXT,
+                        PRIMARY KEY (chat_id, message_id)
+                    )""")
+                    self.conn.execute("""CREATE INDEX IF NOT EXISTS idx_telegram_cleanup_due
+                        ON telegram_cleanup(chat_id, retry_at)""")
+                    self.conn.execute("""CREATE INDEX IF NOT EXISTS idx_telegram_cleanup_batch
+                        ON telegram_cleanup(batch_id)""")
+                    self.conn.execute("PRAGMA user_version=15")
 
     def publish_image(self, item_id: str, token: str, mime: str) -> dict[str, Any]:
         with self._lock, self.conn:
@@ -786,28 +801,50 @@ class Database:
         return self.get_item(item_id)  # type: ignore[return-value]
 
     def rename_item(self, item_id: str, name: str) -> dict[str, Any] | None:
-        name = self._clean_name(name)
-        with self._lock, self.conn:
-            item = self.get_item(item_id)
-            if not item:
-                return None
-            category = classify_file(name, item["mime"]) if item["kind"] == "file" else None
-            self.conn.execute(
-                "UPDATE items SET name = ?, category = ?, updated_at = ? WHERE id = ?",
-                (name, category, utcnow(), item_id),
-            )
-            self.conn.execute(
-                "UPDATE channel_messages SET remote_name='' WHERE item_id=?", (item_id,)
-            )
-        return self.get_item(item_id)
+        return self.update_item(item_id, name=name)
 
     def move_item(self, item_id: str, parent_id: str | None) -> dict[str, Any] | None:
+        return self.update_item(item_id, move=True, parent_id=parent_id)
+
+    def update_item(
+        self,
+        item_id: str,
+        *,
+        name: str | None = None,
+        move: bool = False,
+        parent_id: str | None = None,
+    ) -> dict[str, Any] | None:
         with self._lock, self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            item = self.get_item(item_id)
+            if not item or (name is None and not move):
+                return item
+            if move and parent_id is not None:
+                parent = self.get_item(parent_id)
+                if not parent:
+                    raise LookupError("目标文件夹不存在")
+                if parent["kind"] != "folder":
+                    raise ValueError("目标不是文件夹")
+                if self.is_descendant(parent_id, item_id):
+                    raise ValueError("不能移动到自身或其子目录")
+            category = item["category"]
+            if name is not None:
+                name = self._clean_name(name)
+                category = classify_file(name, item["mime"]) if item["kind"] == "file" else None
+                self.conn.execute(
+                    "UPDATE channel_messages SET remote_name='' WHERE item_id=?", (item_id,)
+                )
             self.conn.execute(
-                "UPDATE items SET parent_id = ?, updated_at = ? WHERE id = ?",
-                (parent_id, utcnow(), item_id),
+                "UPDATE items SET parent_id=?, name=?, category=?, updated_at=? WHERE id=?",
+                (
+                    parent_id if move else item["parent_id"],
+                    name if name is not None else item["name"],
+                    category,
+                    utcnow(),
+                    item_id,
+                ),
             )
-        return self.get_item(item_id)
+            return self.get_item(item_id)
 
     def is_descendant(self, item_id: str, possible_ancestor: str) -> bool:
         current: str | None = item_id
@@ -820,12 +857,14 @@ class Database:
             current = item.get("parent_id") if item else None
         return False
 
-    def delete_tree(self, item_id: str) -> dict[str, Any]:
-        """Delete an item and all children. Returns Telegram message ids to delete."""
-        with self._lock:
+    def delete_tree(self, item_id: str, *, fallback_chat_id: str = "") -> dict[str, Any]:
+        """Delete the tree and persist its Telegram cleanup in the same transaction."""
+        batch_id = uuid.uuid4().hex
+        with self._lock, self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
             item = self.get_item(item_id)
             if not item:
-                return {"deleted": 0, "message_ids": []}
+                return {"deleted": 0, "message_ids": [], "batch_id": batch_id}
 
             ids: list[str] = []
             queue = [item_id]
@@ -839,14 +878,67 @@ class Database:
 
             placeholders = ",".join("?" for _ in ids)
             message_rows = self.conn.execute(
-                f"SELECT DISTINCT tg_message_id FROM file_parts WHERE item_id IN ({placeholders})",
+                f"""SELECT DISTINCT items.tg_chat_id, file_parts.tg_message_id
+                    FROM file_parts JOIN items ON items.id=file_parts.item_id
+                    WHERE item_id IN ({placeholders})""",
                 ids,
             ).fetchall()
-            message_ids = [int(r["tg_message_id"]) for r in message_rows]
+            messages = {
+                (row["tg_chat_id"] or fallback_chat_id, int(row["tg_message_id"]))
+                for row in message_rows
+            }
+            self.conn.executemany(
+                """INSERT INTO telegram_cleanup(chat_id, message_id, batch_id) VALUES (?,?,?)
+                   ON CONFLICT(chat_id, message_id) DO UPDATE SET batch_id=excluded.batch_id""",
+                [(chat_id, message_id, batch_id) for chat_id, message_id in messages],
+            )
+            self.conn.executemany(
+                """INSERT INTO channel_messages(chat_id,message_id,state) VALUES (?,?,'deleted')
+                   ON CONFLICT(chat_id,message_id) DO UPDATE SET state='deleted',item_id=NULL""",
+                messages,
+            )
+            self.conn.execute("DELETE FROM items WHERE id=?", (item_id,))
+            return {
+                "deleted": len(ids),
+                "message_ids": sorted({message_id for _, message_id in messages}),
+                "batch_id": batch_id,
+            }
 
-            with self.conn:
-                self.conn.execute(f"DELETE FROM items WHERE id IN ({placeholders})", ids)
-            return {"deleted": len(ids), "message_ids": message_ids}
+    def due_telegram_cleanup(
+        self, chat_id: str, now: float, batch_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM telegram_cleanup WHERE chat_id=? AND retry_at<=?"
+        params: list[Any] = [chat_id, now]
+        if batch_id is not None:
+            sql += " AND batch_id=?"
+            params.append(batch_id)
+        with self._lock:
+            rows = self.conn.execute(sql + " ORDER BY retry_at, message_id LIMIT 100", params)
+            return [dict(row) for row in rows]
+
+    def has_telegram_cleanup(self, batch_id: str) -> bool:
+        with self._lock:
+            return (
+                self.conn.execute(
+                    "SELECT 1 FROM telegram_cleanup WHERE batch_id=? LIMIT 1", (batch_id,)
+                ).fetchone()
+                is not None
+            )
+
+    def finish_telegram_cleanup(self, chat_id: str, message_ids: list[int]) -> None:
+        with self._lock, self.conn:
+            self.conn.executemany(
+                "DELETE FROM telegram_cleanup WHERE chat_id=? AND message_id=?",
+                [(chat_id, message_id) for message_id in message_ids],
+            )
+
+    def defer_telegram_cleanup(self, chat_id: str, failures: list[tuple[float, str, int]]) -> None:
+        with self._lock, self.conn:
+            self.conn.executemany(
+                """UPDATE telegram_cleanup SET attempts=attempts+1, retry_at=?, last_error=?
+                   WHERE message_id=? AND chat_id=?""",
+                [(*failure, chat_id) for failure in failures],
+            )
 
     @staticmethod
     def _clean_name(name: str) -> str:
