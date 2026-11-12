@@ -53,7 +53,10 @@ async def publish_image(
         mime = image_mime(bytes(header))
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
-    hosted = db.publish_image(item_id, secrets.token_urlsafe(24), mime)
+    try:
+        hosted = db.publish_image(item_id, secrets.token_urlsafe(24), mime)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from None
     return {**hosted, "url": image_url(hosted["token"])}
 
 

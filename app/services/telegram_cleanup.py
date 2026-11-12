@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from telethon.errors import FloodWaitError, MessageDeleteForbiddenError, MessageIdInvalidError
@@ -11,6 +12,7 @@ from app.db import Database
 from app.storage import TelegramStorage
 
 logger = logging.getLogger("tgdrive.telegram_cleanup")
+TRASH_RETENTION_DAYS = 30
 
 
 class TelegramCleanup:
@@ -33,10 +35,26 @@ class TelegramCleanup:
     async def _run(self) -> None:
         while True:
             try:
+                cutoff = datetime.now(UTC) - timedelta(days=TRASH_RETENTION_DAYS)
+                self.purge_trash(cutoff.isoformat(), single_batch=True)
                 await self.process()
             except Exception:
                 logger.exception("Telegram cleanup worker failed")
             await asyncio.sleep(15)
+
+    def purge_trash(self, cutoff: str, *, single_batch: bool = False) -> int:
+        chat = self.storage.chat
+        chat_id = str(chat) if chat is not None else ""
+        deleted = 0
+        while ids := self.db.trash_ids(cutoff, 50):
+            for item_id in ids:
+                result = self.db.delete_tree(
+                    item_id, fallback_chat_id=chat_id, trashed_before=cutoff
+                )
+                deleted += result["deleted"]
+            if single_batch:
+                break
+        return deleted
 
     async def process(self, batch_id: str | None = None) -> None:
         if self.storage.chat is None:

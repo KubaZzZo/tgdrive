@@ -15,7 +15,7 @@ from app.categories import CATEGORY_LABELS, classify_file, effective_mime
 from app.people import MAX_PERSON_LENGTH, person_key
 from app.person_names import chinese_person_name
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 PEOPLE_AI_MAX_ATTEMPTS = 3
 
 
@@ -312,8 +312,25 @@ class Database:
                         ON telegram_cleanup(batch_id)""")
                     self.conn.execute("PRAGMA user_version=15")
 
+            if current < 16:
+                with self.conn:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(items)")}
+                    for column in ("trash_root", "trashed_at", "trash_parent_id"):
+                        if column not in columns:
+                            self.conn.execute(f"ALTER TABLE items ADD COLUMN {column} TEXT")
+                    self.conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_items_trash_root ON items(trash_root)"
+                    )
+                    self.conn.execute("""CREATE INDEX IF NOT EXISTS idx_items_trash_expiry ON items(trashed_at)
+                        WHERE trash_root=id""")
+                    self.conn.execute("PRAGMA user_version=16")
+
     def publish_image(self, item_id: str, token: str, mime: str) -> dict[str, Any]:
         with self._lock, self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            if not self.get_item(item_id):
+                raise LookupError("图片不存在")
             self.conn.execute(
                 "INSERT OR IGNORE INTO image_hosts VALUES (?,?,?,?)",
                 (item_id, token, mime, utcnow()),
@@ -332,7 +349,8 @@ class Database:
 
     def list_hosted_images(self, query: str, limit: int, offset: int) -> tuple[list[dict], int]:
         with self._lock:
-            where = " FROM image_hosts h JOIN items i ON i.id=h.item_id WHERE instr(lower(i.name),lower(?))>0"
+            where = """ FROM image_hosts h JOIN items i ON i.id=h.item_id
+                        WHERE i.trash_root IS NULL AND instr(lower(i.name),lower(?))>0"""
             total = self.conn.execute("SELECT COUNT(*)" + where, (query,)).fetchone()[0]
             rows = self.conn.execute(
                 "SELECT i.*,h.token,h.mime AS hosted_mime,h.created_at AS published_at"
@@ -506,12 +524,14 @@ class Database:
         with self._lock:
             if parent_id:
                 rows = self.conn.execute(
-                    "SELECT * FROM items WHERE parent_id = ? ORDER BY kind ASC, lower(name) ASC",
+                    """SELECT * FROM items WHERE parent_id = ? AND trash_root IS NULL
+                       ORDER BY kind ASC, lower(name) ASC""",
                     (parent_id,),
                 ).fetchall()
             else:
                 rows = self.conn.execute(
-                    "SELECT * FROM items WHERE parent_id IS NULL ORDER BY kind ASC, lower(name) ASC"
+                    """SELECT * FROM items WHERE parent_id IS NULL AND trash_root IS NULL
+                       ORDER BY kind ASC, lower(name) ASC"""
                 ).fetchall()
         return [dict(r) for r in rows]
 
@@ -523,13 +543,22 @@ class Database:
         category: str | None = None,
         query: str = "",
         person: str | None = None,
+        kind: str | None = None,
+        created_from: str | None = None,
+        created_to: str | None = None,
+        min_size: int | None = None,
+        max_size: int | None = None,
+        extension: str | None = None,
         sort: str = "name",
         direction: str = "asc",
         limit: int = 60,
         offset: int = 0,
     ) -> tuple[list[dict[str, Any]], int]:
-        conditions: list[str] = []
+        conditions = ["trash_root IS NULL"]
         params: list[Any] = []
+        if kind:
+            conditions.append("kind=?")
+            params.append(kind)
         if category:
             conditions.extend(["kind='file'", "category=?"])
             params.append(category)
@@ -543,6 +572,21 @@ class Database:
             # instr treats %, _ and backslashes literally rather than as LIKE wildcards.
             conditions.append("instr(lower(name), lower(?)) > 0")
             params.append(query)
+        if any(value is not None for value in (min_size, max_size, extension)):
+            conditions.append("kind='file'")
+        for condition, value in (
+            ("date(created_at)>=?", created_from),
+            ("date(created_at)<=?", created_to),
+            ("size>=?", min_size),
+            ("size<=?", max_size),
+        ):
+            if value is not None:
+                conditions.append(condition)
+                params.append(value)
+        if extension is not None:
+            suffix = f".{extension}"
+            conditions.append("substr(lower(name), -length(?))=lower(?)")
+            params.extend((suffix, suffix))
         if person is not None:
             conditions.extend(
                 [
@@ -551,7 +595,7 @@ class Database:
                 ]
             )
             params.append(person_key(person))
-        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        where = " WHERE " + " AND ".join(conditions)
         column = {
             "name": "name COLLATE NOCASE",
             "size": "size",
@@ -574,7 +618,7 @@ class Database:
                             MIN(p.display_name) AS display_name, COUNT(p.item_id) AS count
                      FROM (
                          SELECT p.* FROM effective_video_people p JOIN items i ON i.id=p.item_id
-                         WHERE i.category='video'
+                         WHERE i.category='video' AND i.trash_root IS NULL
                          UNION ALL
                          SELECT NULL, person_key, name, NULL, '[]' FROM people_labels
                          WHERE name IS NOT NULL
@@ -609,7 +653,7 @@ class Database:
         with self._lock:
             label = self.conn.execute(
                 """SELECT MIN(p.display_name) FROM effective_video_people p JOIN items i ON i.id=p.item_id
-                   WHERE i.category='video' AND p.person_key=?""",
+                   WHERE i.category='video' AND i.trash_root IS NULL AND p.person_key=?""",
                 (person_key(name),),
             ).fetchone()[0]
         return label or chinese_person_name(name)
@@ -674,7 +718,7 @@ class Database:
                     """SELECT name FROM people_labels WHERE person_key=? AND name IS NOT NULL
                        UNION ALL
                        SELECT p.name FROM effective_video_people p JOIN items i ON i.id=p.item_id
-                       WHERE p.person_key=? AND i.category='video' LIMIT 1""",
+                       WHERE p.person_key=? AND i.category='video' AND i.trash_root IS NULL LIMIT 1""",
                     (key, key),
                 ).fetchone()
                 if label is None:
@@ -694,7 +738,8 @@ class Database:
     def category_stats(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self.conn.execute(
-                "SELECT category, COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes FROM items WHERE kind='file' GROUP BY category"
+                """SELECT category, COUNT(*) AS count, COALESCE(SUM(size), 0) AS bytes
+                   FROM items WHERE kind='file' AND trash_root IS NULL GROUP BY category"""
             ).fetchall()
         counts = {row["category"]: dict(row) for row in rows}
         return [
@@ -707,9 +752,12 @@ class Database:
             for key, label in CATEGORY_LABELS.items()
         ]
 
-    def get_item(self, item_id: str) -> dict[str, Any] | None:
+    def get_item(self, item_id: str, *, include_trash: bool = False) -> dict[str, Any] | None:
+        sql = "SELECT * FROM items WHERE id = ?"
+        if not include_trash:
+            sql += " AND trash_root IS NULL"
         with self._lock:
-            row = self.conn.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
+            row = self.conn.execute(sql, (item_id,)).fetchone()
         return self._dict(row)
 
     def get_parts(self, item_id: str) -> list[dict[str, Any]]:
@@ -738,15 +786,54 @@ class Database:
 
     def create_folder(self, name: str, parent_id: str | None) -> dict[str, Any]:
         name = self._clean_name(name)
+        with self._lock, self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            self._require_folder(parent_id)
+            return self._insert_folder(name, parent_id)
+
+    def _require_folder(self, parent_id: str | None) -> None:
+        if parent_id is None:
+            return
+        parent = self.get_item(parent_id)
+        if not parent:
+            raise LookupError("目标文件夹不存在")
+        if parent["kind"] != "folder":
+            raise ValueError("目标不是文件夹")
+
+    def _insert_folder(self, name: str, parent_id: str | None) -> dict[str, Any]:
         now = utcnow()
         item_id = uuid.uuid4().hex
-        with self._lock, self.conn:
-            self.conn.execute(
-                "INSERT INTO items (id, parent_id, kind, name, size, mime, created_at, updated_at) "
-                "VALUES (?, ?, 'folder', ?, 0, NULL, ?, ?)",
-                (item_id, parent_id, name, now, now),
-            )
+        self.conn.execute(
+            "INSERT INTO items (id, parent_id, kind, name, size, mime, created_at, updated_at) "
+            "VALUES (?, ?, 'folder', ?, 0, NULL, ?, ?)",
+            (item_id, parent_id, name, now, now),
+        )
         return self.get_item(item_id)  # type: ignore[return-value]
+
+    def create_folder_paths(self, parent_id: str | None, paths: list[list[str]]) -> list[str]:
+        cleaned = [
+            tuple(self._clean_name(segment, preserve_spaces=True) for segment in path)
+            for path in paths
+        ]
+        with self._lock, self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            self._require_folder(parent_id)
+            resolved: dict[tuple[str, ...], str] = {}
+            for path in cleaned:
+                for depth in range(1, len(path) + 1):
+                    prefix = path[:depth]
+                    if prefix in resolved:
+                        continue
+                    parent = resolved[prefix[:-1]] if depth > 1 else parent_id
+                    row = self.conn.execute(
+                        """SELECT id FROM items WHERE parent_id IS ? AND name=?
+                           AND kind='folder' AND trash_root IS NULL ORDER BY id LIMIT 1""",
+                        (parent, prefix[-1]),
+                    ).fetchone()
+                    resolved[prefix] = (
+                        row["id"] if row else self._insert_folder(prefix[-1], parent)["id"]
+                    )
+            return [resolved[path] for path in cleaned]
 
     def create_file(
         self,
@@ -764,6 +851,8 @@ class Database:
         now = utcnow()
         item_id = uuid.uuid4().hex
         with self._lock, self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            self._require_folder(parent_id)
             self.conn.execute(
                 "INSERT INTO items "
                 "(id, parent_id, kind, name, size, mime, sha256, tg_chat_id, created_at, updated_at, category) "
@@ -819,13 +908,9 @@ class Database:
             item = self.get_item(item_id)
             if not item or (name is None and not move):
                 return item
-            if move and parent_id is not None:
-                parent = self.get_item(parent_id)
-                if not parent:
-                    raise LookupError("目标文件夹不存在")
-                if parent["kind"] != "folder":
-                    raise ValueError("目标不是文件夹")
-                if self.is_descendant(parent_id, item_id):
+            if move:
+                self._require_folder(parent_id)
+                if parent_id is not None and self.is_descendant(parent_id, item_id):
                     raise ValueError("不能移动到自身或其子目录")
             category = item["category"]
             if name is not None:
@@ -857,31 +942,111 @@ class Database:
             current = item.get("parent_id") if item else None
         return False
 
-    def delete_tree(self, item_id: str, *, fallback_chat_id: str = "") -> dict[str, Any]:
+    def trash_tree(self, item_id: str) -> int:
+        with self._lock, self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            if not self.get_item(item_id):
+                return 0
+            return self._trash_tree(item_id)
+
+    def trash_items(self, item_ids: list[str]) -> set[str]:
+        with self._lock, self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            paths = {item_id: self.get_path(item_id) for item_id in item_ids}
+            active = {item_id for item_id, path in paths.items() if path}
+            for item_id in active:
+                if not any(parent["id"] in active for parent in paths[item_id][:-1]):
+                    self._trash_tree(item_id)
+            trashed = set(active)
+            for item_id in paths.keys() - active:
+                item = self.get_item(item_id, include_trash=True)
+                if item and item["trash_root"] is not None:
+                    trashed.add(item_id)
+            return trashed
+
+    def _trash_tree(self, item_id: str) -> int:
+        self.conn.execute(
+            """WITH RECURSIVE tree(id) AS (
+                   SELECT ? UNION ALL SELECT i.id FROM items i JOIN tree ON i.parent_id=tree.id
+                   WHERE i.trash_root IS NULL
+               )
+               UPDATE items SET trash_root=?, trashed_at=? WHERE id IN (SELECT id FROM tree)""",
+            (item_id, item_id, utcnow()),
+        )
+        count = self.conn.execute("SELECT changes()").fetchone()[0]
+        self.conn.execute(
+            "UPDATE items SET trash_parent_id=parent_id, parent_id=NULL WHERE id=?", (item_id,)
+        )
+        return int(count)
+
+    def list_trash(self, limit: int, offset: int) -> tuple[list[dict], int]:
+        with self._lock:
+            total = self.conn.execute("SELECT COUNT(*) FROM items WHERE trash_root=id").fetchone()[
+                0
+            ]
+            rows = self.conn.execute(
+                """SELECT * FROM items WHERE trash_root=id
+                   ORDER BY trashed_at DESC, id LIMIT ? OFFSET ?""",
+                (limit, offset),
+            )
+            return [dict(row) for row in rows], total
+
+    def restore_trash(self, item_id: str) -> dict[str, Any] | None:
+        with self._lock, self.conn:
+            self.conn.execute("BEGIN IMMEDIATE")
+            item = self.get_item(item_id, include_trash=True)
+            if not item or item["trash_root"] != item_id:
+                return None
+            original_parent = item["trash_parent_id"]
+            parent = self.get_item(original_parent) if original_parent else None
+            parent_id = original_parent if parent and parent["kind"] == "folder" else None
+            self.conn.execute(
+                "UPDATE items SET parent_id=?, trash_parent_id=NULL WHERE id=?",
+                (parent_id, item_id),
+            )
+            self.conn.execute(
+                "UPDATE items SET trash_root=NULL, trashed_at=NULL WHERE trash_root=?", (item_id,)
+            )
+            return self.get_item(item_id)
+
+    def trash_ids(self, before: str, limit: int) -> list[str]:
+        with self._lock:
+            return [
+                row[0]
+                for row in self.conn.execute(
+                    """SELECT id FROM items WHERE trash_root=id AND trashed_at<=?
+                       ORDER BY trashed_at, id LIMIT ?""",
+                    (before, limit),
+                )
+            ]
+
+    def delete_tree(
+        self,
+        item_id: str,
+        *,
+        fallback_chat_id: str = "",
+        trashed_before: str | None = None,
+    ) -> dict[str, Any]:
         """Delete the tree and persist its Telegram cleanup in the same transaction."""
         batch_id = uuid.uuid4().hex
         with self._lock, self.conn:
             self.conn.execute("BEGIN IMMEDIATE")
-            item = self.get_item(item_id)
-            if not item:
+            item = self.get_item(item_id, include_trash=trashed_before is not None)
+            if not item or (
+                trashed_before is not None
+                and (item["trash_root"] != item_id or item["trashed_at"] > trashed_before)
+            ):
                 return {"deleted": 0, "message_ids": [], "batch_id": batch_id}
 
-            ids: list[str] = []
-            queue = [item_id]
-            while queue:
-                current = queue.pop()
-                ids.append(current)
-                rows = self.conn.execute(
-                    "SELECT id FROM items WHERE parent_id = ?", (current,)
-                ).fetchall()
-                queue.extend(r["id"] for r in rows)
-
-            placeholders = ",".join("?" for _ in ids)
+            tree = """WITH RECURSIVE tree(id) AS (
+                SELECT ? UNION ALL SELECT i.id FROM items i JOIN tree ON i.parent_id=tree.id
+            ) """
+            count = self.conn.execute(tree + "SELECT COUNT(*) FROM tree", (item_id,)).fetchone()[0]
             message_rows = self.conn.execute(
-                f"""SELECT DISTINCT items.tg_chat_id, file_parts.tg_message_id
-                    FROM file_parts JOIN items ON items.id=file_parts.item_id
-                    WHERE item_id IN ({placeholders})""",
-                ids,
+                tree
+                + """SELECT DISTINCT items.tg_chat_id, file_parts.tg_message_id
+                          FROM tree JOIN items USING (id) JOIN file_parts ON file_parts.item_id=tree.id""",
+                (item_id,),
             ).fetchall()
             messages = {
                 (row["tg_chat_id"] or fallback_chat_id, int(row["tg_message_id"]))
@@ -899,7 +1064,7 @@ class Database:
             )
             self.conn.execute("DELETE FROM items WHERE id=?", (item_id,))
             return {
-                "deleted": len(ids),
+                "deleted": count,
                 "message_ids": sorted({message_id for _, message_id in messages}),
                 "batch_id": batch_id,
             }
@@ -941,13 +1106,14 @@ class Database:
             )
 
     @staticmethod
-    def _clean_name(name: str) -> str:
-        name = (name or "").strip()
-        if not name:
+    def _clean_name(name: str, *, preserve_spaces: bool = False) -> str:
+        trimmed = (name or "").strip()
+        if not trimmed:
             raise ValueError("名称不能为空")
+        name = name if preserve_spaces else trimmed
         if len(name) > 255:
             raise ValueError("名称过长")
-        if "/" in name or "\\" in name or name in {".", ".."}:
+        if "/" in name or "\\" in name or trimmed in {".", ".."}:
             raise ValueError("名称包含非法字符")
         return name
 
@@ -1182,7 +1348,7 @@ class Database:
                     (file["remote_version"], chat_id, message_id),
                 )
                 if seen["item_id"] and seen["media_key"] == file["media_key"]:
-                    item = self.get_item(seen["item_id"])
+                    item = self.get_item(seen["item_id"], include_trash=True)
                     previous = seen["remote_name"]
                     if previous is None:
                         candidates = {
@@ -1209,7 +1375,7 @@ class Database:
                     return changed or people_changed
                 if not seen["item_id"]:
                     return False
-                item = self.get_item(seen["item_id"])
+                item = self.get_item(seen["item_id"], include_trash=True)
                 same_post = (seen["media_key"] or "").startswith("bot:") and seen[
                     "remote_version"
                 ] == file["remote_version"]
@@ -1385,7 +1551,9 @@ class Database:
         with self._lock:
             return int(
                 self.conn.execute(
-                    "SELECT COUNT(*) FROM items WHERE source='channel' AND tg_chat_id=?", (chat_id,)
+                    """SELECT COUNT(*) FROM items WHERE source='channel' AND tg_chat_id=?
+                   AND trash_root IS NULL""",
+                    (chat_id,),
                 ).fetchone()[0]
             )
 
@@ -1393,24 +1561,46 @@ class Database:
 
     def create_share(self, item_id: str, token: str, expires_at: str | None) -> dict[str, Any]:
         with self._lock, self.conn:
-            self.conn.execute(
-                "INSERT INTO shares (token, item_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
-                (token, item_id, utcnow(), expires_at),
+            cursor = self.conn.execute(
+                """INSERT INTO shares (token, item_id, created_at, expires_at)
+                   SELECT ?, id, ?, ? FROM items WHERE id=? AND kind='file' AND trash_root IS NULL""",
+                (token, utcnow(), expires_at, item_id),
             )
+            if not cursor.rowcount:
+                raise LookupError("文件不存在")
         return {"token": token, "item_id": item_id, "expires_at": expires_at}
 
     def get_share(self, token: str) -> dict[str, Any] | None:
         with self._lock:
             row = self.conn.execute(
                 "SELECT s.*, i.name, i.kind, i.size, i.mime, i.parent_id "
-                "FROM shares s JOIN items i ON i.id = s.item_id WHERE s.token = ?",
+                "FROM shares s JOIN items i ON i.id = s.item_id WHERE s.token = ? AND i.trash_root IS NULL",
                 (token,),
             ).fetchone()
         return self._dict(row)
 
-    def delete_share(self, token: str) -> None:
+    def list_shares(self, limit: int, offset: int) -> tuple[list[dict], int]:
+        with self._lock:
+            total = self.conn.execute("SELECT COUNT(*) FROM shares").fetchone()[0]
+            rows = self.conn.execute(
+                """SELECT s.*, i.name, i.trash_root IS NOT NULL AS suspended
+                   FROM shares s JOIN items i ON i.id=s.item_id
+                   ORDER BY s.created_at DESC, s.token LIMIT ? OFFSET ?""",
+                (limit, offset),
+            )
+            return [dict(row) for row in rows], total
+
+    def update_share(self, token: str, expires_at: str | None) -> bool:
         with self._lock, self.conn:
-            self.conn.execute("DELETE FROM shares WHERE token = ?", (token,))
+            return bool(
+                self.conn.execute(
+                    "UPDATE shares SET expires_at=? WHERE token=?", (expires_at, token)
+                ).rowcount
+            )
+
+    def delete_share(self, token: str) -> bool:
+        with self._lock, self.conn:
+            return bool(self.conn.execute("DELETE FROM shares WHERE token = ?", (token,)).rowcount)
 
     # ---------- stats ----------
 
@@ -1418,9 +1608,9 @@ class Database:
         with self._lock:
             row = self.conn.execute(
                 "SELECT COALESCE(SUM(size), 0) AS bytes, COUNT(*) AS files "
-                "FROM items WHERE kind = 'file'"
+                "FROM items WHERE kind = 'file' AND trash_root IS NULL"
             ).fetchone()
             folders = self.conn.execute(
-                "SELECT COUNT(*) AS n FROM items WHERE kind = 'folder'"
+                "SELECT COUNT(*) AS n FROM items WHERE kind = 'folder' AND trash_root IS NULL"
             ).fetchone()["n"]
         return {"bytes": int(row["bytes"]), "files": int(row["files"]), "folders": int(folders)}

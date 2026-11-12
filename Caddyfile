@@ -52,6 +52,9 @@
 		-Server
 	}
 
+	# 分享路径包含访问令牌。
+	log_skip /s/*
+
 	log {
 		output stdout
 		format json
