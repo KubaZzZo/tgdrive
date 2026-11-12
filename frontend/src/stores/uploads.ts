@@ -77,10 +77,17 @@ export const useUploadStore = defineStore('uploads', () => {
   const stopped = (job: UploadJob): boolean => job.canceled || job.state === 'paused' || job.state === 'queued'
 
   function enqueue(files: FileList | File[], parentId: string | null, imageHost = false): number {
+    return enqueueFiles(Array.from(files, (file) => ({ file, parentId })), imageHost)
+  }
+
+  function enqueueFiles(entries: { file: File; parentId: string | null }[], imageHost = false): number {
     const toast = useToastStore()
     const limit = Number(useAuthStore().meta?.max_file_size ?? 0)
+    const queued = new Set(jobs.value
+      .filter((job) => !['done', 'canceled'].includes(job.state))
+      .map((job) => fingerprint(job.parentId, job.file, job.imageHost)))
     let added = 0
-    for (const file of Array.from(files)) {
+    for (const { file, parentId } of entries) {
       if (imageHost && (file.size > 20 * 1024 * 1024 || !/\.(jpe?g|png|gif|webp)$/i.test(file.name))) {
         toast.error(`${file.name}：请选择 20 MiB 以内的 JPEG、PNG、GIF 或 WebP 图片`)
         continue
@@ -90,10 +97,11 @@ export const useUploadStore = defineStore('uploads', () => {
         continue
       }
       const key = fingerprint(parentId, file, imageHost)
-      if (jobs.value.some((j) => !['done', 'canceled'].includes(j.state) && fingerprint(j.parentId, j.file, j.imageHost) === key)) {
+      if (queued.has(key)) {
         toast.push(`${file.name} 已在上传队列中`)
         continue
       }
+      queued.add(key)
       jobs.value.push({
         key: crypto.randomUUID(), file: markRaw(file), parentId, uploadId: null, imageHost,
         state: 'queued', progress: 0, received: 0, message: '等待上传', error: '',
@@ -307,7 +315,7 @@ export const useUploadStore = defineStore('uploads', () => {
   }
 
   return { jobs, completedCount, restoredPending, activeCount, hasJobs, totalProgress,
-    enqueue, pause, resume, pauseAll, resumeAll, retryAll, cancel, retry: resume, clearFinished, restore }
+    enqueue, enqueueFiles, pause, resume, pauseAll, resumeAll, retryAll, cancel, retry: resume, clearFinished, restore }
 })
 
 export { fingerprint as uploadFingerprint }

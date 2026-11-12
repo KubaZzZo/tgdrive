@@ -583,7 +583,16 @@ class WorkspaceMiddleware:
             )
             if (
                 scope["path"].startswith(
-                    ("/api/items", "/api/files", "/api/uploads", "/api/folders", "/api/images")
+                    (
+                        "/api/items",
+                        "/api/files",
+                        "/api/uploads",
+                        "/api/folders",
+                        "/api/images",
+                        "/api/shares",
+                        "/api/trash",
+                        "/api/people",
+                    )
                 )
                 and scope.get("session", {}).get("auth")
                 and expected

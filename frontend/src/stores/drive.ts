@@ -11,6 +11,8 @@ import type {
   Stats,
 } from '@/api/types'
 import { categories as defaultCategories } from '@/utils/categories'
+import { readDriveLocation, writeDriveLocation } from '@/utils/driveLocation'
+import type { DriveFilters, SearchScope } from '@/utils/driveLocation'
 import { useToastStore } from './toast'
 
 export const useDriveStore = defineStore('drive', () => {
@@ -25,6 +27,8 @@ export const useDriveStore = defineStore('drive', () => {
   const person = ref<string | null>(null)
   const personDisplayName = ref('')
   const query = ref('')
+  const filters = ref<DriveFilters>({})
+  const searchScope = ref<SearchScope>('')
   const sortOption = ref('newest')
   const page = ref(1)
   const total = ref(0)
@@ -39,6 +43,45 @@ export const useDriveStore = defineStore('drive', () => {
   })
   let loadVersion = 0
   let controller: AbortController | null = null
+
+  const scope = computed<ItemQuery['scope']>(() => {
+    if (searchScope.value) return searchScope.value
+    if (view.value === 'recent') return 'recent'
+    if (view.value !== 'all' || (!folderId.value && (
+      query.value.trim() || Object.values(filters.value).some((value) => value !== undefined)
+    ))) return 'all'
+    return 'folder'
+  })
+
+  function remember(replace = false): void {
+    if (typeof window === 'undefined' || !window.history || !window.location) return
+    const current = window.location.hash
+    if ((current && current !== '#drive' && !current.startsWith('#drive?')) || view.value === 'people') return
+    const hash = writeDriveLocation({
+      folder: folderId.value, view: view.value, query: query.value, sort: sortOption.value,
+      page: page.value, layout: layout.value, scope: searchScope.value, filters: filters.value,
+    })
+    if (current !== hash) {
+      if (replace) window.history.replaceState(null, '', hash)
+      else window.history.pushState(null, '', hash)
+    }
+  }
+
+  async function restoreLocation(hash: string): Promise<void> {
+    const route = readDriveLocation(hash)
+    folderId.value = route.folder
+    view.value = route.view
+    query.value = route.query
+    sortOption.value = route.sort
+    page.value = route.page
+    layout.value = route.layout
+    searchScope.value = route.scope
+    filters.value = route.filters
+    person.value = null
+    personDisplayName.value = ''
+    path.value = []
+    await load()
+  }
 
   async function load(): Promise<void> {
     const version = ++loadVersion
@@ -56,21 +99,15 @@ export const useDriveStore = defineStore('drive', () => {
     const category = view.value === 'people'
       ? 'video'
       : view.value !== 'all' && view.value !== 'recent' ? view.value : undefined
-    const scope = category
-      ? 'all'
-      : view.value === 'recent'
-        ? 'recent'
-        : query.value.trim() && !folderId.value
-          ? 'all'
-          : 'folder'
     try {
       const data = await api.listItems(
         folderId.value,
         {
-          scope,
+          scope: scope.value,
           category,
           person: person.value ?? undefined,
           q: query.value,
+          ...filters.value,
           ...sorting[sortOption.value],
           limit: peopleIndex ? 1 : pageSize.value,
           offset: (page.value - 1) * pageSize.value,
@@ -86,6 +123,7 @@ export const useDriveStore = defineStore('drive', () => {
       total.value = data.total
       if (page.value > pageCount.value) {
         page.value = pageCount.value
+        remember(true)
         await load()
       }
     } catch (cause) {
@@ -96,14 +134,21 @@ export const useDriveStore = defineStore('drive', () => {
     }
   }
 
+  function resetSearch(): void {
+    query.value = ''
+    filters.value = {}
+    searchScope.value = ''
+    page.value = 1
+  }
+
   async function selectView(next: typeof view.value, selectedPerson: string | null = null): Promise<void> {
     view.value = next
     person.value = selectedPerson
     personDisplayName.value = ''
     folderId.value = null
     path.value = []
-    query.value = ''
-    page.value = 1
+    resetSearch()
+    remember()
     await load()
   }
 
@@ -112,18 +157,25 @@ export const useDriveStore = defineStore('drive', () => {
     person.value = null
     personDisplayName.value = ''
     folderId.value = nextId
-    query.value = ''
-    page.value = 1
+    resetSearch()
+    remember()
     await load()
   }
 
   async function search(): Promise<void> {
     page.value = 1
+    remember()
     await load()
   }
   async function setPage(next: number): Promise<void> {
     page.value = Math.max(1, Math.min(next, pageCount.value))
+    remember()
     await load()
+  }
+
+  function setLayout(next: 'list' | 'grid'): void {
+    layout.value = next
+    remember()
   }
 
   async function createFolder(name: string): Promise<void> {
@@ -153,19 +205,9 @@ export const useDriveStore = defineStore('drive', () => {
       const result = await api.deleteItem(item.id)
       await load()
       if (result.warning) useToastStore().error(result.warning)
-      else useToastStore().success('已删除')
+      else useToastStore().success('已移入回收站')
     } catch (cause) {
       useToastStore().error(cause instanceof Error ? cause.message : '删除失败')
-      throw cause
-    }
-  }
-
-  async function share(item: DriveItem): Promise<string> {
-    try {
-      const result = await api.createShare(item.id)
-      return result.url
-    } catch (cause) {
-      useToastStore().error(cause instanceof Error ? cause.message : '创建分享链接失败')
       throw cause
     }
   }
@@ -174,6 +216,8 @@ export const useDriveStore = defineStore('drive', () => {
     view,
     person,
     query,
+    filters,
+    searchScope,
     sortOption,
     page,
     pageCount,
@@ -186,6 +230,8 @@ export const useDriveStore = defineStore('drive', () => {
     openFolder,
     search,
     setPage,
+    setLayout,
+    restoreLocation,
     folderId,
     items,
     path,
@@ -196,6 +242,5 @@ export const useDriveStore = defineStore('drive', () => {
     createFolder,
     rename,
     remove,
-    share,
   }
 })

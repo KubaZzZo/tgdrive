@@ -8,7 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import Response
 
-from app.core.logging import request_id_ctx
+from app.core.logging import request_id_ctx, request_log_path
 
 logger = logging.getLogger("tgdrive.http")
 
@@ -22,6 +22,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         request.state.request_id = request_id
         started = time.perf_counter()
         status_code = 500
+        path = request.url.path
         try:
             response = await call_next(request)
             status_code = response.status_code
@@ -31,7 +32,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
             if request.url.path.startswith("/api/"):
                 response.headers.setdefault("Cache-Control", "no-store")
-            if request.url.path.startswith("/i/"):
+            if path.startswith(("/i/", "/s/")):
                 response.headers["Cache-Control"] = "private, no-store"
                 response.headers["Cloudflare-CDN-Cache-Control"] = "no-store"
             response.headers.setdefault(
@@ -43,16 +44,17 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             return response
         finally:
             elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-            if not request.url.path.startswith(("/static/", "/assets/")):
+            if not path.startswith(("/static/", "/assets/")):
+                path = request_log_path(path)
                 logger.info(
                     "%s %s %s %.1fms",
                     request.method,
-                    request.url.path,
+                    path,
                     status_code,
                     elapsed_ms,
                     extra={
                         "method": request.method,
-                        "path": request.url.path,
+                        "path": path,
                         "status": status_code,
                         "duration_ms": elapsed_ms,
                         "client_ip": request.client.host if request.client else None,

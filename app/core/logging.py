@@ -14,6 +14,12 @@ def current_request_id() -> str:
     return request_id_ctx.get()
 
 
+def request_log_path(path: str) -> str:
+    if path.startswith("/s/"):
+        return "/s/[token]/download" if path.endswith("/download") else "/s/[token]"
+    return path
+
+
 class RequestIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         record.request_id = getattr(record, "request_id", None) or current_request_id()

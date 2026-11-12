@@ -390,6 +390,7 @@ h1 {
 }
 .toolbar-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
 }
@@ -526,6 +527,7 @@ h1 {
 }
 .display-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   flex-shrink: 0;
 }
@@ -538,6 +540,112 @@ h1 {
   background: white;
   color: var(--muted);
   font-size: 12px;
+}
+.search-scope {
+  display: inline-flex;
+}
+.selection-bar,
+.batch-result {
+  margin-bottom: 12px;
+}
+.batch-result {
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: white;
+  overflow-wrap: anywhere;
+}
+.batch-result ul {
+  margin: 8px 0 0;
+  padding-inline-start: 20px;
+}
+.file-selection {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.file-btn.is-busy {
+  opacity: 0.65;
+  cursor: wait;
+}
+.operation-actions,
+.operation-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.operation-form {
+  align-items: end;
+}
+.operation-form label,
+.operation-link,
+.advanced-search-form label {
+  display: grid;
+  gap: 5px;
+}
+.operation-form select,
+.operation-link input,
+input.operation-link,
+.advanced-search-form input {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: inherit;
+  font: inherit;
+}
+.operation-name,
+.operation-errors {
+  overflow-wrap: anywhere;
+}
+.operation-errors {
+  white-space: pre-line;
+}
+.operation-list,
+.destination-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+.operation-list li {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.destination-list button {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: start;
+}
+.destination-list span {
+  overflow-wrap: anywhere;
+}
+.destination-list small {
+  flex: 0 0 auto;
+}
+.advanced-search-form {
+  display: grid;
+  gap: 12px;
+}
+.advanced-search-form fieldset {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
 }
 .view-switch {
   display: flex;

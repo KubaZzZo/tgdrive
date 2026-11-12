@@ -7,13 +7,14 @@ import AppIcon from './AppIcon.vue'
 import FileActions from './FileActions.vue'
 import VideoCover from './VideoCover.vue'
 
-withDefaults(defineProps<{ items: DriveItem[]; layout?: 'list' | 'grid' }>(), {
+withDefaults(defineProps<{ items: DriveItem[]; layout?: 'list' | 'grid'; selected?: Set<string>; selecting?: boolean }>(), {
   layout: 'list',
 })
 const emit = defineEmits<{
   open: [item: DriveItem]
   preview: [item: DriveItem]
   action: [action: FileAction, item: DriveItem]
+  select: [id: string]
 }>()
 const root = ref<HTMLElement | null>(null)
 function closeMenus(event: PointerEvent): void {
@@ -31,6 +32,7 @@ function open(item: DriveItem): void {
   <div v-if="layout === 'grid'" ref="root" class="file-grid">
     <article v-for="item in items" :key="item.id" class="file-card">
       <div class="file-card-top">
+        <input v-if="selecting" type="checkbox" class="file-selection" :aria-label="`选择 ${item.name}`" :checked="selected?.has(item.id)" @change="emit('select', item.id)" />
         <span class="type-label">{{
           item.kind === 'folder' ? '文件夹' : categoryLabel(item.category)
         }}</span>
@@ -65,6 +67,7 @@ function open(item: DriveItem): void {
         <tr v-for="item in items" :key="item.id">
           <td>
             <div class="name-cell">
+              <input v-if="selecting" type="checkbox" class="file-selection" :aria-label="`选择 ${item.name}`" :checked="selected?.has(item.id)" @change="emit('select', item.id)" />
               <span
                 class="file-art small"
                 :class="item.kind === 'folder' ? 'folder' : item.category"

@@ -42,6 +42,8 @@ const paths: Record<string, string[]> = {
   refresh: ['M20 7a9 9 0 1 0 1 9', 'M20 3v5h-5'],
   close: ['m6 6 12 12M6 18 18 6'],
   plus: ['M12 4v16M4 12h16'],
+  link: ['M10 13a4 4 0 0 0 6 0l4-4a4 4 0 0 0-6-6l-2 2', 'M14 11a4 4 0 0 0-6 0l-4 4a4 4 0 0 0 6 6l2-2'],
+  trash: ['M4 7h16M6 7l1 14h10l1-14M9 7V4h6v3M10 10v7m4-7v7'],
 }
 </script>
 <template>

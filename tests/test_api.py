@@ -83,7 +83,8 @@ def test_failed_telegram_cleanup_retries_after_restart(workdir):
             chat_id,
             [{"part_index": 0, "tg_message_id": 42, "size": 4}],
         )
-        deleted = client.delete(f"/api/items/{file['id']}")
+        assert client.delete(f"/api/items/{file['id']}").status_code == 200
+        deleted = client.delete(f"/api/trash/{file['id']}")
         assert deleted.status_code == 200
         assert deleted.json()["warning"]
         assert db.get_item(file["id"]) is None
@@ -173,7 +174,8 @@ def test_telegram_cleanup_isolates_an_undeletable_message(authenticated_client, 
             {"part_index": 1, "tg_message_id": 43, "size": 4},
         ],
     )
-    deleted = client.delete(f"/api/items/{file['id']}")
+    assert client.delete(f"/api/items/{file['id']}").status_code == 200
+    deleted = client.delete(f"/api/trash/{file['id']}")
     assert deleted.status_code == 200
     assert deleted.json()["warning"]
     assert storage.deleted_message_ids == [43]
@@ -331,6 +333,8 @@ def test_resumable_upload_download_share_and_delete(authenticated_client):
     client.post("/api/login", json={"password": PASSWORD})
     deleted = client.delete(f"/api/items/{item['id']}")
     assert deleted.status_code == 200
+    assert storage.deleted_message_ids == []
+    assert client.delete(f"/api/trash/{item['id']}").status_code == 200
     assert storage.deleted_message_ids == [101]
 
 

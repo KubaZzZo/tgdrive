@@ -25,8 +25,9 @@ function choose(action: FileAction, event: Event): void {
         <button v-if="item.category === 'video'" type="button" @click="choose('people', $event)">分配人物标签</button>
       </template>
       <button type="button" @click="choose('rename', $event)">重命名</button>
+      <button type="button" @click="choose('move', $event)">移动到…</button>
       <button class="danger-text" type="button" @click="choose('remove', $event)">
-        删除{{ item.kind === 'folder' ? '文件夹' : '文件' }}
+        移入回收站
       </button>
     </div>
   </details>

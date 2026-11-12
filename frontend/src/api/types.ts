@@ -1,4 +1,4 @@
-export type FileAction = 'download' | 'share' | 'rename' | 'remove' | 'people'
+export type FileAction = 'download' | 'share' | 'rename' | 'move' | 'remove' | 'people'
 export interface TelegramIdentity { id: number; username: string | null; first_name: string | null; bot: boolean }
 export interface TelegramProfile { id: string; chat_id: string; user_id: number; username: string | null; first_name: string | null; title: string }
 export interface TelegramAccountStatus {
@@ -55,6 +55,12 @@ export interface ItemQuery {
   category?: FileCategory
   q?: string
   person?: string
+  kind?: 'folder' | 'file'
+  created_from?: string
+  created_to?: string
+  min_size?: number
+  max_size?: number
+  extension?: string
   sort?: 'name' | 'size' | 'created_at' | 'updated_at'
   direction?: 'asc' | 'desc'
   limit?: number
@@ -160,6 +166,22 @@ export interface ShareRecord {
   url: string
   expires_at: string | null
 }
+
+export interface ManagedShare extends ShareRecord {
+  item_id: string
+  name: string
+  created_at: string
+  suspended: boolean | 0 | 1
+}
+
+export interface TrashItem extends DriveItem {
+  trashed_at: string
+  trash_parent_id: string | null
+}
+
+export type BatchItemResult =
+  | { id: string; ok: true }
+  | { id: string; ok: false; error: string }
 
 export interface SyncStatus {
   enabled: boolean

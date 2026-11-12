@@ -21,6 +21,7 @@ const uploads = useUploadStore()
 const toast = useToastStore()
 const entered = ref(false)
 const hash = ref(window.location.hash)
+const routeRevision = ref(0)
 const module = computed(() => {
   const [page] = hash.value.split('?', 2)
   if (page === '#people') return 'people'
@@ -37,16 +38,21 @@ const person = computed(() => {
 
 function updateRoute(): void {
   hash.value = window.location.hash
+  routeRevision.value++
+  if (auth.authenticated) void loadRoute()
+}
+
+async function loadRoute(): Promise<void> {
+  if (module.value === 'images') return
+  if (peopleVideos.value) await drive.selectView('video')
+  else if (person.value !== undefined) await drive.selectView('people', person.value)
+  else await drive.restoreLocation(hash.value)
 }
 
 async function enterApp(): Promise<void> {
   if (entered.value) return
   entered.value = true
-  await (peopleVideos.value
-    ? drive.selectView('video')
-    : person.value === undefined
-    ? drive.selectView('all')
-    : drive.selectView('people', person.value))
+  await loadRoute()
   sync.start()
   const pending = await uploads.restore()
   if (pending > 0) {
@@ -98,7 +104,7 @@ onBeforeUnmount(() => {
     <AppHeader :module="module" />
     <StorageWarning :storage="auth.storage" />
     <main class="main" :class="{ 'has-transfers': uploads.hasJobs }">
-      <FileBrowser v-if="module !== 'images'" :person="person" :people-videos="peopleVideos" />
+      <FileBrowser v-if="module !== 'images'" :route-revision="routeRevision" :people-videos="peopleVideos" />
       <ImageHost v-else />
     </main>
     <UploadPanel />
