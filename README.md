@@ -277,7 +277,9 @@ Bot 模式也可用于网页上传：设置 `TG_MODE=bot`、`TG_BOT_TOKEN`，同
 | `TG_SEGMENT_SIZE` | `1800000000` | 网页上传时单条 Telegram 消息的分段大小，单位字节 |
 | `UPLOAD_CHUNK_SIZE` | `8388608` | 浏览器上传分片大小，默认 8 MiB |
 | `UPLOAD_CONCURRENCY` | `2` | 同时写入 Telegram 的后台任务数 |
-| `UPLOAD_STALE_HOURS` | `72` | 未完成上传保留时长；`0` 关闭自动过期清理 |
+| `UPLOAD_STALE_HOURS` | `72` | 当前工作区未完成上传的保留时长；切回其他工作区后才会清理其过期任务；`0` 关闭自动过期清理 |
+| `UPLOAD_TEMP_MAX_MIB` | `51200` | 所有工作区共用的上传临时目录额度，单位 MiB；`0` 表示不设额度 |
+| `UPLOAD_TEMP_MIN_FREE_MIB` | `512` | 上传写入后磁盘至少保留的空间，单位 MiB |
 | `MAX_FILE_SIZE` | `0` | 文件大小上限，单位字节；`0` 表示不设应用层上限 |
 | `CHANNEL_SYNC_ENABLED` | `true` | 是否启用频道同步 |
 | `CHANNEL_SYNC_INTERVAL` | `30` | 新增消息补同步间隔，单位秒，最小 5 秒 |
