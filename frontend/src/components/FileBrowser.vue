@@ -1,25 +1,31 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
-import type { DriveItem, FileAction, FileCategory } from '@/api/types'
+import type { BatchItemResult, DriveItem, FileAction, FileCategory } from '@/api/types'
+import type { DriveFilters } from '@/utils/driveLocation'
 import { useDriveStore } from '@/stores/drive'
 import { useToastStore } from '@/stores/toast'
 import { useUploadStore } from '@/stores/uploads'
 import { formatBytes, previewKind } from '@/utils/format'
+import { groupFolderFiles } from '@/utils/folderUpload'
+import AdvancedSearchDialog from './AdvancedSearchDialog.vue'
 import AppIcon from './AppIcon.vue'
 import BaseModal from './BaseModal.vue'
 import ConfirmDialog from './ConfirmDialog.vue'
 import FileTable from './FileTable.vue'
+import MoveDialog from './MoveDialog.vue'
 import PeopleIndex from './PeopleIndex.vue'
 import PreviewModal from './PreviewModal.vue'
 import PromptDialog from './PromptDialog.vue'
+import ShareDialog from './ShareDialog.vue'
+import TrashDialog from './TrashDialog.vue'
 import VideoPeopleDialog from './VideoPeopleDialog.vue'
 
 const drive = useDriveStore()
 const uploads = useUploadStore()
 const toast = useToastStore()
-const props = defineProps<{ person?: string | null; peopleVideos?: boolean }>()
+const props = defineProps<{ routeRevision: number; peopleVideos?: boolean }>()
 const inPeople = computed(() => drive.view === 'people' || props.peopleVideos)
 
 const classificationHelp = ref(false)
@@ -37,6 +43,7 @@ function submitSearch(): void {
 function clearSearch(): void {
   clearTimeout(searchTimer)
   drive.query = ''
+  drive.filters = {}
   void drive.search()
 }
 function navigate(view: 'all' | 'recent' | FileCategory): void {
@@ -52,8 +59,9 @@ function breadcrumb(id: string | null): void {
 }
 function onAction(action: FileAction, item: DriveItem): void {
   if (action === 'download') download(item)
-  if (action === 'share') void share(item)
+  if (action === 'share') shareTarget.value = item
   if (action === 'rename') renameTarget.value = item
+  if (action === 'move') moveTargets.value = [item]
   if (action === 'remove') deleteTarget.value = item
   if (action === 'people') labelTarget.value = item
 }
@@ -74,12 +82,78 @@ const dragging = ref(false)
 const folderDialog = ref(false)
 const renameTarget = ref<DriveItem | null>(null)
 const deleteTarget = ref<DriveItem | null>(null)
+const shareTarget = ref<DriveItem | null>(null)
+const sharesOpen = ref(false)
+const trashOpen = ref(false)
+const moveTargets = ref<DriveItem[] | null>(null)
+const advancedOpen = ref(false)
+const creatingPaths = ref(false)
+const selecting = ref(false)
+const selected = reactive(new Set<string>())
+const selectedItems = computed(() => drive.items.filter((item) => selected.has(item.id)))
+const confirmingBatch = ref(false)
+const submittingBatch = ref(false)
+const batchStatus = ref<{ successes: number; failures: string[] } | null>(null)
 const labelTarget = ref<DriveItem | null>(null)
 const previewTarget = ref<DriveItem | null>(null)
 const previewOpen = ref(false)
 const downloadStatus = ref('')
 
 const isEmpty = computed(() => !drive.loading && !drive.error && drive.items.length === 0)
+const hasFilters = computed(() => Object.values(drive.filters).some((value) => value !== undefined))
+const searching = computed(() => Boolean(drive.query.trim()) || hasFilters.value)
+
+function applyFilters(filters: DriveFilters): void {
+  drive.filters = filters
+  advancedOpen.value = false
+  submitSearch()
+}
+
+function toggleSelected(id: string): void {
+  if (selected.has(id)) selected.delete(id)
+  else selected.add(id)
+}
+
+function togglePage(): void {
+  if (selectedItems.value.length === drive.items.length) selected.clear()
+  else for (const item of drive.items) selected.add(item.id)
+}
+
+function handleBatch(results: BatchItemResult[], attempted: DriveItem[]): void {
+  const failures: string[] = []
+  let successes = 0
+  for (const result of results) {
+    if (result.ok) {
+      successes++
+      selected.delete(result.id)
+    } else {
+      failures.push(`${attempted.find((item) => item.id === result.id)?.name ?? result.id}：${result.error}`)
+    }
+  }
+  batchStatus.value = { successes, failures }
+  if (successes) void drive.load()
+}
+
+async function batchTrash(): Promise<void> {
+  if (submittingBatch.value || !selectedItems.value.length) return
+  const attempted = selectedItems.value
+  submittingBatch.value = true
+  try {
+    const { results } = await api.batchItems(attempted.map((item) => item.id), 'trash')
+    handleBatch(results, attempted)
+    confirmingBatch.value = false
+  } catch (cause) {
+    toast.error(cause instanceof Error ? cause.message : '批量删除失败')
+  } finally {
+    submittingBatch.value = false
+  }
+}
+
+watch([() => drive.folderId, () => drive.view, () => drive.person, () => drive.page,
+  () => drive.query, () => drive.filters, () => drive.searchScope, () => drive.sortOption], () => {
+  selected.clear()
+  selecting.value = false
+})
 
 async function openFolder(item: DriveItem): Promise<void> {
   clearTimeout(searchTimer)
@@ -126,20 +200,6 @@ async function download(item: DriveItem): Promise<void> {
   } finally { pendingDownloads.delete(item.id) }
 }
 
-async function share(item: DriveItem): Promise<void> {
-  try {
-    const url = await drive.share(item)
-    try {
-      await navigator.clipboard.writeText(url)
-      toast.success('分享链接已复制')
-    } catch {
-      window.prompt('分享链接', url)
-    }
-  } catch {
-    // The drive store already reports the error.
-  }
-}
-
 async function confirmCreateFolder(name: string): Promise<void> {
   try {
     await drive.createFolder(name)
@@ -181,6 +241,35 @@ function onFileInput(event: Event): void {
   input.value = ''
 }
 
+async function onFolderInput(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const files = Array.from(input.files ?? [])
+  input.value = ''
+  if (!files.length || creatingPaths.value) return
+  const parent = drive.folderId
+  creatingPaths.value = true
+  try {
+    const groups = groupFolderFiles(files)
+    const ids: string[] = []
+    for (let start = 0; start < groups.length; start += 200) {
+      const paths = groups.slice(start, start + 200).map((group) => group.path)
+      const result = await api.createFolderPaths(parent, paths)
+      if (result.ids.length !== paths.length || result.ids.some((id) => !id)) {
+        throw new Error('部分上传目录未创建，请重试')
+      }
+      ids.push(...result.ids)
+    }
+    uploads.enqueueFiles(groups.flatMap((group, index) =>
+      group.files.map((file) => ({ file, parentId: ids[index]! })),
+    ))
+    await drive.load()
+  } catch (cause) {
+    toast.error(cause instanceof Error ? cause.message : '无法准备上传目录')
+  } finally {
+    creatingPaths.value = false
+  }
+}
+
 function onDrop(event: DragEvent): void {
   dragging.value = false
   if (event.dataTransfer?.files.length) addFiles(event.dataTransfer.files)
@@ -197,20 +286,21 @@ function closePreview(): void {
   previewTarget.value = null
 }
 
-watch([() => props.person, () => props.peopleVideos], ([person, videos], previous) => {
-  if (videos && drive.view === 'video') return
-  if (!videos && person === undefined && drive.view !== 'people' && !previous?.[1]) return
-  if (!videos && person !== undefined && drive.view === 'people' && drive.person === person) return
+watch(() => props.routeRevision, () => {
   clearTimeout(searchTimer)
   closePreview()
   renameTarget.value = null
   deleteTarget.value = null
   labelTarget.value = null
+  shareTarget.value = null
+  sharesOpen.value = false
+  trashOpen.value = false
+  advancedOpen.value = false
+  moveTargets.value = null
+  confirmingBatch.value = false
   folderDialog.value = false
   classificationHelp.value = false
-  void (videos ? drive.selectView('video') : person === undefined ? drive.selectView('all') : drive.selectView('people', person))
-  void nextTick(() => window.scrollTo(0, 0))
-}, { immediate: true })
+})
 </script>
 <template>
   <div class="library-layout" :class="{ 'people-layout': inPeople }">
@@ -234,6 +324,12 @@ watch([() => props.person, () => props.peopleVideos], ([person, videos], previou
         </button>
         <button type="button" @click="openPeople">
           <AppIcon name="people" /><span>人物视频</span>
+        </button>
+        <button type="button" @click="sharesOpen = true">
+          <AppIcon name="link" /><span>我的分享</span>
+        </button>
+        <button type="button" @click="trashOpen = true">
+          <AppIcon name="trash" /><span>回收站</span>
         </button>
       </nav>
       <div class="nav-section-label"><span>文件分类</span><span class="auto-tag">自动</span></div>
@@ -289,12 +385,16 @@ watch([() => props.person, () => props.peopleVideos], ([person, videos], previou
               class="sr-only"
               @change="onFileInput"
           /></label>
+          <label class="ghost file-btn" :class="{ 'is-busy': creatingPaths }">
+            <AppIcon name="folder" :size="18" />{{ creatingPaths ? '正在准备目录…' : '上传文件夹' }}
+            <input aria-label="上传文件夹" type="file" multiple webkitdirectory class="sr-only" :disabled="creatingPaths" @change="onFolderInput" />
+          </label>
         </div>
       </header>
 
       <PeopleIndex v-if="drive.view === 'people' && !drive.person" />
       <template v-else>
-      <div v-if="drive.view === 'all' && !drive.folderId && !drive.query" class="category-overview">
+      <div v-if="drive.view === 'all' && !drive.folderId && !searching" class="category-overview">
         <button
           v-for="category in overview"
           :key="category.id"
@@ -319,7 +419,7 @@ watch([() => props.person, () => props.peopleVideos], ([person, videos], previou
             id="file-search"
             v-model="drive.query"
             type="search"
-            :placeholder="drive.person ? '搜索此人物的视频…' : drive.folderId ? '搜索当前文件夹' : '搜索文件名称…'"
+            :placeholder="drive.person ? '搜索此人物的视频…' : '搜索文件名称…'"
             maxlength="255"
             @input="scheduleSearch"
             @keydown.enter="submitSearch"
@@ -328,6 +428,16 @@ watch([() => props.person, () => props.peopleVideos], ([person, videos], previou
           </button>
         </div>
         <div class="display-controls">
+          <label v-if="!inPeople" class="search-scope"><span class="sr-only">搜索范围</span>
+            <select aria-label="搜索范围" :value="drive.searchScope || (drive.folderId ? 'folder' : 'all')"
+              @change="drive.searchScope = ($event.target as HTMLSelectElement).value === 'folder' ? 'folder' : 'all'; submitSearch()">
+              <option value="folder">当前目录</option>
+              <option value="all">全部文件</option>
+            </select>
+          </label>
+          <button class="ghost" type="button" @click="advancedOpen = true">
+            {{ hasFilters ? '高级搜索 · 已筛选' : '高级搜索' }}
+          </button>
           <label class="sr-only" for="file-sort">文件排序</label
           ><select id="file-sort" v-model="drive.sortOption" @change="drive.search()">
             <option value="newest">最新上传</option>
@@ -339,13 +449,13 @@ watch([() => props.person, () => props.peopleVideos], ([person, videos], previou
             <button
               :aria-pressed="drive.layout === 'list'"
               aria-label="列表视图"
-              @click="drive.layout = 'list'"
+              @click="drive.setLayout('list')"
             >
               <AppIcon name="list" :size="18" /></button
             ><button
               :aria-pressed="drive.layout === 'grid'"
               aria-label="网格视图"
-              @click="drive.layout = 'grid'"
+              @click="drive.setLayout('grid')"
             >
               <AppIcon name="grid" :size="18" />
             </button>
@@ -359,7 +469,7 @@ watch([() => props.person, () => props.peopleVideos], ([person, videos], previou
           <AppIcon name="chevron" :size="12" />
           <span>{{ drive.title }}</span>
         </nav>
-        <nav v-else-if="drive.view === 'all' && !drive.query" class="crumbs" aria-label="目录路径">
+        <nav v-else-if="drive.view === 'all' && (!searching || drive.folderId)" class="crumbs" aria-label="目录路径">
           <button class="crumb" @click="breadcrumb(null)">我的文件</button
           ><template v-for="item in drive.path" :key="item.id"
             ><AppIcon name="chevron" :size="12" /><button
@@ -371,13 +481,30 @@ watch([() => props.person, () => props.peopleVideos], ([person, videos], previou
           >
         </nav>
         <span v-else class="results-label">{{
-          drive.query ? `“${drive.query}”的搜索结果` : `全部${drive.title}文件`
+          drive.query ? `“${drive.query}”的搜索结果` : hasFilters ? '筛选结果' : `全部${drive.title}文件`
         }}</span>
         <span class="item-count" aria-live="polite">
           {{ drive.total }} {{ drive.person ? '部视频' : '个项目' }}
         </span>
       </div>
 
+      <div v-if="drive.items.length && !drive.loading && !drive.error" class="operation-actions selection-bar">
+        <button class="ghost" type="button" :aria-pressed="selecting"
+          @click="selecting = !selecting; if (!selecting) selected.clear()">{{ selecting ? '退出多选' : '多选' }}</button>
+        <template v-if="selecting">
+          <button class="ghost" type="button" @click="togglePage">{{ selectedItems.length === drive.items.length ? '取消全选' : '选择本页' }}</button>
+          <span aria-live="polite">已选 {{ selectedItems.length }} 项</span>
+          <button class="ghost" type="button" :disabled="!selectedItems.length || submittingBatch" @click="moveTargets = selectedItems">批量移动</button>
+          <button class="ghost danger-text" type="button" :disabled="!selectedItems.length || submittingBatch" @click="confirmingBatch = true">批量删除</button>
+        </template>
+      </div>
+      <section v-if="batchStatus" class="batch-result" aria-live="polite">
+        <div class="operation-actions">
+          <strong>操作完成 · {{ batchStatus.successes }} 项成功，{{ batchStatus.failures.length }} 项失败</strong>
+          <button type="button" class="text-btn" @click="batchStatus = null">关闭结果</button>
+        </div>
+        <ul v-if="batchStatus.failures.length"><li v-for="(message, index) in batchStatus.failures" :key="index">{{ message }}</li></ul>
+      </section>
       <div v-if="drive.error" class="inline-error" role="alert">
         <span>{{ drive.error }}</span
         ><button class="text-btn" @click="drive.load()">重新加载</button>
@@ -394,6 +521,9 @@ watch([() => props.person, () => props.peopleVideos], ([person, videos], previou
         v-else-if="drive.items.length && !drive.error"
         :items="drive.items"
         :layout="drive.layout"
+        :selecting="selecting"
+        :selected="selected"
+        @select="toggleSelected"
         @open="openFolder"
         @preview="previewItem"
         @action="onAction"
@@ -401,20 +531,20 @@ watch([() => props.person, () => props.peopleVideos], ([person, videos], previou
       <div v-if="isEmpty" class="empty">
         <span class="empty-art"
           ><AppIcon
-          :name="drive.query ? 'search' : drive.person ? 'video' : drive.view === 'all' ? 'folder' : drive.view"
+          :name="searching ? 'search' : drive.person ? 'video' : drive.view === 'all' ? 'folder' : drive.view"
             :size="42"
         /></span>
-        <h2>{{ drive.query ? '没有找到匹配的文件' : drive.person ? '暂无相关视频' : '这里还没有文件' }}</h2>
+        <h2>{{ searching ? '没有找到匹配的文件' : drive.person ? '暂无相关视频' : '这里还没有文件' }}</h2>
         <p>
           {{
-            drive.query
-              ? '试试其他关键词，或清除搜索查看所有文件。'
+            searching
+              ? '试试其他关键词或筛选条件。'
               : drive.person
                 ? '返回人物目录，查看其他人物的视频。'
               : '上传后会自动归入对应分类，在电脑和手机上都能找到。'
           }}
         </p>
-        <button v-if="drive.query" class="ghost" @click="clearSearch">清除搜索</button>
+        <button v-if="searching" class="ghost" @click="clearSearch">清除搜索</button>
       </div>
       <footer v-if="drive.total > drive.pageSize" class="pagination">
         <span
@@ -482,13 +612,29 @@ watch([() => props.person, () => props.peopleVideos], ([person, videos], previou
     />
     <ConfirmDialog
       :open="Boolean(deleteTarget)"
-      title="删除项目"
-      :message="`确定删除「${deleteTarget?.name ?? ''}」吗？文件夹内的内容也会一起删除。`"
-      confirm-text="删除"
+      title="移入回收站"
+      :message="`将「${deleteTarget?.name ?? ''}」及其内容移入回收站？`"
+      confirm-text="移入回收站"
       danger
       @close="deleteTarget = null"
       @confirm="confirmDelete"
     />
+    <ConfirmDialog
+      :open="confirmingBatch"
+      title="批量移入回收站"
+      :message="`将选中的 ${selectedItems.length} 个项目及其内容移入回收站？`"
+      :confirm-text="submittingBatch ? '正在处理…' : '移入回收站'"
+      danger
+      @close="!submittingBatch && (confirmingBatch = false)"
+      @confirm="batchTrash"
+    />
+    <MoveDialog v-if="moveTargets" :items="moveTargets" :initial-folder="drive.folderId"
+      @result="handleBatch" @close="moveTargets = null" />
+    <ShareDialog v-if="shareTarget || sharesOpen" :item="shareTarget ?? undefined"
+      @close="shareTarget = null; sharesOpen = false" />
+    <TrashDialog v-if="trashOpen" @close="trashOpen = false" @restored="drive.load()" />
+    <AdvancedSearchDialog v-if="advancedOpen" :filters="drive.filters"
+      @close="advancedOpen = false" @apply="applyFilters" />
     <PreviewModal
       :open="previewOpen"
       :item="previewTarget"

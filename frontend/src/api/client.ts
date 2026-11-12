@@ -5,6 +5,7 @@ import type {
   ItemQuery,
   Meta,
   ShareRecord,
+  ManagedShare, TrashItem, BatchItemResult,
   SyncStatus,
   UploadRecord,
   TrafficStatus,
@@ -27,6 +28,11 @@ export class ApiError extends Error {
 type JsonBody = Record<string, unknown>
 let workspaceId: string | null = null
 export function setWorkspaceId(value: string | null): void { workspaceId = value }
+
+export function reloadAfterWorkspaceChange(): void {
+  if (window.location.hash?.startsWith('#drive?')) window.history.replaceState(null, '', '#drive')
+  window.location.reload()
+}
 
 async function parsePayload(response: Response): Promise<unknown> {
   const contentType = response.headers.get('content-type') ?? ''
@@ -79,7 +85,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   const payload = await parsePayload(response)
   if (!response.ok) {
-    if (response.status === 409 && (payload as { workspace_changed?: boolean })?.workspace_changed) window.location.reload()
+    if (response.status === 409 && (payload as { workspace_changed?: boolean })?.workspace_changed) reloadAfterWorkspaceChange()
     if (response.status === 401 && !path.endsWith('/login')) {
       window.dispatchEvent(new CustomEvent('tgdrive:unauthorized'))
     }
@@ -130,7 +136,7 @@ export async function uploadChunk(
       signal,
     })
     const payload = (await parsePayload(response)) as Record<string, unknown> | null
-    if (response.status === 409 && payload?.workspace_changed) window.location.reload()
+    if (response.status === 409 && payload?.workspace_changed) reloadAfterWorkspaceChange()
     if (response.ok) {
       return { kind: 'ok', data: payload as unknown as ChunkResponse }
     }
@@ -202,6 +208,8 @@ export const api = {
   ),
   createFolder: (name: string, parentId: string | null) =>
     jsonRequest<DriveItem>('POST', '/api/folders', { name, parent_id: parentId }),
+  createFolderPaths: (parentId: string | null, paths: string[][]) =>
+    jsonRequest<{ ids: string[] }>('POST', '/api/folders/paths', { parent_id: parentId, paths }),
   updateItem: (itemId: string, body: { name?: string; parent_id?: string | null; move?: boolean }) =>
     jsonRequest<DriveItem>('PATCH', `/api/items/${encodeURIComponent(itemId)}`, body),
   deleteItem: (itemId: string) =>
@@ -212,6 +220,28 @@ export const api = {
   createShare: (itemId: string, expiresHours = 0) =>
     jsonRequest<ShareRecord>('POST', `/api/items/${encodeURIComponent(itemId)}/share`, {
       expires_hours: expiresHours,
+    }),
+  listShares: (offset: number) => request<{ shares: ManagedShare[]; total: number }>(
+    `/api/shares?offset=${offset}`,
+  ),
+  updateShare: (token: string, expiresHours: number) =>
+    jsonRequest<{ expires_at: string | null }>('PATCH', '/api/shares', {
+      token, expires_hours: expiresHours,
+    }),
+  revokeShare: (token: string) => jsonRequest<{ ok: boolean }>('DELETE', '/api/shares', { token }),
+  listTrash: (offset: number) => request<{ items: TrashItem[]; total: number; retention_days: number }>(
+    `/api/trash?offset=${offset}`,
+  ),
+  restoreItem: (id: string) => request<DriveItem>(
+    `/api/trash/${encodeURIComponent(id)}/restore`, { method: 'POST' },
+  ),
+  purgeItem: (id: string) => request<{ ok: boolean; warning: string | null }>(
+    `/api/trash/${encodeURIComponent(id)}`, { method: 'DELETE' },
+  ),
+  emptyTrash: () => request<{ ok: boolean; deleted: number }>('/api/trash', { method: 'DELETE' }),
+  batchItems: (ids: string[], action: 'move' | 'trash', parentId: string | null = null) =>
+    jsonRequest<{ results: BatchItemResult[] }>('POST', '/api/items/batch', {
+      ids, action, parent_id: parentId,
     }),
 
   createUpload: (body: {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { api, ApiError } from '@/api/client'
+import { api, ApiError, reloadAfterWorkspaceChange } from '@/api/client'
 import type { TelegramAccountStatus, TelegramChannel, TelegramLogin } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
 import { useSyncStore } from '@/stores/sync'
@@ -146,10 +146,12 @@ async function activate(profileId?: string): Promise<void> {
   error.value = ''
   clearTimeout(timer)
   try {
-    if (profileId) await api.telegramSwitch(profileId)
-    else await api.telegramActivate(job.value!.id, chatId.value.trim())
+    const previousChat = auth.storage?.chat_id
+    const activated = profileId ? await api.telegramSwitch(profileId)
+      : await api.telegramActivate(job.value!.id, chatId.value.trim())
     // Reload clears every view, preview, sync poller and queued file reference together.
-    window.location.reload()
+    if (activated.chat_id !== previousChat) reloadAfterWorkspaceChange()
+    else window.location.reload()
   } catch (cause) {
     message(cause)
     if (job.value) poll(generation)
