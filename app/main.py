@@ -21,6 +21,7 @@ from app.db import Database
 from app.services.accounts import AccountManager, Runtime, WorkspaceMiddleware, account_settings
 from app.services.cdn import CDNMonitor
 from app.services.channel_sync import ChannelSyncService
+from app.services.media_cache import MIB, MediaSliceCache
 from app.services.traffic import TrafficMiddleware, TrafficMonitor
 from app.services.uploads import UploadService
 from app.storage import TelegramStorage
@@ -99,6 +100,11 @@ def create_app(
     app.state.storage = telegram
     app.state.traffic = traffic
     app.state.cdn = cdn
+    app.state.media_cache = MediaSliceCache(
+        cfg.media_cache_dir or cfg.data_dir / "media-slices",
+        cfg.media_cache_max_mib * MIB,
+        cfg.media_cache_min_free_mib * MIB,
+    )
     app.state.uploads = upload_service
     app.state.channel_sync = channel_sync
     app.state.login_limiter = LoginRateLimiter(cfg.login_max_attempts, cfg.login_window_seconds)

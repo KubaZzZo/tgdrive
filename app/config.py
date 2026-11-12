@@ -60,6 +60,15 @@ class Settings:
     )
     cdn_warning_percent: int = field(default_factory=lambda: _env_int("CDN_WARNING_PERCENT", 80))
     cdn_stop_percent: int = field(default_factory=lambda: _env_int("CDN_STOP_PERCENT", 95))
+    media_cache_dir: Path | None = field(
+        default_factory=lambda: (
+            _env_path("MEDIA_CACHE_DIR", "") if os.getenv("MEDIA_CACHE_DIR", "").strip() else None
+        )
+    )
+    media_cache_max_mib: int = field(default_factory=lambda: _env_int("MEDIA_CACHE_MAX_MIB", 0))
+    media_cache_min_free_mib: int = field(
+        default_factory=lambda: _env_int("MEDIA_CACHE_MIN_FREE_MIB", 4096)
+    )
 
     app_password: str = field(default_factory=lambda: os.getenv("APP_PASSWORD", "change-me"))
     app_secret: str = field(
@@ -148,6 +157,8 @@ class Settings:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def validate(self) -> None:
+        if self.media_cache_max_mib < 0 or self.media_cache_min_free_mib < 0:
+            raise RuntimeError("媒体缓存容量和磁盘保留空间不能为负数")
         if not 1 <= self.cdn_warning_percent < self.cdn_stop_percent <= 100:
             raise RuntimeError("CDN 阈值必须满足 1 <= 预警比例 < 停止比例 <= 100")
         if self.channel_sync_interval < 5:

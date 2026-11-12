@@ -105,6 +105,13 @@ async def trace_media_range(stream, request_id: str, expected: int):
         )
 
 
+async def charge_media_stream(stream, cdn: CDNMonitor):
+    async with aclosing(stream):
+        async for chunk in stream:
+            await cdn.charge(len(chunk))
+            yield chunk
+
+
 async def stream_item(
     request: Request,
     item: dict[str, Any],
@@ -188,7 +195,17 @@ async def stream_item(
         request.app.state.traffic.record("telegram", inbound=received)
         await cdn.charge(len(data))
         return Response(data, status_code=206 if partial else 200, media_type=mime, headers=headers)
-    stream = iter_item_range(db, storage, item, start, end, parts, cdn, prefetch=not inline)
+    cache = request.app.state.media_cache
+    if cache.enabled and not public and partial and inline and item.get("category") == "video":
+
+        def fetch_slice(first: int, last: int):
+            return iter_item_range(db, storage, item, first, last, parts)
+
+        stream = charge_media_stream(
+            cache.stream(db.path, etag, start, end, size, fetch_slice), cdn
+        )
+    else:
+        stream = iter_item_range(db, storage, item, start, end, parts, cdn, prefetch=not inline)
     if (
         not public
         and partial

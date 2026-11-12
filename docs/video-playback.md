@@ -31,3 +31,11 @@ iPhone 的兼容模式优先检测 ManagedMediaSource，在绑定视频源前禁
 视频浏览器回归从仓库根目录运行。先构建前端并准备 Python Playwright、Chromium 与支持 libx264 的 FFmpeg，然后执行 `python frontend/tests/video_seek_browser.py --runs 5 --play-ms 3000`。可用 `--ffmpeg` 指定 FFmpeg 路径，用 `--channel msedge` 使用已安装的 Edge，或加 `--mobile --delay-ms 350` 模拟窄屏和高延迟。脚本记录首帧、拖动、卡顿、定位流量与被取消请求已发出的字节，并汇总中位数与 P95。热缓存用例刷新页面后验证从磁盘续播。模拟结果应与真实线路和设备的样本分开解读。
 
 排查线上视频链路时，对已登录的 1 MiB 以内视频 Range 请求附加 `X-TGDrive-Media-Probe: 1`。用响应的 `X-Request-ID` 在服务日志中匹配 `Media probe`，可把 VPS 等待首个媒体块的时间和客户端等待首字节的时间分开观察。取消请求时记录的是服务端已交给响应流的字节。
+
+## 服务端切片缓存
+
+设置 `MEDIA_CACHE_MAX_MIB=2048` 启用 2 GiB 缓存。`MEDIA_CACHE_MIN_FREE_MIB=4096` 保留 4 GiB 磁盘可用空间，达到阈值时停止写入并继续按需播放。缓存容量包含正在写入的切片，按最近访问时间淘汰旧切片。`MEDIA_CACHE_DIR` 默认位于 `DATA_DIR/media-slices`，可指定独立可写目录，并从数据备份中排除。
+
+缓存只服务已登录的私有视频 Range 播放。缓存键包含工作区、文件 ETag 和切片位置。4 MiB 对齐的读请求覆盖至少半个切片时可以补齐剩余内容，按原 Range 逐步发送客户端需要的字节。小探测与未对齐的冷跳转仍按实际范围读取。命中缓存仍执行流量预算检查并计入 CDN 出站流量。
+
+登录后可从 `GET /api/traffic` 的 `media_cache` 字段查看进程启动以来的切片命中次数、未命中次数、缓存发送字节和补齐切片产生的额外 Telegram 读取量。观察 `hit_bytes` 与 `overfetch_bytes` 的差值可估算缓存节省的回源流量。可结合媒体探测日志比较冷、热请求的首字节时间。

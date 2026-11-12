@@ -20,7 +20,10 @@ class TrafficSettingsBody(BaseModel):
 
 @router.get("/traffic", dependencies=[Depends(require_auth)])
 async def traffic_status(request: Request) -> dict:
-    return request.app.state.traffic.snapshot()
+    return {
+        **request.app.state.traffic.snapshot(),
+        "media_cache": request.app.state.media_cache.snapshot(),
+    }
 
 
 @router.put("/traffic/settings", dependencies=[Depends(require_auth)])
