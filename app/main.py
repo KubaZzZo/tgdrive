@@ -63,6 +63,8 @@ def create_app(
         cfg.upload_stale_hours,
         cfg.upload_concurrency,
         space=UploadSpace(cfg.upload_temp_max_mib, cfg.upload_temp_min_free_mib),
+        faststart=cfg.video_faststart,
+        faststart_timeout=cfg.video_faststart_timeout,
     )
 
     channel_sync = ChannelSyncService(database, telegram, cfg)
@@ -87,9 +89,11 @@ def create_app(
             cfg.is_configured,
         )
         try:
+            app.state.media_cache.start()
             await cdn.start()
             yield
         finally:
+            await app.state.media_cache.close()
             await cdn.stop()
             await account_manager.shutdown()
             logger.info("TG Drive stopped")
@@ -112,6 +116,8 @@ def create_app(
         cfg.media_cache_dir or cfg.data_dir / "media-slices",
         cfg.media_cache_max_mib * MIB,
         cfg.media_cache_min_free_mib * MIB,
+        slice_bytes=cfg.media_cache_slice_mib * MIB,
+        ttl_seconds=cfg.media_cache_ttl_seconds,
     )
     app.state.uploads = upload_service
     app.state.channel_sync = channel_sync

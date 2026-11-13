@@ -27,6 +27,7 @@ jobs:
       - run: python -m ruff format --check app tests
       - run: python -m ruff check scripts/traffic_collector.py && python -m ruff format --check scripts/traffic_collector.py
       - run: bash -n deploy/install-traffic.sh deploy/bootstrap-ubuntu.sh
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: python -m pytest --cov=app --cov-report=term-missing
         env:
           # Avoid slow line tracing while Jieba imports its large model tables.
@@ -73,6 +74,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
+      - name: Validate Caddy configuration
+        run: >-
+          docker run --rm -e DOMAIN=drive.example.com -e ACME_EMAIL=admin@example.com
+          -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2.8-alpine
+          caddy validate --config /etc/caddy/Caddyfile
       - uses: docker/build-push-action@v6
         with:
           context: .

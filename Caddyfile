@@ -1,6 +1,9 @@
 # TG Drive 反向代理；可放在 Cloudflare 橙云后，SSL 使用 Full (strict)。
 {
 	email {$ACME_EMAIL}
+	servers {
+		protocols h1 h2
+	}
 	log {
 		output stdout
 		format console

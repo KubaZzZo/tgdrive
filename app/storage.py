@@ -29,7 +29,7 @@ from app.network import get_proxy
 ProgressCallback = Callable[[int, int], Awaitable[None] | None]
 logger = logging.getLogger("tgdrive.storage")
 DOWNLOAD_BLOCK_SIZE = 512 * 1024
-PREFETCH_MIN_BYTES = 8 * 1024 * 1024
+PREFETCH_MIN_BYTES = 2 * 1024 * 1024
 PREFETCH_DEPTH = 4
 PREFETCH_DOWNLOAD_LIMIT = 2
 SESSION_AUTH_ERRORS = (

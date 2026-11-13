@@ -892,9 +892,9 @@ class Database:
                 )
             if upload_id is not None:
                 cursor = self.conn.execute(
-                    """UPDATE uploads SET state='done', progress=?, item_id=?, error=NULL,
+                    """UPDATE uploads SET state='done', progress=size, item_id=?, error=NULL,
                        updated_at=? WHERE id=? AND state='processing'""",
-                    (int(size), item_id, now, upload_id),
+                    (item_id, now, upload_id),
                 )
                 if not cursor.rowcount:
                     raise LookupError("上传任务不存在或已不在处理中")

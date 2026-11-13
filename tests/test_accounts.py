@@ -342,6 +342,65 @@ def test_existing_request_keeps_original_storage_until_response_finishes(workdir
     asyncio.run(run())
 
 
+def test_background_video_fill_keeps_channel_after_probe_and_switch(workdir, fake_telegram):
+    from contextlib import aclosing
+
+    from starlette.requests import Request
+    from test_downloads import make_file
+
+    from app.api.routes.files import stream_item
+    from app.services.media_cache import MediaSliceCache
+
+    async def run():
+        app = create_app(make_settings(workdir), storage=Storage(-100111))
+        manager = app.state.accounts
+        await manager.start()
+        old = manager.current
+        item = make_file(app, old.storage)
+        cache = app.state.media_cache = MediaSliceCache(workdir / "cache", 8192, 0, slice_bytes=4)
+        release = asyncio.Event()
+
+        async def download(message_id, offset, length, **kwargs):
+            assert not old.storage.stopped
+            yield b"ab"
+            await release.wait()
+            assert not old.storage.stopped
+            yield b"cd"
+
+        old.storage.iter_download = download
+
+        async def probe(scope, receive, send):
+            response = await stream_item(Request(scope), item, old.db, old.storage)
+            async with aclosing(response.body_iterator) as stream:
+                assert b"".join([chunk async for chunk in stream]) == b"ab"
+
+        try:
+            await WorkspaceMiddleware(probe, manager)(
+                {
+                    "type": "http",
+                    "path": "/",
+                    "method": "GET",
+                    "app": app,
+                    "headers": [(b"range", b"bytes=0-1")],
+                    "query_string": b"",
+                    "state": {"request_id": "cache-test"},
+                },
+                None,
+                None,
+            )
+            assert old.leases == 1 and cache.pending
+            await manager._activate(Storage(-100222), profile(-100222))
+            assert old.retired and not old.storage.stopped
+            release.set()
+            await until(lambda: old.storage.stopped)
+            assert old.leases == 0 and not cache.pending
+        finally:
+            await cache.close()
+            await manager.shutdown()
+
+    asyncio.run(run())
+
+
 def test_stale_browser_workspace_and_native_download_are_rejected(authenticated_client):
     client, _, _ = authenticated_client
     response = client.post(

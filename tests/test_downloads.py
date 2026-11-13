@@ -159,7 +159,12 @@ def test_disconnect_during_send_closes_pending_prefetch(workdir):
 
         storage._iter_download_once = read
         response = files.FileStreamingResponse(
-            storage.iter_download(1, 0, PREFETCH_MIN_BYTES, prefetch=True)
+            storage.iter_download(
+                1,
+                0,
+                max(PREFETCH_MIN_BYTES, (PREFETCH_DEPTH + 1) * DOWNLOAD_BLOCK_SIZE),
+                prefetch=True,
+            )
         )
         with pytest.raises(OSError, match="client disconnected"):
             await response.stream_response(send)

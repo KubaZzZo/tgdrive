@@ -65,9 +65,13 @@ class Settings:
             _env_path("MEDIA_CACHE_DIR", "") if os.getenv("MEDIA_CACHE_DIR", "").strip() else None
         )
     )
-    media_cache_max_mib: int = field(default_factory=lambda: _env_int("MEDIA_CACHE_MAX_MIB", 0))
+    media_cache_max_mib: int = field(default_factory=lambda: _env_int("MEDIA_CACHE_MAX_MIB", 512))
     media_cache_min_free_mib: int = field(
         default_factory=lambda: _env_int("MEDIA_CACHE_MIN_FREE_MIB", 4096)
+    )
+    media_cache_slice_mib: int = field(default_factory=lambda: _env_int("MEDIA_CACHE_SLICE_MIB", 2))
+    media_cache_ttl_seconds: int = field(
+        default_factory=lambda: _env_int("MEDIA_CACHE_TTL_SECONDS", 600)
     )
 
     app_password: str = field(default_factory=lambda: os.getenv("APP_PASSWORD", "change-me"))
@@ -106,6 +110,10 @@ class Settings:
     upload_temp_max_mib: int = field(default_factory=lambda: _env_int("UPLOAD_TEMP_MAX_MIB", 51200))
     upload_temp_min_free_mib: int = field(
         default_factory=lambda: _env_int("UPLOAD_TEMP_MIN_FREE_MIB", 512)
+    )
+    video_faststart: bool = field(default_factory=lambda: _env_bool("VIDEO_FASTSTART", True))
+    video_faststart_timeout: int = field(
+        default_factory=lambda: _env_int("VIDEO_FASTSTART_TIMEOUT", 300)
     )
 
     channel_sync_enabled: bool = field(
@@ -161,6 +169,10 @@ class Settings:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def validate(self) -> None:
+        if self.video_faststart_timeout <= 0:
+            raise RuntimeError("VIDEO_FASTSTART_TIMEOUT 必须大于 0")
+        if self.media_cache_slice_mib not in {1, 2, 4} or self.media_cache_ttl_seconds <= 0:
+            raise RuntimeError("媒体缓存切片大小必须为 1、2 或 4 MiB，保留时间必须大于 0")
         if self.media_cache_max_mib < 0 or self.media_cache_min_free_mib < 0:
             raise RuntimeError("媒体缓存容量和磁盘保留空间不能为负数")
         if not 1 <= self.cdn_warning_percent < self.cdn_stop_percent <= 100:
