@@ -216,13 +216,26 @@ async def stream_item(
         await cdn.charge(len(data))
         return Response(data, status_code=206 if partial else 200, media_type=mime, headers=headers)
     cache = request.app.state.media_cache
-    if cache.enabled and not public and partial and inline and item.get("category") == "video":
+    if cache.enabled and inline and item.get("category") == "video":
+        runtime = request.state.telegram_runtime
+        manager = request.app.state.accounts
+
+        def retain_runtime():
+            # Take the lease before scheduling: even an early disconnect must not retire it.
+            runtime.leases += 1
+
+            def release():
+                runtime.leases -= 1
+                if runtime.retired and runtime.leases == 0:
+                    manager.task(manager._dispose(runtime))
+
+            return release
 
         def fetch_slice(first: int, last: int):
-            return iter_item_range(db, storage, item, first, last, parts)
+            return iter_item_range(db, storage, item, first, last, parts, prefetch=True)
 
         stream = charge_media_stream(
-            cache.stream(db.path, etag, start, end, size, fetch_slice), cdn
+            cache.stream(db.path, etag, start, end, size, fetch_slice, retain=retain_runtime), cdn
         )
     else:
         stream = iter_item_range(db, storage, item, start, end, parts, cdn, prefetch=not inline)

@@ -24,6 +24,7 @@ from app.services.channel_sync import ChannelSyncService
 from app.services.media_cache import MIB, MediaSliceCache
 from app.services.thumbnails import ThumbnailCache
 from app.services.traffic import TrafficMiddleware, TrafficMonitor
+from app.services.upload_temp import cleanup_faststart_outputs
 from app.services.uploads import UploadService, UploadSpace
 from app.storage import TelegramStorage
 
@@ -63,13 +64,16 @@ def create_app(
         cfg.upload_stale_hours,
         cfg.upload_concurrency,
         space=UploadSpace(cfg.upload_temp_max_mib, cfg.upload_temp_min_free_mib),
+        faststart=cfg.video_faststart,
+        faststart_timeout=cfg.video_faststart_timeout,
     )
 
     channel_sync = ChannelSyncService(database, telegram, cfg)
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
-        interrupted = database.recover_interrupted_uploads()
+        cleanup_faststart_outputs(cfg.temp_dir)
+        interrupted = upload_service.recover_interrupted()
         if interrupted:
             logger.warning("Marked %s interrupted upload(s) as retryable errors", interrupted)
         upload_service.cleanup_stale()
@@ -87,9 +91,11 @@ def create_app(
             cfg.is_configured,
         )
         try:
+            app.state.media_cache.start()
             await cdn.start()
             yield
         finally:
+            await app.state.media_cache.close()
             await cdn.stop()
             await account_manager.shutdown()
             logger.info("TG Drive stopped")
@@ -112,6 +118,8 @@ def create_app(
         cfg.media_cache_dir or cfg.data_dir / "media-slices",
         cfg.media_cache_max_mib * MIB,
         cfg.media_cache_min_free_mib * MIB,
+        slice_bytes=cfg.media_cache_slice_mib * MIB,
+        ttl_seconds=cfg.media_cache_ttl_seconds,
     )
     app.state.uploads = upload_service
     app.state.channel_sync = channel_sync

@@ -16,6 +16,8 @@ from anyio import CancelScope
 
 from app.db import Database
 from app.services.image_host import MAX_IMAGE_SIZE, image_mime
+from app.services.upload_temp import faststart_path, remove_upload_files
+from app.services.video_prepare import prepared_video
 from app.storage import TelegramStorage
 
 logger = logging.getLogger("tgdrive.uploads")
@@ -30,11 +32,23 @@ class UploadSpace:
         self.max_bytes = max_mib * 1024**2
         self.min_free_bytes = min_free_mib * 1024**2
         self._lock = asyncio.Lock()
+        self._reservations: dict[Path, int] = {}
 
     def _check(self, directory: Path, growth: int) -> None:
+        reserved = {
+            path: size for path, size in self._reservations.items() if path.parent == directory
+        }
+        remaining = 0
+        for path, size in reserved.items():
+            try:
+                remaining += max(0, size - path.stat().st_size)
+            except FileNotFoundError:
+                remaining += size
         if self.max_bytes:
-            used = 0
+            used = sum(reserved.values())
             for path in directory.glob("upload_*.part"):
+                if path in reserved:
+                    continue
                 try:
                     used += path.stat().st_size
                 except FileNotFoundError:
@@ -42,12 +56,24 @@ class UploadSpace:
                     continue
             if used + growth > self.max_bytes:
                 raise UploadSpaceError("上传临时目录额度不足，请等待现有任务完成或取消后重试")
-        if shutil.disk_usage(directory).free < self.min_free_bytes + growth:
+        if shutil.disk_usage(directory).free < self.min_free_bytes + growth + remaining:
             raise UploadSpaceError("上传磁盘可用空间不足，请释放空间后重试")
 
     async def check_admission(self, directory: Path, size: int) -> None:
         async with self._lock:
             await asyncio.to_thread(self._check, directory, size)
+
+    @asynccontextmanager
+    async def reserve(self, path: Path, size: int) -> AsyncIterator[None]:
+        async with self._lock:
+            await asyncio.to_thread(self._check, path.parent, size)
+            self._reservations[path] = size
+        try:
+            yield
+        finally:
+            with CancelScope(shield=True):
+                async with self._lock:
+                    self._reservations.pop(path, None)
 
     def _write(self, directory: Path, file: BinaryIO, data: bytes) -> None:
         self._check(directory, len(data))
@@ -84,6 +110,25 @@ def file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+async def upload_sha256(path: Path) -> str:
+    # Keep the prepared file alive until the worker has closed its file handle.
+    worker = asyncio.create_task(asyncio.to_thread(file_sha256, path))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        with CancelScope(shield=True):
+            while not worker.done():
+                try:
+                    await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not worker.cancelled():
+                worker.exception()
+        raise
+
+
 class UploadService:
     """Run browser-upload finalization outside the request lifecycle."""
 
@@ -95,6 +140,8 @@ class UploadService:
         concurrency: int = 2,
         space: UploadSpace | None = None,
         locks: WeakValueDictionary[str, asyncio.Lock] | None = None,
+        faststart: bool = True,
+        faststart_timeout: int = 300,
     ):
         self.db = db
         self.storage = storage
@@ -105,6 +152,8 @@ class UploadService:
         self.locks = locks if locks is not None else WeakValueDictionary[str, asyncio.Lock]()
         self._slots = asyncio.Semaphore(concurrency)
         self._maintenance: asyncio.Task[None] | None = None
+        self.faststart = faststart
+        self.faststart_timeout = faststart_timeout
 
     @asynccontextmanager
     async def lock(self, upload_id: str) -> AsyncIterator[None]:
@@ -115,6 +164,15 @@ class UploadService:
     def start(self) -> None:
         if self.stale_hours > 0 and self._maintenance is None:
             self._maintenance = asyncio.create_task(self._maintain(), name="upload-cleanup")
+
+    def recover_interrupted(self) -> int:
+        # Called before this workspace's tasks start; keep originals for retry.
+        for upload in self.db.list_uploads(states=("processing", "uploading", "error", "done")):
+            try:
+                faststart_path(Path(upload["temp_path"])).unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not remove leftover faststart output")
+        return self.db.recover_interrupted_uploads()
 
     async def _maintain(self) -> None:
         while True:
@@ -134,7 +192,7 @@ class UploadService:
                     and current["state"] in {"uploading", "error"}
                     and current["updated_at"] < cutoff
                 ):
-                    Path(current["temp_path"]).unlink(missing_ok=True)
+                    remove_upload_files(Path(current["temp_path"]))
                     self.db.delete_upload(current["id"])
 
     async def _run(self, upload_id: str) -> None:
@@ -155,7 +213,7 @@ class UploadService:
 
     async def _process(self, upload_id: str) -> None:
         upload = self.db.get_upload(upload_id)
-        if not upload:
+        if not upload or upload["state"] == "done":
             return
         path = Path(upload["temp_path"])
         if not path.exists():
@@ -170,11 +228,14 @@ class UploadService:
             now = time.monotonic()
             if now - last_update >= 0.8 or sent >= total:
                 last_update = now
-                self.db.update_upload(upload_id, progress=sent)
+                value = min(int(upload["size"]), sent * int(upload["size"]) // max(total, 1))
+                self.db.update_upload(upload_id, progress=value)
 
         parts: list[dict[str, Any]] = []
         committed = False
         try:
+            # A retry may follow a crash; remove the old output before reserving space.
+            faststart_path(path).unlink(missing_ok=True)
             if path.stat().st_size != int(upload["size"]):
                 raise ValueError("临时文件大小不匹配，请取消后重新上传")
             if upload["image_host"]:
@@ -185,34 +246,36 @@ class UploadService:
             parent = self.db.get_item(upload["parent_id"]) if upload["parent_id"] else None
             if upload["parent_id"] and (not parent or parent["kind"] != "folder"):
                 raise ValueError("目标文件夹已删除，请取消后重新选择上传目录")
-            sha256 = await asyncio.to_thread(file_sha256, path)
-            parts = await self.storage.upload_file(
-                path=path,
-                name=upload["name"],
-                mime=upload["mime"],
-                progress=progress,
-                storage_tag=upload_id,
-            )
+            async with prepared_video(
+                path,
+                upload["name"],
+                self.space,
+                enabled=self.faststart and not upload["image_host"],
+                timeout=self.faststart_timeout,
+            ) as prepared:
+                stored_size = prepared.stat().st_size
+                sha256 = await upload_sha256(prepared)
+                parts = await self.storage.upload_file(
+                    path=prepared,
+                    name=upload["name"],
+                    mime=upload["mime"],
+                    progress=progress,
+                    storage_tag=upload_id,
+                )
             item = self.db.create_file(
                 name=upload["name"],
                 parent_id=upload["parent_id"],
-                size=int(upload["size"]),
+                size=stored_size,
                 mime=upload["mime"],
                 sha256=sha256,
                 chat_id=str(self.storage.chat),
                 parts=parts,
                 hosted_mime=upload["mime"] if upload["image_host"] else None,
+                upload_id=upload_id,
             )
             committed = True
-            self.db.update_upload(
-                upload_id,
-                state="done",
-                progress=int(upload["size"]),
-                item_id=item["id"],
-                error=None,
-            )
             try:
-                path.unlink(missing_ok=True)
+                remove_upload_files(path)
             except OSError:
                 logger.warning("Could not remove temp upload %s", path)
             logger.info(
@@ -245,7 +308,7 @@ class UploadService:
         cutoff = (datetime.now(UTC) - timedelta(hours=self.stale_hours)).isoformat()
         removed = 0
         for upload in self.db.list_stale_uploads(cutoff):
-            Path(upload["temp_path"]).unlink(missing_ok=True)
+            remove_upload_files(Path(upload["temp_path"]))
             self.db.delete_upload(upload["id"])
             removed += 1
         if removed:

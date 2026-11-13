@@ -393,12 +393,18 @@ def main() -> None:
     parser.add_argument("--channel", help="Playwright Chromium channel, such as msedge or chrome")
     parser.add_argument("--delay-ms", type=int, default=15, help="Fixture delay per 256 KiB block")
     parser.add_argument("--mobile", action="store_true", help="Use a narrow mobile viewport")
+    parser.add_argument("--media-cache-mib", type=int, default=0, help="Enable source slice cache")
     parser.add_argument("--runs", type=int, default=1, help="Number of independent browser samples")
     parser.add_argument(
         "--play-ms", type=int, default=1500, help="Playback window for stall sampling"
     )
     args = parser.parse_args()
-    if args.runs < 1 or not 1 <= args.play_ms <= 30_000 or args.delay_ms < 0:
+    if (
+        args.runs < 1
+        or not 1 <= args.play_ms <= 30_000
+        or args.delay_ms < 0
+        or args.media_cache_mib < 0
+    ):
         parser.error("runs must be positive, play-ms must be 1–30000, delay-ms must be nonnegative")
     assert (ROOT / "static/dist/index.html").is_file(), "Run npm --prefix frontend run build first"
 
@@ -420,7 +426,15 @@ def main() -> None:
     with TemporaryDirectory(prefix="tgdrive-video-seek-") as temp, socket.socket() as listener:
         path = Path(temp)
         storage = Storage()
-        app = create_app(make_settings(path, frontend_dist=ROOT / "static/dist"), storage=storage)
+        app = create_app(
+            make_settings(
+                path,
+                frontend_dist=ROOT / "static/dist",
+                media_cache_max_mib=args.media_cache_mib,
+                media_cache_min_free_mib=0,
+            ),
+            storage=storage,
+        )
         files = {}
         for message_id, (name, indexed) in enumerate(
             [

@@ -507,11 +507,13 @@ class AccountManager:
                     self.settings.upload_concurrency,
                     space=old.uploads.space,
                     locks=old.uploads.locks,
+                    faststart=self.settings.video_faststart,
+                    faststart_timeout=self.settings.video_faststart_timeout,
                 ),
                 ChannelSyncService(db, candidate, self.settings),
             )
             await old.sync.shutdown()
-            db.recover_interrupted_uploads()
+            new.uploads.recover_interrupted()
             await asyncio.wait_for(new.sync.start(), 30)
             await old.cleanup.stop()
             self.control.save_telegram_profile(profile, key)

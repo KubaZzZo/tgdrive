@@ -845,7 +845,10 @@ class Database:
         chat_id: str,
         parts: Iterable[dict[str, Any]],
         hosted_mime: str | None = None,
+        *,
+        upload_id: str | None = None,
     ) -> dict[str, Any]:
+        """Create file metadata and, when supplied, complete its upload atomically."""
         name = self._clean_name(name)
         mime = effective_mime(name, mime)
         now = utcnow()
@@ -887,7 +890,15 @@ class Database:
                     "INSERT INTO image_hosts VALUES (?,?,?,?)",
                     (item_id, secrets.token_urlsafe(24), hosted_mime, now),
                 )
-        return self.get_item(item_id)  # type: ignore[return-value]
+            if upload_id is not None:
+                cursor = self.conn.execute(
+                    """UPDATE uploads SET state='done', progress=size, item_id=?, error=NULL,
+                       updated_at=? WHERE id=? AND state='processing'""",
+                    (item_id, now, upload_id),
+                )
+                if not cursor.rowcount:
+                    raise LookupError("上传任务不存在或已不在处理中")
+            return self.get_item(item_id)  # type: ignore[return-value]
 
     def rename_item(self, item_id: str, name: str) -> dict[str, Any] | None:
         return self.update_item(item_id, name=name)

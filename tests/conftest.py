@@ -68,6 +68,7 @@ def make_settings(tmp_path: Path, **overrides: Any) -> Settings:
         "frontend_dist": tmp_path / "dist",
         "traffic_host_state": tmp_path / "host.json",
         "axisnow_api_token": "",
+        "media_cache_max_mib": 0,
         "app_password": "correct-horse-battery-staple",
         "app_secret": "test-secret-" + "x" * 40,
         "cookie_secure": False,

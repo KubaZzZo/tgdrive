@@ -316,6 +316,58 @@ def test_metadata_failure_removes_uploaded_messages(workdir):
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("image_host", [False, True])
+def test_upload_completion_failure_rolls_back_metadata_and_retries_once(workdir, image_host):
+    async def run():
+        db = Database(workdir / "completion.sqlite3")
+        storage = FakeTelegramStorage()
+        service = UploadService(db, storage)
+        path = workdir / "completion.part"
+        data = b"\x89PNG\r\n\x1a\nreview"
+        path.write_bytes(data)
+        upload = db.create_upload(
+            None, "image.png", len(data), "image/png", str(path), 8, image_host=image_host
+        )
+        db.update_upload(upload["id"], received=len(data))
+        try:
+            with db.conn:
+                db.conn.execute(
+                    """CREATE TRIGGER fail_upload_completion BEFORE UPDATE OF state ON uploads
+                       WHEN NEW.state='done' BEGIN
+                           SELECT RAISE(ABORT, 'simulated completion failure');
+                       END"""
+                )
+            await service._process(upload["id"])
+            failed = db.get_upload(upload["id"])
+            assert failed["state"] == "error" and failed["item_id"] is None
+            assert failed["received"] == len(data)
+            assert db.stats()["files"] == 0
+            assert db.conn.execute("SELECT COUNT(*) FROM file_parts").fetchone()[0] == 0
+            assert db.list_hosted_images("", 10, 0)[1] == 0
+            assert storage.deleted_message_ids == [101] and not storage.files
+            assert path.read_bytes() == data
+
+            with db.conn:
+                db.conn.execute("DROP TRIGGER fail_upload_completion")
+            await service._process(upload["id"])
+            completed = db.get_upload(upload["id"])
+            assert completed["state"] == "done" and completed["progress"] == len(data)
+            assert db.get_item(completed["item_id"])["size"] == len(data)
+            assert db.get_parts(completed["item_id"])[0]["tg_message_id"] == 102
+            assert db.stats()["files"] == 1
+            assert db.list_hosted_images("", 10, 0)[1] == int(image_host)
+            assert storage.files == {102: data}
+            assert not path.exists()
+
+            await service._process(upload["id"])
+            assert db.get_upload(upload["id"])["state"] == "done"
+            assert db.stats()["files"] == 1 and storage.files == {102: data}
+        finally:
+            db.close()
+
+    asyncio.run(run())
+
+
 def test_stale_cleanup_rechecks_after_waiting_for_writer(workdir):
     from datetime import UTC, datetime, timedelta
 
