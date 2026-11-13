@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 
 import anyio
 
+from app.services.upload_temp import faststart_path
+
 if TYPE_CHECKING:
     from app.services.uploads import UploadSpace
 
@@ -113,7 +115,7 @@ async def prepared_video(
         return
     from app.services.uploads import UploadSpaceError
 
-    target = path.with_name(path.stem + ".faststart.part")
+    target = faststart_path(path)
     limit = path.stat().st_size + REMUX_SLACK_BYTES
     async with AsyncExitStack() as stack:
         try:

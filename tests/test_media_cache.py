@@ -300,3 +300,69 @@ def test_fill_cancelled_before_first_step_releases_lease(workdir):
             await cache.close()
 
     asyncio.run(run())
+
+
+def test_cold_tail_reads_exactly_without_waiting_for_prefix_then_warms_cache(workdir):
+    async def run():
+        size = 2 * 1024**2
+        start = size - 64 * 1024
+        origin = bytes(range(256)) * (size // 256)
+        cache = MediaSliceCache(workdir / "cache", 4 * 1024**2, 0)
+        fill_started = asyncio.Event()
+        release = asyncio.Event()
+        calls = []
+
+        async def fetch(first, last):
+            calls.append((first, last))
+            if first == 0:
+                fill_started.set()
+                yield origin[: 512 * 1024]
+                await release.wait()
+                yield origin[512 * 1024 : last]
+            else:
+                yield origin[first:last]
+
+        async def read():
+            return await collect(cache.stream("w", "v", start, size, size, fetch))
+
+        try:
+            assert await asyncio.wait_for(read(), 1) == origin[start:]
+            await asyncio.wait_for(fill_started.wait(), 1)
+            assert calls == [(start, size), (0, size)]
+            # A pending fill whose prefix has not reached this position must not block it.
+            assert await asyncio.wait_for(read(), 1) == origin[start:]
+            assert calls == [(start, size), (0, size), (start, size)]
+            assert len(cache.pending) == 1
+            release.set()
+            await settle(cache)
+            assert await read() == origin[start:]
+            assert len(calls) == 3 and cache.hit_bytes == size - start
+            assert cache.overfetch_bytes == size
+        finally:
+            await cache.close()
+
+    asyncio.run(run())
+
+
+def test_cancelled_cold_seek_closes_exact_read_without_starting_fill(workdir):
+    async def run():
+        cache = MediaSliceCache(workdir / "cache", 8192, 0, slice_bytes=4)
+        calls = []
+        closed = False
+
+        async def fetch(start, end):
+            nonlocal closed
+            calls.append((start, end))
+            try:
+                yield b"d"
+            finally:
+                closed = True
+
+        try:
+            async with aclosing(cache.stream("w", "v", 3, 4, 4, fetch)) as stream:
+                assert await anext(stream) == b"d"
+            assert closed and calls == [(3, 4)] and not cache.pending
+        finally:
+            await cache.close()
+
+    asyncio.run(run())

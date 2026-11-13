@@ -14,6 +14,7 @@ from app.config import Settings
 from app.db import Database
 from app.schemas import UploadCreateBody
 from app.services.image_host import MAX_IMAGE_SIZE
+from app.services.upload_temp import remove_upload_files
 from app.services.uploads import UploadService, UploadSpaceError
 from app.storage import TelegramStorage
 
@@ -191,7 +192,7 @@ async def cancel_upload(
             raise HTTPException(404, "上传任务不存在")
         if upload["state"] == "processing":
             raise HTTPException(409, "正在写入 Telegram，无法取消")
-        Path(upload["temp_path"]).unlink(missing_ok=True)
+        remove_upload_files(Path(upload["temp_path"]))
         db.delete_upload(upload_id)
         return {"ok": True}
 

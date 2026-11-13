@@ -224,34 +224,21 @@ class MediaSliceCache:
             else:
                 self.misses += 1
                 pending = self.pending.get(path)
-                coalesced = pending is not None
-                if (
-                    pending is None
-                    and not self._closed
-                    and len(self.pending) < MAX_PENDING_FILLS
-                    and await anyio.to_thread.run_sync(self._has_space, length)
-                ):
-                    # Recheck after the disk check: another request may have started a fill.
-                    pending = self.pending.get(path)
-                    coalesced = pending is not None
-                    if (
-                        pending is None
-                        and not self._closed
-                        and len(self.pending) < MAX_PENDING_FILLS
-                    ):
-                        pending = self.pending[path] = PendingSlice()
-                        release = retain() if retain else None
-                        pending.task = asyncio.create_task(
-                            self._fill(
-                                path, pending, slice_start, slice_end, cursor, requested_end, fetch
-                            ),
-                            name="media-cache-fill",
-                        )
-                        pending.task.add_done_callback(
-                            lambda task, p=path, fill=pending, done=release: self._finish(
-                                p, fill, done, task
-                            )
-                        )
+                if offset and (pending is None or len(pending.data) <= offset):
+                    # A cold seek must not wait for the slice prefix. Start its fill only
+                    # after the requested bytes reached the caller, without competing.
+                    async with aclosing(fetch(cursor, requested_end)) as source:
+                        async for chunk in source:
+                            yield chunk
+                    await self._get_or_start_fill(
+                        path, slice_start, slice_end, slice_start, slice_start, fetch, retain
+                    )
+                    cursor = requested_end
+                    continue
+                pending, created = await self._get_or_start_fill(
+                    path, slice_start, slice_end, cursor, requested_end, fetch, retain
+                )
+                coalesced = pending is not None and not created
                 if pending is not None:
                     self.coalesced += int(coalesced)
                     async with aclosing(
@@ -268,6 +255,36 @@ class MediaSliceCache:
                         async for chunk in source:
                             yield chunk
             cursor = requested_end
+
+    async def _get_or_start_fill(
+        self,
+        path: Path,
+        start: int,
+        end: int,
+        wanted_start: int,
+        wanted_end: int,
+        fetch: FetchRange,
+        retain: Callable[[], Callable[[], None]] | None,
+    ) -> tuple[PendingSlice | None, bool]:
+        if (pending := self.pending.get(path)) is not None:
+            return pending, False
+        if self._closed or len(self.pending) >= MAX_PENDING_FILLS:
+            return None, False
+        if not await anyio.to_thread.run_sync(self._has_space, end - start):
+            return None, False
+        # Recheck after the disk check: another request may have started a fill.
+        if (pending := self.pending.get(path)) is not None:
+            return pending, False
+        if self._closed or len(self.pending) >= MAX_PENDING_FILLS:
+            return None, False
+        pending = self.pending[path] = PendingSlice()
+        release = retain() if retain else None
+        pending.task = asyncio.create_task(
+            self._fill(path, pending, start, end, wanted_start, wanted_end, fetch),
+            name="media-cache-fill",
+        )
+        pending.task.add_done_callback(lambda task: self._finish(path, pending, release, task))
+        return pending, True
 
     def _hit_chunks(self, cached: bytes):
         self.hits += 1

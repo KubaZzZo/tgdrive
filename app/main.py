@@ -24,6 +24,7 @@ from app.services.channel_sync import ChannelSyncService
 from app.services.media_cache import MIB, MediaSliceCache
 from app.services.thumbnails import ThumbnailCache
 from app.services.traffic import TrafficMiddleware, TrafficMonitor
+from app.services.upload_temp import cleanup_faststart_outputs
 from app.services.uploads import UploadService, UploadSpace
 from app.storage import TelegramStorage
 
@@ -71,7 +72,8 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
-        interrupted = database.recover_interrupted_uploads()
+        cleanup_faststart_outputs(cfg.temp_dir)
+        interrupted = upload_service.recover_interrupted()
         if interrupted:
             logger.warning("Marked %s interrupted upload(s) as retryable errors", interrupted)
         upload_service.cleanup_stale()

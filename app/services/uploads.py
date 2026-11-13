@@ -16,6 +16,7 @@ from anyio import CancelScope
 
 from app.db import Database
 from app.services.image_host import MAX_IMAGE_SIZE, image_mime
+from app.services.upload_temp import faststart_path, remove_upload_files
 from app.services.video_prepare import prepared_video
 from app.storage import TelegramStorage
 
@@ -164,6 +165,15 @@ class UploadService:
         if self.stale_hours > 0 and self._maintenance is None:
             self._maintenance = asyncio.create_task(self._maintain(), name="upload-cleanup")
 
+    def recover_interrupted(self) -> int:
+        # Called before this workspace's tasks start; keep originals for retry.
+        for upload in self.db.list_uploads(states=("processing", "uploading", "error", "done")):
+            try:
+                faststart_path(Path(upload["temp_path"])).unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Could not remove leftover faststart output")
+        return self.db.recover_interrupted_uploads()
+
     async def _maintain(self) -> None:
         while True:
             await asyncio.sleep(300)
@@ -182,7 +192,7 @@ class UploadService:
                     and current["state"] in {"uploading", "error"}
                     and current["updated_at"] < cutoff
                 ):
-                    Path(current["temp_path"]).unlink(missing_ok=True)
+                    remove_upload_files(Path(current["temp_path"]))
                     self.db.delete_upload(current["id"])
 
     async def _run(self, upload_id: str) -> None:
@@ -224,6 +234,8 @@ class UploadService:
         parts: list[dict[str, Any]] = []
         committed = False
         try:
+            # A retry may follow a crash; remove the old output before reserving space.
+            faststart_path(path).unlink(missing_ok=True)
             if path.stat().st_size != int(upload["size"]):
                 raise ValueError("临时文件大小不匹配，请取消后重新上传")
             if upload["image_host"]:
@@ -263,7 +275,7 @@ class UploadService:
             )
             committed = True
             try:
-                path.unlink(missing_ok=True)
+                remove_upload_files(path)
             except OSError:
                 logger.warning("Could not remove temp upload %s", path)
             logger.info(
@@ -296,7 +308,7 @@ class UploadService:
         cutoff = (datetime.now(UTC) - timedelta(hours=self.stale_hours)).isoformat()
         removed = 0
         for upload in self.db.list_stale_uploads(cutoff):
-            Path(upload["temp_path"]).unlink(missing_ok=True)
+            remove_upload_files(Path(upload["temp_path"]))
             self.db.delete_upload(upload["id"])
             removed += 1
         if removed:

@@ -513,7 +513,7 @@ class AccountManager:
                 ChannelSyncService(db, candidate, self.settings),
             )
             await old.sync.shutdown()
-            db.recover_interrupted_uploads()
+            new.uploads.recover_interrupted()
             await asyncio.wait_for(new.sync.start(), 30)
             await old.cleanup.stop()
             self.control.save_telegram_profile(profile, key)
