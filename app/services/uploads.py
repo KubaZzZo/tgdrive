@@ -155,7 +155,7 @@ class UploadService:
 
     async def _process(self, upload_id: str) -> None:
         upload = self.db.get_upload(upload_id)
-        if not upload:
+        if not upload or upload["state"] == "done":
             return
         path = Path(upload["temp_path"])
         if not path.exists():
@@ -202,15 +202,9 @@ class UploadService:
                 chat_id=str(self.storage.chat),
                 parts=parts,
                 hosted_mime=upload["mime"] if upload["image_host"] else None,
+                upload_id=upload_id,
             )
             committed = True
-            self.db.update_upload(
-                upload_id,
-                state="done",
-                progress=int(upload["size"]),
-                item_id=item["id"],
-                error=None,
-            )
             try:
                 path.unlink(missing_ok=True)
             except OSError:
