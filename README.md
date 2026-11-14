@@ -4,7 +4,7 @@ TG Drive 是一个自托管的个人网盘。文件保存在 Telegram 私有频�
 
 [部署与备份](DEPLOY.md) · [视频播放与外部直链](docs/video-playback.md) · [架构说明](docs/ARCHITECTURE.md) · [更新记录](CHANGELOG.md)
 
-## 功能
+## 主要功能
 
 | 功能 | 使用方式 |
 | --- | --- |
@@ -15,7 +15,52 @@ TG Drive 是一个自托管的个人网盘。文件保存在 Telegram 私有频�
 | 人物和图床 | 按人物标签筛选频道视频，或发布图片外链。人物识别、图床和流量面板可分别关闭。 |
 | 流量监控 | 统计 TG Drive 自身的 HTTP 和 Telegram 入站、出站有效载荷，显示每日用量、七天历史和额度提示。应用自动写入 SQLite，Docker 部署即可使用。 |
 
-回收站默认保留 30 天，恢复时优先放回原目录。移入回收站会暂停公开链接。永久删除或到期后，后台任务会清理 Telegram 消息，失败可重试。
+## 系统结构
+
+```mermaid
+flowchart LR
+    Browser["浏览器<br/>网盘、频道同步、图床"]
+    Player["外部播放器<br/>分享直链与 Range 请求"]
+    Channel["Telegram 私有频道<br/>文件内容"]
+
+    subgraph Server["自托管服务器"]
+        Proxy["Caddy<br/>HTTPS 入口"]
+        API["FastAPI<br/>登录、文件 API、媒体流"]
+        Jobs["后台任务<br/>上传、频道同步、消息清理"]
+        Data[("SQLite<br/>目录、分享、任务与流量")]
+        Disk[("本地磁盘<br/>Telegram 会话、上传分片、视频缓存")]
+        Proxy --> API
+        API --> Jobs
+        API --> Data
+        Jobs --> Data
+        API --> Disk
+        Jobs --> Disk
+    end
+
+    Browser --> Proxy
+    Player --> Proxy
+    API -->|"按需读取文件字节"| Channel
+    Jobs <-->|"写入文件、收录消息与清理"| Channel
+```
+
+图中 Caddy 是默认 Docker Compose 的 HTTPS 入口。本地开发可以直接访问 FastAPI。SQLite 保存目录和索引，文件正文存放在 Telegram。浏览器和外部播放器的媒体请求都经由 TG Drive 转发。
+
+## 文件怎么流转
+
+```mermaid
+flowchart TD
+    Upload["上传文件或目录"] --> Chunks["分片暂存于服务器"]
+    Chunks --> Save["后台写入 Telegram"]
+    ChannelFile["直接发到 Telegram 频道"] --> Sync["频道同步收录"]
+    Save --> Drive["文件出现在网盘"]
+    Sync --> Drive
+    Drive --> Play["网页播放或通过分享直链播放"]
+    Drive --> Trash["移入回收站，暂停公开链接"]
+    Trash -->|"恢复"| Drive
+    Trash -->|"到期或永久删除"| Cleanup["排队清理 Telegram 消息"]
+```
+
+回收站默认保留 30 天，恢复时优先放回原目录。Telegram 消息清理失败后会重试。
 
 ## 本地启动
 
