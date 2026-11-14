@@ -6,6 +6,7 @@ import { RouterLink, useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import type { BatchItemResult, DriveItem, FileAction, FileCategory } from '@/api/types'
 import type { DriveFilters } from '@/utils/driveLocation'
+import { useAuthStore } from '@/stores/auth'
 import { useDriveStore } from '@/stores/drive'
 import { useToastStore } from '@/stores/toast'
 import { useUploadStore } from '@/stores/uploads'
@@ -26,6 +27,7 @@ const TrashDialog = defineAsyncComponent(() => import('@/components/TrashDialog.
 const VideoPeopleDialog = defineAsyncComponent(() => import('@/components/VideoPeopleDialog.vue'))
 
 const drive = useDriveStore()
+const auth = useAuthStore()
 const uploads = useUploadStore()
 const toast = useToastStore()
 const route = useRoute()
@@ -345,7 +347,7 @@ watch(() => route.fullPath, () => {
         >
           <AppIcon name="recent" /><span>最近上传</span>
         </button>
-        <button type="button" @click="openPeople">
+        <button v-if="auth.features.people" type="button" @click="openPeople">
           <AppIcon name="people" /><span>人物视频</span>
         </button>
         <button type="button" @click="sharesOpen = true">

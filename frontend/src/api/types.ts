@@ -117,6 +117,7 @@ export interface StorageStatus {
 }
 
 export interface Meta {
+  features?: { people: boolean; images: boolean; traffic: boolean }
   workspace_is_default?: boolean
   app_name: string
   version: string
@@ -164,6 +165,7 @@ export interface HostedImage extends DriveItem {
 export interface ShareRecord {
   token: string
   url: string
+  stream_url: string
   expires_at: string | null
 }
 

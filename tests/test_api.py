@@ -88,6 +88,7 @@ def test_failed_telegram_cleanup_retries_after_restart(workdir):
         assert deleted.status_code == 200
         assert deleted.json()["warning"]
         assert db.get_item(file["id"]) is None
+        client.portal.call(app.state.accounts.current.cleanup.process)
         assert db.due_telegram_cleanup(chat_id, time.time()) == []
         [job] = db.due_telegram_cleanup(chat_id, time.time() + 60)
         assert job["message_id"] == 42
@@ -178,10 +179,43 @@ def test_telegram_cleanup_isolates_an_undeletable_message(authenticated_client, 
     deleted = client.delete(f"/api/trash/{file['id']}")
     assert deleted.status_code == 200
     assert deleted.json()["warning"]
+    client.portal.call(app.state.accounts.current.cleanup.process)
     assert storage.deleted_message_ids == [43]
     [job] = db.due_telegram_cleanup(chat_id, time.time() + 60)
     assert job["message_id"] == 42
     assert job["attempts"] == 1
+
+
+def test_optional_features_can_be_disabled_without_disabling_drive(workdir):
+    settings = make_settings(
+        workdir, people_enabled=False, image_host_enabled=False, traffic_enabled=False
+    )
+    storage = FakeTelegramStorage()
+    app = create_app(settings, storage=storage)
+    with TestClient(app) as client:
+        assert client.post("/api/login", json={"password": PASSWORD}).is_success
+        assert client.get("/api/meta").json()["features"] == {
+            "people": False,
+            "images": False,
+            "traffic": False,
+        }
+        for path in (
+            "/api/people",
+            "/api/items?person=Alice",
+            "/api/images",
+            "/i/token",
+            "/api/traffic",
+        ):
+            assert client.get(path).status_code == 404
+        assert client.put("/api/traffic/settings", json={"quota_bytes": 1024}).status_code == 404
+        assert client.post("/api/people", json={"name": "Alice"}).status_code == 404
+        payload = {"name": "image.png", "size": 4}
+        assert client.post("/api/uploads", json={**payload, "image_host": True}).status_code == 404
+        assert client.post("/api/uploads", json=payload).is_success
+        assert client.get("/api/items").is_success
+        assert storage.traffic is None
+        app.state.traffic.record("web", outbound=2**20)
+        assert app.state.db.traffic_rows("0001-01-01") == []
 
 
 def test_login_rate_limit(workdir):
@@ -321,7 +355,17 @@ def test_resumable_upload_download_share_and_delete(authenticated_client):
     share = client.post(f"/api/items/{item['id']}/share", json={"expires_hours": 1})
     assert share.status_code == 200
     token = share.json()["token"]
+    stream_url = share.json()["stream_url"]
+    assert stream_url.endswith(f"/s/{token}/download")
+    assert client.get("/api/shares").json()["shares"][0]["stream_url"] == stream_url
     client.post("/api/logout")
+
+    stream_head = client.head(stream_url, headers={"Range": "bytes=-3"})
+    assert stream_head.status_code == 206
+    assert stream_head.content == b""
+    assert stream_head.headers["content-range"] == "bytes 7-9/10"
+    assert stream_head.headers["cache-control"] == "private, no-store"
+    assert client.get(stream_url, headers={"Range": "bytes=-3"}).content == b"rld"
 
     page = client.get(f"/s/{token}")
     assert page.status_code == 200

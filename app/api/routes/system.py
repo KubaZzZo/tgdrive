@@ -15,6 +15,8 @@ router = APIRouter(prefix="/api", tags=["system"])
 
 @router.get("/traffic", dependencies=[Depends(require_auth)])
 async def traffic_status(request: Request) -> dict:
+    if not request.app.state.settings.traffic_enabled:
+        raise HTTPException(404, "流量监控已关闭")
     return {
         **request.app.state.traffic.snapshot(),
         "media_cache": request.app.state.media_cache.snapshot(),
@@ -23,6 +25,8 @@ async def traffic_status(request: Request) -> dict:
 
 @router.put("/traffic/settings", dependencies=[Depends(require_auth)])
 async def traffic_settings(body: TrafficSettingsBody, request: Request) -> dict:
+    if not request.app.state.settings.traffic_enabled:
+        raise HTTPException(404, "流量监控已关闭")
     request.app.state.traffic.db.update_traffic_config(body.quota_bytes)
     return request.app.state.traffic.snapshot()
 
@@ -34,6 +38,11 @@ async def meta(
     storage: TelegramStorage = Depends(get_storage),
 ) -> dict:
     return {
+        "features": {
+            "people": settings.people_enabled,
+            "images": settings.image_host_enabled,
+            "traffic": settings.traffic_enabled,
+        },
         "app_name": settings.app_name,
         "version": request.app.version,
         "authenticated": is_authenticated(request),

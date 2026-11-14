@@ -142,6 +142,8 @@ class UploadService:
         locks: WeakValueDictionary[str, asyncio.Lock] | None = None,
         faststart: bool = True,
         faststart_timeout: int = 300,
+        image_host_enabled: bool = True,
+        video_slots: asyncio.Semaphore | None = None,
     ):
         self.db = db
         self.storage = storage
@@ -152,6 +154,8 @@ class UploadService:
         self.locks = locks if locks is not None else WeakValueDictionary[str, asyncio.Lock]()
         self._slots = asyncio.Semaphore(concurrency)
         self._maintenance: asyncio.Task[None] | None = None
+        self.image_host_enabled = image_host_enabled
+        self.video_slots = video_slots if video_slots is not None else asyncio.Semaphore(1)
         self.faststart = faststart
         self.faststart_timeout = faststart_timeout
 
@@ -239,6 +243,8 @@ class UploadService:
             if path.stat().st_size != int(upload["size"]):
                 raise ValueError("临时文件大小不匹配，请取消后重新上传")
             if upload["image_host"]:
+                if not self.image_host_enabled:
+                    raise ValueError("图床功能已关闭")
                 if int(upload["size"]) > MAX_IMAGE_SIZE:
                     raise ValueError("图床单张图片不能超过 20 MiB")
                 with path.open("rb") as source:
@@ -252,6 +258,7 @@ class UploadService:
                 self.space,
                 enabled=self.faststart and not upload["image_host"],
                 timeout=self.faststart_timeout,
+                slots=self.video_slots,
             ) as prepared:
                 stored_size = prepared.stat().st_size
                 sha256 = await upload_sha256(prepared)

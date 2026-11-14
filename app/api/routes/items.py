@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from app.api.deps import get_db
+from app.api.deps import get_db, get_settings
 from app.api.schemas.items import (
     BatchItemsBody,
     FolderBody,
@@ -19,6 +19,7 @@ from app.api.schemas.items import (
     UpdateShareBody,
     VideoPeopleBody,
 )
+from app.config import Settings
 from app.core.security import require_auth
 from app.infrastructure.db import Database, utcnow
 from app.services.categories import Category
@@ -26,6 +27,11 @@ from app.services.people import MAX_PERSON_LENGTH, person_key
 from app.services.telegram_cleanup import TRASH_RETENTION_DAYS
 
 router = APIRouter(prefix="/api", tags=["items"], dependencies=[Depends(require_auth)])
+
+
+def require_people(settings: Settings = Depends(get_settings)) -> None:
+    if not settings.people_enabled:
+        raise HTTPException(404, "人物功能已关闭")
 
 
 def ensure_folder(db: Database, parent_id: str | None) -> dict[str, Any] | None:
@@ -57,7 +63,10 @@ async def list_items(
     limit: int = Query(default=60, ge=1, le=200),
     offset: int = Query(default=0, ge=0, le=2**63 - 1),
     db: Database = Depends(get_db),
+    settings: Settings = Depends(get_settings),
 ) -> dict[str, Any]:
+    if person is not None:
+        require_people(settings)
     if created_from and created_to and created_from > created_to:
         raise HTTPException(400, "起始日期不能晚于结束日期")
     if min_size is not None and max_size is not None and min_size > max_size:
@@ -96,7 +105,7 @@ async def list_items(
     }
 
 
-@router.get("/people")
+@router.get("/people", dependencies=[Depends(require_people)])
 async def list_video_people(
     q: str = Query(default="", max_length=MAX_PERSON_LENGTH),
     limit: int = Query(default=48, ge=1, le=200),
@@ -110,7 +119,7 @@ async def list_video_people(
     }
 
 
-@router.post("/people")
+@router.post("/people", dependencies=[Depends(require_people)])
 async def create_people_label(
     body: PeopleLabelBody, db: Database = Depends(get_db)
 ) -> dict[str, bool]:
@@ -121,7 +130,7 @@ async def create_people_label(
     return {"ok": True}
 
 
-@router.delete("/people")
+@router.delete("/people", dependencies=[Depends(require_people)])
 async def delete_people_label(
     name: str = Query(min_length=1, max_length=MAX_PERSON_LENGTH),
     db: Database = Depends(get_db),
@@ -133,7 +142,7 @@ async def delete_people_label(
     return {"ok": True}
 
 
-@router.get("/items/{item_id}/people")
+@router.get("/items/{item_id}/people", dependencies=[Depends(require_people)])
 async def get_video_people(item_id: str, db: Database = Depends(get_db)) -> dict[str, Any]:
     try:
         return {"people": db.video_people_labels(item_id)}
@@ -143,7 +152,7 @@ async def get_video_people(item_id: str, db: Database = Depends(get_db)) -> dict
         raise HTTPException(400, str(exc)) from None
 
 
-@router.patch("/items/{item_id}/people")
+@router.patch("/items/{item_id}/people", dependencies=[Depends(require_people)])
 async def edit_video_people(
     item_id: str, body: VideoPeopleBody, db: Database = Depends(get_db)
 ) -> dict[str, bool]:
@@ -252,19 +261,18 @@ async def purge_trash_item(
 ) -> dict[str, Any]:
     runtime = request.state.telegram_runtime
     chat = runtime.storage.chat
-    result = db.delete_tree(
-        item_id, fallback_chat_id=str(chat) if chat is not None else "", trashed_before=utcnow()
+    result = await asyncio.to_thread(
+        db.delete_tree,
+        item_id,
+        fallback_chat_id=str(chat) if chat is not None else "",
+        trashed_before=utcnow(),
     )
     if not result["deleted"]:
         raise HTTPException(404, "回收站中没有此项目")
     warning = None
     if result["message_ids"]:
-        try:
-            await asyncio.wait_for(runtime.cleanup.process(result["batch_id"]), timeout=5)
-        except TimeoutError:
-            pass
-        if db.has_telegram_cleanup(result["batch_id"]):
-            warning = "条目已删除，Telegram 消息仍在等待清理"
+        runtime.cleanup.wake()
+        warning = "条目已删除，Telegram 消息仍在等待清理"
     return {"ok": True, "deleted": result["deleted"], "warning": warning}
 
 
@@ -272,6 +280,7 @@ async def purge_trash_item(
 async def empty_trash(request: Request) -> dict:
     cleanup = request.state.telegram_runtime.cleanup
     deleted = await asyncio.to_thread(cleanup.purge_trash, utcnow())
+    cleanup.wake()
     return {"ok": True, "deleted": deleted}
 
 
@@ -292,7 +301,14 @@ async def list_shares(
 ) -> dict:
     rows, total = db.list_shares(limit, offset)
     return {
-        "shares": [{**row, "url": share_url(request, row["token"])} for row in rows],
+        "shares": [
+            {
+                **row,
+                "url": (url := share_url(request, row["token"])),
+                "stream_url": f"{url}/download",
+            }
+            for row in rows
+        ],
         "total": total,
     }
 
@@ -330,8 +346,10 @@ async def create_share(
         db.create_share(item_id, token, expires_at)
     except LookupError as exc:
         raise HTTPException(404, str(exc)) from None
+    url = share_url(request, token)
     return {
         "token": token,
-        "url": share_url(request, token),
+        "url": url,
+        "stream_url": f"{url}/download",
         "expires_at": expires_at,
     }

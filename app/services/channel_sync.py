@@ -13,6 +13,7 @@ from math import ceil
 from pathlib import PurePath
 from typing import Any, TypeVar
 
+import anyio
 from telethon.errors import FloodWaitError
 from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 
@@ -57,7 +58,7 @@ def message_version(message: Any) -> datetime:
 
 
 def describe_message(
-    message: Any, album_messages: list[Any] | None = None
+    message: Any, album_messages: list[Any] | None = None, *, people_enabled: bool = True
 ) -> dict[str, Any] | None:
     if (getattr(message, "message", "") or "").startswith("tgdrive:v1:"):
         return None
@@ -128,7 +129,7 @@ def describe_message(
     name = (clean_channel_name(title, extension) if title else original_name) or original_name
     date = message.date or datetime.now(UTC)
     is_video = classify_file(original_name, mime) == "video"
-    own_people = extract_people(own_caption) if is_video else ()
+    own_people = extract_people(own_caption) if is_video and people_enabled else ()
     people_caption = own_caption if own_people else shared_caption or own_caption
     return {
         "name": name,
@@ -138,15 +139,19 @@ def describe_message(
         else original_name,
         "size": int(size),
         "mime": effective_mime(name, file.mime_type),
-        "people": own_people or (extract_people(shared_caption) if is_video else ()),
-        "people_caption": people_caption if is_video else "",
+        "people": own_people
+        or (extract_people(shared_caption) if is_video and people_enabled else ()),
+        "people_caption": people_caption if is_video and people_enabled else "",
+        "people_enabled": people_enabled,
         "media_key": f"{'document' if message.document else 'photo'}:{media.id}",
         "remote_version": version.isoformat(),
         "created_at": date.astimezone(UTC).isoformat(),
     }
 
 
-def describe_bot_post(post: dict) -> tuple[dict, str, str | None] | None:
+def describe_bot_post(
+    post: dict, *, people_enabled: bool = True
+) -> tuple[dict, str, str | None] | None:
     caption = post.get("caption", "")
     if caption.startswith("tgdrive:v1:"):
         return None
@@ -196,8 +201,9 @@ def describe_bot_post(post: dict) -> tuple[dict, str, str | None] | None:
             "original_name": name,
             "size": size,
             "mime": mime,
-            "people": extract_people(caption) if is_video else (),
-            "people_caption": caption if is_video else "",
+            "people": extract_people(caption) if is_video and people_enabled else (),
+            "people_caption": caption if is_video and people_enabled else "",
+            "people_enabled": people_enabled,
             "media_key": f"bot:{media.get('file_unique_id') or file_id}",
             "remote_version": version,
             "created_at": date,
@@ -313,7 +319,7 @@ class ChannelSyncService:
             self.revision += self.db.invalidate_web_media_for_message(
                 self.chat_id, int(post["message_id"])
             )
-        described = describe_bot_post(post)
+        described = describe_bot_post(post, people_enabled=self.settings.people_enabled)
         if described:
             file, file_id, cover_id = described
             mid = int(post["message_id"])
@@ -325,7 +331,9 @@ class ChannelSyncService:
     def ingest(
         self, message: Any, scan_run: str | None = None, album_messages: list[Any] | None = None
     ) -> bool:
-        file = describe_message(message, album_messages)
+        file = describe_message(
+            message, album_messages, people_enabled=self.settings.people_enabled
+        )
         if not file:
             return False
         self._prepare_people_job(file, submit=scan_run is None)
@@ -347,7 +355,9 @@ class ChannelSyncService:
         while True:
             try:
                 self._people_wake.clear()
-                job = self.db.next_people_ai_job(self.people_model.namespace, time.time())
+                job = await anyio.to_thread.run_sync(
+                    self.db.next_people_ai_job, self.people_model.namespace, time.time()
+                )
                 if not job:
                     try:
                         await asyncio.wait_for(self._people_wake.wait(), timeout=30)
@@ -359,11 +369,14 @@ class ChannelSyncService:
                     async with asyncio.timeout(40):
                         people = await self.people_model.analyze(caption)
                 except (PeopleModelError, TimeoutError) as exc:
-                    self.db.defer_people_ai_job(key, time.time() + 300)
+                    await anyio.to_thread.run_sync(
+                        self.db.defer_people_ai_job, key, time.time() + 300
+                    )
                     logger.warning("People model analysis deferred (%s)", type(exc).__name__)
                     await asyncio.sleep(30)
                     continue
-                self.revision += self.db.finish_people_ai_job(key, people)
+                changed = await anyio.to_thread.run_sync(self.db.finish_people_ai_job, key, people)
+                self.revision += changed
             except Exception as exc:
                 logger.warning("People model worker will retry (%s)", type(exc).__name__)
                 await asyncio.sleep(30)
@@ -410,7 +423,7 @@ class ChannelSyncService:
 
     async def on_edit(self, message: Any) -> None:
         # An edit can replace bytes without changing the Telegram message ID.
-        if describe_message(message):
+        if describe_message(message, people_enabled=False):
             self.revision += self.db.invalidate_web_media_for_message(self.chat_id, int(message.id))
             self.storage.invalidate_message(int(message.id))
             await self.on_message(message)

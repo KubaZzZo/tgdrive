@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from io import BytesIO
 from time import monotonic
 
+import anyio
 from PIL import Image, ImageOps
 
 VIDEO_SAMPLE_BYTES = 8 * 1024 * 1024
@@ -15,8 +16,10 @@ Thumbnail = tuple[bytes, str]
 
 
 class ThumbnailCache:
-    def __init__(self) -> None:
+    def __init__(self, video_slots: asyncio.Semaphore | None = None) -> None:
         self.slots = asyncio.Semaphore(2)
+        self.video_slots = video_slots if video_slots is not None else asyncio.Semaphore(1)
+        self.waiting = 0
         self.entries: OrderedDict[tuple, tuple[float, Thumbnail | None]] = OrderedDict()
 
     def lookup(self, key: tuple) -> tuple[float, Thumbnail | None] | None:
@@ -32,16 +35,33 @@ class ThumbnailCache:
         cached = self.lookup(key)
         if cached:
             return cached[1]
-        async with asyncio.timeout(12), self.slots:
-            cached = self.lookup(key)
-            if cached:
-                return cached[1]
-            result = await generate()
-            if result is None or len(result[0]) <= 256 * 1024:
-                self.entries[key] = (monotonic() + (3600 if result else 60), result)
-                if len(self.entries) > 128:
-                    self.entries.popitem(last=False)
-            return result
+        if self.waiting >= 8:
+            return None
+        self.waiting += 1
+        try:
+            async with asyncio.timeout(12), self.slots:
+                return await self._generate(key, generate)
+        finally:
+            self.waiting -= 1
+
+    async def _generate(
+        self, key: tuple, generate: Callable[[], Awaitable[Thumbnail | None]]
+    ) -> Thumbnail | None:
+        cached = self.lookup(key)
+        if cached:
+            return cached[1]
+        worker = asyncio.create_task(generate(), name="thumbnail-worker")
+        try:
+            result = await worker
+        finally:
+            if not worker.done():
+                worker.cancel()
+                await asyncio.gather(worker, return_exceptions=True)
+        if result is None or len(result[0]) <= 256 * 1024:
+            self.entries[key] = (monotonic() + (3600 if result else 60), result)
+            if len(self.entries) > 128:
+                self.entries.popitem(last=False)
+        return result
 
 
 def image_thumbnail(data: bytes) -> Thumbnail | None:
@@ -105,4 +125,5 @@ async def video_thumbnail(data: bytes) -> Thumbnail | None:
                 process.kill()
             except ProcessLookupError:
                 pass
-        await read
+        with anyio.CancelScope(shield=True):
+            await asyncio.shield(read)

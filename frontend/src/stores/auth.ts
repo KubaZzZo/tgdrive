@@ -11,6 +11,7 @@ export const useAuthStore = defineStore('auth', () => {
   const ready = ref(false)
 
   const authenticated = computed(() => Boolean(meta.value?.authenticated))
+  const features = computed(() => meta.value?.features ?? { people: true, images: true, traffic: true })
   const storage = computed<StorageStatus | null>(() => meta.value?.storage ?? null)
 
   async function bootstrap(): Promise<void> {
@@ -67,6 +68,7 @@ export const useAuthStore = defineStore('auth', () => {
     error,
     ready,
     authenticated,
+    features,
     storage,
     bootstrap,
     login,

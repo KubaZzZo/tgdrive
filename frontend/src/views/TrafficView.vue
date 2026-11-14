@@ -26,7 +26,7 @@ function save(): void {
       <h3>AxisNow CDN 月流量</h3>
       <p class="muted">{{ cdn.warning_percent }}% 预警 · {{ cdn.stop_percent }}% 停止下载、分享下载和视频缓冲 · 每 60 秒同步</p>
       <p v-if="cdn.blocked" class="form-error" role="alert">CDN 流量保护中：订阅余量不足或用量数据过期，大流量传输已暂停。补充额度或同步恢复后自动解除。</p>
-      <p v-else-if="cdn.warning" class="traffic-note" role="alert">部分 CDN 订阅已接近额度，请减少下载和本机缓存。</p>
+      <p v-else-if="cdn.warning" class="traffic-note" role="alert">部分 CDN 订阅已接近额度，请减少大流量传输。</p>
       <p v-if="cdn.error" class="form-error" role="alert">{{ cdn.error }}</p>
       <div v-for="sub in cdn.subscriptions" :key="sub.id" class="traffic-panel">
         <strong>{{ sub.name }} · {{ sub.period }}{{ sub.stale ? ' · 数据过期' : '' }}</strong>

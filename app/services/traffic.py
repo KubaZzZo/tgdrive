@@ -21,7 +21,8 @@ logger = logging.getLogger("tgdrive.traffic")
 class TrafficMonitor:
     """Application payload estimates, buffered to avoid a SQLite write for every chunk."""
 
-    def __init__(self, db: Database, host_state: Path):
+    def __init__(self, db: Database, host_state: Path, *, enabled: bool = True):
+        self.enabled = enabled
         self.db = db
         self.host_state = host_state
         self._lock = threading.Lock()
@@ -31,7 +32,7 @@ class TrafficMonitor:
         self.cdn: CDNMonitor | None = None
 
     def record(self, source: Literal["web", "telegram"], inbound: int = 0, outbound: int = 0):
-        if not inbound and not outbound:
+        if not self.enabled or not (inbound or outbound):
             return
         day = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
         with self._lock:

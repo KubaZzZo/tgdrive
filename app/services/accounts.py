@@ -493,7 +493,7 @@ class AccountManager:
             raise HTTPException(409, "当前仍有文件正在写入 Telegram，请等待完成后切换")
         self.switching = True
         old.uploads._closed = True
-        candidate.traffic = self.app.state.traffic
+        candidate.traffic = self.app.state.traffic if self.settings.traffic_enabled else None
         new = None
         try:
             db, key = self.workspace(profile["chat_id"])
@@ -509,6 +509,8 @@ class AccountManager:
                     locks=old.uploads.locks,
                     faststart=self.settings.video_faststart,
                     faststart_timeout=self.settings.video_faststart_timeout,
+                    image_host_enabled=self.settings.image_host_enabled,
+                    video_slots=old.uploads.video_slots,
                 ),
                 ChannelSyncService(db, candidate, self.settings),
             )

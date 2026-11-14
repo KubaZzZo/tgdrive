@@ -11,6 +11,7 @@ from test_downloads import make_file
 
 from app.services import media_cache
 from app.services.media_cache import MediaSliceCache
+from app.services.video_prepare import warm_mp4_index
 
 
 async def collect(stream):
@@ -22,6 +23,60 @@ async def settle(cache):
     tasks = [fill.task for fill in cache.pending.values() if fill.task is not None]
     if tasks:
         await asyncio.gather(*tasks)
+
+
+def test_mp4_index_warming_skips_media_payload_and_bounds_the_read():
+    async def run():
+        def header(kind, length):
+            return length.to_bytes(4, "big") + kind
+
+        moov_offset = 16 + 100 * 1024 * 1024
+        moov_length = 12 * 1024 * 1024
+        headers = {
+            0: header(b"ftyp", 16),
+            16: header(b"mdat", moov_offset - 16),
+            moov_offset: header(b"moov", moov_length),
+        }
+        calls = []
+
+        async def read(start, end):
+            calls.append((start, end))
+            yield headers[start]
+
+        await warm_mp4_index(moov_offset + moov_length, read)
+        assert calls == [
+            (0, 16),
+            (16, 32),
+            (moov_offset, moov_offset + 16),
+            (moov_offset, moov_offset + 8 * 1024 * 1024),
+        ]
+
+    asyncio.run(run())
+
+
+def test_video_read_ahead_starts_next_slice_before_first_slice_finishes(workdir):
+    async def run():
+        cache = MediaSliceCache(workdir / "cache", 8192, 0, slice_bytes=4)
+        next_started = asyncio.Event()
+
+        async def fetch(start, end):
+            if start == 0:
+                yield b"ab"
+                await asyncio.wait_for(next_started.wait(), timeout=2)
+                yield b"cd"
+            else:
+                next_started.set()
+                yield b"efgh"[start - 4 : end - 4]
+
+        try:
+            assert (
+                await collect(cache.stream("a", "v", 0, 8, 8, fetch, read_ahead=True))
+                == b"abcdefgh"
+            )
+        finally:
+            await cache.close()
+
+    asyncio.run(run())
 
 
 def test_video_cache_preserves_range_auth_and_cdn_accounting(authenticated_client, workdir):

@@ -42,6 +42,9 @@ export function loginDestination(redirect: unknown): string {
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
   if (!auth.ready) await auth.bootstrap()
+  if (to.name === 'people' && !auth.features.people ||
+    to.name === 'images' && !auth.features.images ||
+    to.name === 'traffic' && !auth.features.traffic) return { name: 'drive', replace: true }
   if (to.name === 'login') {
     if (auth.authenticated) return loginDestination(to.query.redirect)
   } else if (!auth.authenticated) {

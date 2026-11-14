@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 import math
-import re
 import socket
 import struct
 import subprocess
@@ -119,42 +118,23 @@ def exercise(
             base + "/api/login", data={"password": "correct-horse-battery-staple"}
         ).ok
         page.goto(base)
-        anchor = None
         resume_position = None
         for label, name in [
             ("unindexed first seek", "unindexed.mp4"),
-            ("unindexed disk resume after reload", "unindexed.mp4"),
+            ("unindexed native resume after reload", "unindexed.mp4"),
             ("indexed first seek", "indexed.mp4"),
             ("ordinary MP4 native", "ordinary.mp4"),
-            ("ordinary MP4 remux", "ordinary.mp4"),
+            ("ordinary MP4 with tail index", "tail-index.mp4"),
         ]:
-            item_id, data = files[name]
-            warm = label == "unindexed disk resume after reload"
+            item_id, _ = files[name]
+            warm = label == "unindexed native resume after reload"
             if warm:
                 page.reload()
-            ordinary = name == "ordinary.mp4"
-            native = label == "ordinary MP4 native"
-            page.evaluate(
-                "mode => localStorage.setItem('tgdrive_playback_mode', mode)",
-                "auto" if native else "compat",
-            )
             requests = []
-            unexpected_ranges = []
 
-            def record(
-                request,
-                item_id=item_id,
-                recorded=requests,
-                ordinary=ordinary,
-                unexpected=unexpected_ranges,
-            ):
+            def record(request, item_id=item_id, recorded=requests):
                 if f"/files/{item_id}/download" in request.url:
-                    match = re.fullmatch(r"bytes=(\d+)-(\d+)", request.headers.get("range", ""))
-                    if match:
-                        start, end = map(int, match.groups())
-                        recorded.append((request.method, start, end))
-                    elif ordinary and request.method == "GET":
-                        unexpected.append(request.headers.get("range"))
+                    recorded.append(request.headers.get("range"))
 
             page.on("request", record)
             before_cancel = storage.cancelled_bytes
@@ -191,28 +171,10 @@ def exercise(
                 - started
             )
             startup_requests = len(requests)
-            startup_open_ranges = len(unexpected_ranges)
+            assert video.evaluate("video => video.src.includes('/download')")
+            assert any(value and value.startswith("bytes=") for value in requests), requests
             elapsed = None
-            probes = []
-            if native:
-                assert video.evaluate("video => !video.src.startsWith('blob:')")
-                assert not any(
-                    method == "GET" and start == 0 and end == 65535
-                    for method, start, end in requests
-                ), requests
-            elif warm:
-                assert resume_position is not None and anchor is not None
-                assert ("HEAD", 0, 0) in requests, requests
-                assert not any(
-                    method == "GET" and (start == 0 or start <= anchor <= end)
-                    for method, start, end in requests
-                ), requests
-            else:
-                assert not video.evaluate(
-                    "(v, t) => Array.from({ length: v.buffered.length }, (_, i) => i)"
-                    ".some(i => v.buffered.start(i) <= t && t < v.buffered.end(i))",
-                    TARGET,
-                )
+            if not warm:
                 elapsed = video.evaluate(
                     """(video, target) => new Promise((resolve, reject) => {
                     const timeline = video.closest('.media-player').querySelector('.media-timeline input');
@@ -233,28 +195,6 @@ def exercise(
                 })""",
                     TARGET,
                 )
-                ranges = [
-                    (start, end)
-                    for method, start, end in requests[startup_requests:]
-                    if method == "GET"
-                    and (ordinary or (start >= 65536 and (start - 65536) % 65536 != 0))
-                ]
-                if ordinary:
-                    assert video.evaluate("video => video.src.startsWith('blob:')")
-                    assert not unexpected_ranges, unexpected_ranges
-                    assert ranges and ranges[0][0] > len(data) // 2, ranges
-                else:
-                    first_playback = next(
-                        i
-                        for i, (start, _) in enumerate(ranges)
-                        if data[start + 4 : start + 8] == b"moof"
-                    )
-                    probes = ranges[:first_playback]
-                    if label == "unindexed first seek":
-                        assert probes, ranges
-                        anchor = ranges[first_playback][0]
-                    else:
-                        assert not probes, ranges
             stalled_ms = video.evaluate(
                 """async (video, playMs) => {
                     let stalled = 0;
@@ -289,22 +229,17 @@ def exercise(
                 "seek_to_frame_ms": round(elapsed) if elapsed is not None else None,
                 "rebuffer_ms": round(stalled_ms),
                 "play_window_ms": play_ms,
-                "startup_range_requests": startup_requests + startup_open_ranges,
-                "probe_requests": None if warm else len(probes),
-                "probe_bytes": None if warm else sum(end - start + 1 for start, end in probes),
+                "startup_range_requests": startup_requests,
                 "bytes_sent_on_cancelled_reads": storage.cancelled_bytes - before_cancel,
             }
             samples.append(sample)
             print(json.dumps(sample), flush=True)
-        item_id, data = files["ordinary.mp4"]
-        verify_startup_fallback(page, item_id, len(data))
         verify_slow_native_start(page, cdp)
         browser.close()
     return samples
 
 
 def verify_slow_native_start(page, cdp) -> None:
-    page.evaluate("localStorage.setItem('tgdrive_playback_mode', 'auto')")
     cdp.send(
         "Network.emulateNetworkConditions",
         {"offline": False, "latency": 100, "downloadThroughput": 10000, "uploadThroughput": -1},
@@ -332,55 +267,6 @@ def verify_slow_native_start(page, cdp) -> None:
             {"offline": False, "latency": 0, "downloadThroughput": -1, "uploadThroughput": -1},
         )
         page.get_by_role("button", name="关闭", exact=True).click()
-
-
-def verify_startup_fallback(page, item_id: str, size: int) -> None:
-    page.evaluate("localStorage.removeItem('tgdrive_playback_v1')")
-    for phase in ("headers", "body", "first-frame"):
-        page.evaluate(
-            """([itemId, size, phase]) => {
-                window.probeStats = { started: 0, cancelled: 0 };
-                const original = window.fetch;
-                window.restoreFetch = () => { window.fetch = original; };
-                window.fetch = (url, init) => {
-                    const probe = init?.headers?.['X-TGDrive-Media-Probe'];
-                    const block = phase === 'first-frame'
-                        ? !probe && init?.headers?.Range && !init.headers.Range.startsWith('bytes=65536-')
-                        : probe;
-                    if (typeof url !== 'string' || !url.includes(`/files/${itemId}/download`) || !block)
-                        return original(url, init);
-                    probeStats.started++;
-                    function onAbort(reject) {
-                        init.signal.addEventListener('abort', () => {
-                            probeStats.cancelled++;
-                            reject(init.signal.reason);
-                        }, { once: true });
-                    }
-                    if (phase !== 'body') return new Promise((_, reject) => onAbort(reject));
-                    return Promise.resolve(new Response(new ReadableStream({
-                        start(controller) {
-                            controller.enqueue(new Uint8Array(1));
-                            onAbort(reason => controller.error(reason));
-                        },
-                    }), { status: 206, headers: { 'Content-Range': `bytes 0-65535/${size}` } }));
-                };
-            }""",
-            [item_id, size, phase],
-        )
-        page.get_by_role("button", name="ordinary.mp4", exact=True).click()
-        video = page.locator(".media-screen video")
-        page.wait_for_function(
-            """() => {
-                const video = document.querySelector('.media-screen video');
-                return video?.readyState >= 2 && video.src.includes('/download');
-            }""",
-            timeout=13000,
-        )
-        assert page.evaluate("probeStats") == {"started": 1, "cancelled": 1}, phase
-        assert page.evaluate("localStorage.getItem('tgdrive_playback_mode')") == "compat"
-        page.get_by_role("button", name="关闭", exact=True).click()
-        video.wait_for(state="detached")
-        page.evaluate("restoreFetch()")
 
 
 def main() -> None:

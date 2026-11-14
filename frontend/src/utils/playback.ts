@@ -1,26 +1,4 @@
 const KEY = 'tgdrive_playback_v1'
-const MODE_KEY = 'tgdrive_playback_mode'
-export type PlaybackMode = 'auto' | 'compat' | 'native'
-export type PlaybackPath = Exclude<PlaybackMode, 'auto'>
-
-export function savedPlaybackMode(): PlaybackMode {
-  try {
-    const mode = localStorage.getItem(MODE_KEY)
-    if (mode === 'native' || mode === 'compat') return mode
-  } catch { /* Storage can be unavailable in private browsing. */ }
-  return 'auto'
-}
-
-export function savePlaybackMode(mode: PlaybackMode): void {
-  try { localStorage.setItem(MODE_KEY, mode) } catch { /* Playback works without storage. */ }
-}
-
-export function playbackPaths(mode: PlaybackMode, kind: 'audio' | 'video', mime: string): PlaybackPath[] {
-  if (kind === 'audio' || mode === 'native' || /^video\/(?:webm|ogg|x-matroska|x-msvideo|mpeg)(?:;|$)/i.test(mime))
-    return ['native']
-  return mode === 'auto' && /^video\/(?:mp4|x-m4v)(?:;|$)/i.test(mime)
-    ? ['native', 'compat'] : ['compat', 'native']
-}
 interface SavedProgress {
   time: number
   updated: number

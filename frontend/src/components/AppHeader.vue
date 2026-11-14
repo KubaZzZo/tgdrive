@@ -45,11 +45,11 @@ async function logout(): Promise<void> {
     </div>
     <nav class="module-nav" aria-label="功能模块">
       <RouterLink :to="{ name: 'drive' }">网盘</RouterLink>
-      <RouterLink :to="{ name: 'people' }">人物视频</RouterLink>
-      <RouterLink :to="{ name: 'images' }">图床</RouterLink>
+      <RouterLink v-if="auth.features.people" :to="{ name: 'people' }">人物视频</RouterLink>
+      <RouterLink v-if="auth.features.images" :to="{ name: 'images' }">图床</RouterLink>
     </nav>
     <div class="top-actions">
-      <RouterLink :to="{ name: 'traffic' }" class="ghost traffic-button" :class="{ 'traffic-alert': traffic.warning }">
+      <RouterLink v-if="auth.features.traffic" :to="{ name: 'traffic' }" class="ghost traffic-button" :class="{ 'traffic-alert': traffic.warning }">
         {{ traffic.label }}
       </RouterLink>
       <RouterLink :to="{ name: 'sync' }" class="ghost sync-button">

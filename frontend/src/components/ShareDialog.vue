@@ -108,6 +108,7 @@ onMounted(() => { if (!props.item) void run(load) })
       </form>
       <template v-else>
         <label class="operation-link">分享链接<input readonly :value="created.url" @focus="($event.target as HTMLInputElement).select()" /></label>
+        <label class="operation-link">外部播放器直链<input readonly :value="created.stream_url" @focus="($event.target as HTMLInputElement).select()" /></label>
         <p class="muted">{{ created.expires_at ? `有效期至 ${formatDate(created.expires_at)}` : '永久有效' }}</p>
         <button class="primary" type="button" @click="copy(created.url)">复制链接</button>
       </template>
@@ -139,6 +140,7 @@ onMounted(() => { if (!props.item) void run(load) })
           </form>
           <div v-else class="operation-actions">
             <button class="ghost" :disabled="busy" @click="copy(share.url)">复制</button>
+            <button class="ghost" :disabled="busy || !!share.suspended" @click="copy(share.stream_url)">复制播放直链</button>
             <button class="ghost" :disabled="busy" @click="editing = share.token; revoking = null; hours = 24">修改有效期</button>
             <button class="ghost danger-text" :disabled="busy" @click="revoking = share.token; editing = null">撤销</button>
           </div>

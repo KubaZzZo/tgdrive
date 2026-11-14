@@ -1,8 +1,10 @@
 <script setup lang="ts">
+import { useAuthStore } from '@/stores/auth'
 import type { DriveItem, FileAction } from '@/api/types'
 import AppIcon from '@/components/ui/AppIcon.vue'
 
 defineProps<{ item: DriveItem }>()
+const auth = useAuthStore()
 const emit = defineEmits<{ action: [action: FileAction] }>()
 function choose(action: FileAction, event: Event): void {
   ;(event.target as HTMLElement).closest('details')?.removeAttribute('open')
@@ -22,7 +24,7 @@ function choose(action: FileAction, event: Event): void {
       <template v-if="item.kind === 'file'">
         <button type="button" @click="choose('download', $event)">下载文件</button>
         <button type="button" @click="choose('share', $event)">创建分享链接</button>
-        <button v-if="item.category === 'video'" type="button" @click="choose('people', $event)">分配人物标签</button>
+        <button v-if="auth.features.people && item.category === 'video'" type="button" @click="choose('people', $event)">分配人物标签</button>
       </template>
       <button type="button" @click="choose('rename', $event)">重命名</button>
       <button type="button" @click="choose('move', $event)">移动到…</button>

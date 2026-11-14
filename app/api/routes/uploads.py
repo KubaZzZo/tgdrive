@@ -38,6 +38,8 @@ async def create_upload(
     storage: TelegramStorage = Depends(require_storage),
     uploads: UploadService = Depends(get_upload_service),
 ) -> dict[str, Any]:
+    if body.image_host and not uploads.image_host_enabled:
+        raise HTTPException(404, "图床功能已关闭")
     if body.image_host and body.size > MAX_IMAGE_SIZE:
         raise HTTPException(413, "图床单张图片不能超过 20 MiB")
     if settings.max_file_size and body.size > settings.max_file_size:
@@ -84,15 +86,27 @@ async def create_upload(
 
 
 @router.get("")
-async def list_uploads(db: Database = Depends(get_db)) -> dict[str, Any]:
+async def list_uploads(
+    db: Database = Depends(get_db), uploads: UploadService = Depends(get_upload_service)
+) -> dict[str, Any]:
     """未完成的上传任务，用于刷新页面后断点续传。"""
-    return {"uploads": [public_upload(item) for item in db.list_uploads()]}
+    return {
+        "uploads": [
+            public_upload(item)
+            for item in db.list_uploads()
+            if uploads.image_host_enabled or not item["image_host"]
+        ]
+    }
 
 
 @router.get("/{upload_id}")
-async def get_upload(upload_id: str, db: Database = Depends(get_db)) -> dict[str, Any]:
+async def get_upload(
+    upload_id: str,
+    db: Database = Depends(get_db),
+    uploads: UploadService = Depends(get_upload_service),
+) -> dict[str, Any]:
     upload = db.get_upload(upload_id)
-    if not upload:
+    if not upload or (upload["image_host"] and not uploads.image_host_enabled):
         raise HTTPException(404, "上传任务不存在")
     return public_upload(upload)
 
@@ -108,6 +122,8 @@ async def upload_chunk(
         upload = db.get_upload(upload_id)
         if not upload:
             raise HTTPException(404, "上传任务不存在")
+        if upload["image_host"] and not uploads.image_host_enabled:
+            raise HTTPException(404, "图床功能已关闭")
         if upload["state"] not in {"uploading", "error"}:
             raise HTTPException(409, f"当前状态不能继续上传: {upload['state']}")
         try:
@@ -211,6 +227,8 @@ async def complete_upload(
         upload = db.get_upload(upload_id)
         if not upload:
             raise HTTPException(404, "上传任务不存在")
+        if upload["image_host"] and not uploads.image_host_enabled:
+            raise HTTPException(404, "图床功能已关闭")
         if upload["state"] == "done":
             return public_upload(upload)
         if upload["state"] not in {"uploading", "error"}:

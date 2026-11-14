@@ -49,6 +49,9 @@ class Settings:
     temp_dir: Path = field(default_factory=lambda: _env_path("TEMP_DIR", "tmp"))
     db_path: Path = field(default_factory=lambda: _env_path("DB_PATH", "data/tgdrive.sqlite3"))
     frontend_dist: Path = field(default_factory=lambda: _env_path("FRONTEND_DIST", "static/dist"))
+    people_enabled: bool = field(default_factory=lambda: _env_bool("PEOPLE_ENABLED", True))
+    image_host_enabled: bool = field(default_factory=lambda: _env_bool("IMAGE_HOST_ENABLED", True))
+    traffic_enabled: bool = field(default_factory=lambda: _env_bool("TRAFFIC_ENABLED", True))
     traffic_host_state: Path = field(
         default_factory=lambda: _env_path("TRAFFIC_HOST_STATE", "data/traffic/host.json")
     )

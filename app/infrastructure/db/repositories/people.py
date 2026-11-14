@@ -164,6 +164,8 @@ class PeopleRepository(FilesRepository):
         return True
 
     def _sync_video_people(self, chat_id: str, message_id: int, item_id: str, file: dict) -> bool:
+        if not file.get("people_enabled", True):
+            return False
         key = None
         analysis = ()
         if job := file.get("people_ai_job"):

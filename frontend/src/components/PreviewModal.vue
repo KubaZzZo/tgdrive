@@ -31,8 +31,6 @@ const src = computed(() => (props.item ? api.downloadUrl(props.item.id) : ''))
       :item-id="item.id"
       :kind="kind"
       :size="item.size"
-      :version="item.updated_at"
-      :mime="item.mime || 'video/mp4'"
       :download-pending="downloadPending"
       :download-status="downloadStatus"
       :poster="kind === 'video' ? api.thumbnailUrl(item.id, item.updated_at) : undefined"
