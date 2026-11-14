@@ -6,7 +6,8 @@ from contextlib import asynccontextmanager
 import httpx
 import pytest
 
-from app.services import video_import
+from app.services import ed2k_source, video_import
+from app.services.uploads import UploadSpace
 from app.services.video_source import public_address, validate_url
 
 
@@ -55,6 +56,38 @@ def test_link_batch_keeps_next_batch_locked_until_cleanup(authenticated_client, 
     assert len(storage.files) == 2
     assert len(app.state.db.list_items(None)) == 2
     assert not client.get("/api/uploads").json()["uploads"]
+
+
+def test_ed2k_removes_work_files_when_daemon_fails(tmp_path, monkeypatch):
+    class FailedDaemon:
+        returncode = 1
+
+        async def wait(self):
+            return self.returncode
+
+    path = tmp_path / "upload_fixture.part"
+
+    async def spawn(*args, cwd, **kwargs):
+        (cwd / "Temp" / "001.part").write_bytes(b"partial")
+        return FailedDaemon()
+
+    monkeypatch.setattr(ed2k_source.asyncio, "create_subprocess_exec", spawn)
+    (tmp_path / "server.met").touch()
+    link = "ed2k://|file|fixture.mp4|12|A549B3E090C89D60D45FECD957EBCA27|/"
+    with pytest.raises(ValueError, match="aMuled 已退出"):
+        asyncio.run(
+            ed2k_source.download_ed2k(
+                link,
+                path,
+                tmp_path,
+                UploadSpace(min_free_mib=0),
+                100,
+                lambda: False,
+                lambda _: None,
+            )
+        )
+    assert not ed2k_source.work_dir(path).exists()
+    assert not path.exists()
 
 
 def test_failed_download_can_be_cancelled(authenticated_client, monkeypatch):
@@ -129,3 +162,39 @@ def test_interrupted_batch_resumes_on_restart(workdir, monkeypatch):
         assert client.get(endpoint).json()["jobs"][0]["state"] == "done"
         assert list(storage.files.values()) == [b"test fixture"]
         assert not list(restarted.state.video_import.directory.iterdir())
+
+
+@pytest.mark.parametrize("suffix", ["", "\\"])
+def test_ed2k_batch_uses_same_upload_and_cleanup(
+    authenticated_client, monkeypatch, workdir, suffix
+):
+    client, app, storage = authenticated_client
+    service = app.state.video_import
+    service.ed2k_seeds = workdir
+    link = "ed2k://|file|fixture.mp4|12|A549B3E090C89D60D45FECD957EBCA27|/"
+
+    async def download(url, path, seeds, space, max_bytes, cancelled, progress):
+        from app.services.ed2k_source import parse_link, work_dir
+
+        assert url == link
+        name, size, mime, _ = parse_link(url)
+        work_dir(path).mkdir()
+        (work_dir(path) / "001.part.met").write_bytes(b"temporary metadata")
+        path.write_bytes(b"test fixture")
+        progress(size)
+        return name, mime, size
+
+    monkeypatch.setattr(video_import, "download_ed2k", download)
+    endpoint = "/api/video-import"
+    assert (
+        client.post(endpoint, json={"links": [link + "|sources,127.0.0.1:80|/"]}).status_code == 422
+    )
+    assert client.post(endpoint, json={"links": [link + suffix]}).status_code == 202
+
+    async def settle():
+        await service.worker
+
+    client.portal.call(settle)
+    assert client.get(endpoint).json()["jobs"][0]["state"] == "done"
+    assert list(storage.files.values()) == [b"test fixture"]
+    assert not list(service.directory.iterdir())

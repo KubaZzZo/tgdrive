@@ -112,6 +112,13 @@ class Settings:
             _env_path("VIDEO_IMPORT_DIR", "") if os.getenv("VIDEO_IMPORT_DIR", "").strip() else None
         )
     )
+    video_import_ed2k_seeds: Path | None = field(
+        default_factory=lambda: (
+            _env_path("VIDEO_IMPORT_ED2K_SEEDS", "")
+            if os.getenv("VIDEO_IMPORT_ED2K_SEEDS", "").strip()
+            else None
+        )
+    )
     video_import_max_mib: int = field(
         default_factory=lambda: _env_int("VIDEO_IMPORT_MAX_MIB", 8192)
     )

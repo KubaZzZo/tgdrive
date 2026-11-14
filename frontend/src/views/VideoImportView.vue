@@ -53,9 +53,9 @@ onBeforeUnmount(() => clearInterval(timer))
 <template>
   <section class="import-view" aria-labelledby="import-title">
     <h1 id="import-title">视频链接导入</h1>
-    <p class="muted">每批最多两个直链。服务器会下载视频、上传到当前 Telegram 频道，并清理本批临时文件。导入的视频出现在网盘根目录。</p>
+    <p class="muted">每批最多两个链接。服务器会下载视频、上传到当前 Telegram 频道，并清理本批临时文件。导入的视频出现在网盘根目录。</p>
     <form @submit.prevent="submit">
-      <label for="video-links">HTTP(S) 视频直链，每行一条</label>
+      <label for="video-links">HTTP(S) 视频直链或 eD2k 文件链接，每行一条</label>
       <textarea id="video-links" v-model="links" rows="3" maxlength="8194" :disabled="status?.active" required />
       <button class="primary" type="submit" :disabled="busy || !status || status.active">开始导入</button>
     </form>
