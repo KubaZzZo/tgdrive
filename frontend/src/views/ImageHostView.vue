@@ -6,8 +6,8 @@ import { useUploadStore } from '@/stores/uploads'
 import { useToastStore } from '@/stores/toast'
 import { formatBytes } from '@/utils/format'
 import { pastedImageFiles } from '@/utils/imagePaste'
-import BaseModal from './BaseModal.vue'
-import ConfirmDialog from './ConfirmDialog.vue'
+import BaseModal from '@/components/ui/BaseModal.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
 
 const uploads = useUploadStore()
 const toast = useToastStore()

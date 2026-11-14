@@ -30,7 +30,11 @@ let workspaceId: string | null = null
 export function setWorkspaceId(value: string | null): void { workspaceId = value }
 
 export function reloadAfterWorkspaceChange(): void {
-  if (window.location.hash?.startsWith('#drive?')) window.history.replaceState(null, '', '#drive')
+  if ((window.location.pathname === '/drive' && (window.location.search || window.location.hash))
+    || window.location.hash.startsWith('#drive?')) {
+    window.location.replace('/drive')
+    return
+  }
   window.location.reload()
 }
 

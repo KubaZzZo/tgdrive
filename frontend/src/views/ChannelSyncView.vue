@@ -1,11 +1,8 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useSyncStore } from '@/stores/sync'
 import { formatDate } from '@/utils/format'
-import AppIcon from './AppIcon.vue'
-import BaseModal from './BaseModal.vue'
 const sync = useSyncStore()
-const open = ref(false)
 const secondsLeft = ref(0)
 const authRequired = computed(() => sync.status?.state === 'auth_required')
 const botState = computed(() => sync.status?.bot_state)
@@ -13,15 +10,6 @@ const rateLimited = computed(() => sync.status?.state === 'rate_limited')
 const progress = computed(() => {
   if (sync.status?.state === 'idle' && sync.status.running) return null
   return sync.status?.progress ?? null
-})
-const label = computed(() => {
-  if (botState.value === 'listening') return 'Bot 备用同步'
-  if (botState.value === 'connecting') return '备用 Bot 连接中'
-  if (botState.value === 'error') return '备用 Bot 异常'
-  if (authRequired.value) return '同步需登录'
-  if (rateLimited.value) return '同步限流等待'
-  if (sync.busy) return '正在同步'
-  return sync.status?.state === 'error' ? '同步异常' : '频道同步'
 })
 const unavailable = computed(
   () =>
@@ -40,27 +28,21 @@ const summary = computed(() => {
   if (sync.status?.state === 'error') return '扫描中断'
   return sync.status?.last_success ? '本轮同步完成' : '等待同步'
 })
-watch([open, () => sync.status], ([visible, status], _previous, onCleanup) => {
+watch(() => sync.status, (status, _previous, onCleanup) => {
   const seconds = status?.retry_after ?? 0
   secondsLeft.value = seconds
-  if (!visible || seconds <= 0) return
+  if (seconds <= 0) return
   const deadline = performance.now() + seconds * 1000
   const timer = setInterval(() => {
     secondsLeft.value = Math.max(0, Math.ceil((deadline - performance.now()) / 1000))
   }, 1000)
   onCleanup(() => clearInterval(timer))
-})
-function show(): void {
-  open.value = true
-  void sync.refresh()
-}
+}, { immediate: true })
+onMounted(() => { void sync.refresh() })
 </script>
 <template>
-  <button class="ghost sync-button" type="button" @click="show">
-    <AppIcon name="refresh" :size="16" :class="{ spinning: sync.busy && !rateLimited }" />{{ label }}
-  </button>
-  <BaseModal :open="open" title="频道同步" @close="open = false">
-    <div class="sync-details">
+  <section class="sync-details panel-view" aria-labelledby="sync-title">
+    <h1 id="sync-title">频道同步</h1>
       <p>
         直接用手机或电脑 Telegram 将照片、视频、音频和文件发送到存储频道，网盘会自动收录并分类。
       </p>
@@ -97,6 +79,61 @@ function show(): void {
           重新扫描历史
         </button>
       </div>
-    </div>
-  </BaseModal>
+  </section>
 </template>
+
+<style scoped>
+.panel-view {
+  margin: 24px auto 0;
+  max-width: 900px;
+  padding: clamp(16px, 4vw, 32px);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: white;
+}
+.panel-view h1 { margin: 0; }
+
+.sync-details p {
+  font-size: 13px;
+  line-height: 1.9;
+  color: var(--muted);
+}
+.sync-summary {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 18px;
+  margin: 20px 0;
+  background: #f3f7ff;
+  border-radius: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.sync-summary strong {
+  color: var(--accent);
+  font-size: 28px;
+}
+.sync-state {
+  margin-left: auto;
+  color: var(--accent);
+}
+.sync-progress {
+  flex: 1 0 100%;
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.sync-progress progress {
+  width: 100%;
+  height: 12px;
+  accent-color: var(--accent);
+}
+.sync-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 22px;
+}
+</style>

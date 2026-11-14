@@ -5,7 +5,7 @@ import { api } from '@/api/client'
 import type { TrashItem } from '@/api/types'
 import { useToastStore } from '@/stores/toast'
 import { formatDate } from '@/utils/format'
-import BaseModal from './BaseModal.vue'
+import BaseModal from '@/components/ui/BaseModal.vue'
 
 const emit = defineEmits<{ close: []; restored: [] }>()
 const items = ref<TrashItem[]>([])

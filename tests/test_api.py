@@ -418,10 +418,13 @@ def test_frontend_dist_is_served(workdir):
 
     app = create_app(make_settings(workdir), storage=FakeTelegramStorage())
     with TestClient(app) as client:
-        index = client.get("/")
-        assert index.status_code == 200
-        assert "/assets/app.js" in index.text
-        assert index.headers["cache-control"] == "no-cache"
+        for path in ("/", "/login", "/drive?folder=old", "/people", "/images", "/traffic", "/sync"):
+            index = client.get(path)
+            assert index.status_code == 200
+            assert "/assets/app.js" in index.text
+            assert index.headers["cache-control"] == "no-cache"
+        for path in ("/api/unknown", "/assets/unknown.js", "/unknown"):
+            assert client.get(path).status_code == 404
         asset = client.get("/assets/app.js")
         assert asset.status_code == 200
         assert "console.log" in asset.text

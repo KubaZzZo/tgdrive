@@ -62,3 +62,11 @@ const paths: Record<string, string[]> = {
     <path v-for="(path, index) in paths[name] ?? paths.document" :key="index" :d="path" />
   </svg>
 </template>
+
+<style scoped>
+.app-icon {
+  display: inline-block;
+  flex-shrink: 0;
+  vertical-align: middle;
+}
+</style>

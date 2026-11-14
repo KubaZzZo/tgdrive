@@ -4,7 +4,7 @@ import { computed, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import type { DriveItem, PersonLabel } from '@/api/types'
 import { useToastStore } from '@/stores/toast'
-import BaseModal from './BaseModal.vue'
+import BaseModal from '@/components/ui/BaseModal.vue'
 
 const props = defineProps<{ item: DriveItem }>()
 const emit = defineEmits<{ close: []; saved: [] }>()

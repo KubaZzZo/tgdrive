@@ -99,3 +99,119 @@ onBeforeUnmount(() => {
     </Transition>
   </Teleport>
 </template>
+
+<style scoped>
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: #14233a66;
+  backdrop-filter: blur(3px);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.modal-card {
+  width: min(540px, 100%);
+  max-height: 90dvh;
+  display: flex;
+  flex-direction: column;
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+.modal-card.wide {
+  width: min(980px, 100%);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--line);
+}
+.modal-head h2 {
+  margin: 0;
+  font-size: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.modal-close {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--muted);
+  font-size: 22px;
+  flex-shrink: 0;
+}
+.modal-body {
+  padding: 22px;
+  overflow: auto;
+}
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 16px 22px;
+  border-top: 1px solid var(--line);
+}
+.modal-enter-active,
+.modal-leave-active {
+  transition:
+  opacity 0.16s,
+  transform 0.16s;
+}
+.modal-enter-from,
+.modal-leave-to {
+  opacity: 0;
+}
+@media (max-width: 760px) {
+  .modal {
+    padding: 14px;
+  }
+  .modal-body {
+    padding: 18px;
+  }
+  .modal-card {
+    max-height: 88dvh;
+  }
+  .modal-close {
+    width: 44px;
+    height: 44px;
+  }
+}
+.modal {
+  grid-template-columns: minmax(0, 1fr);
+}
+.modal-card {
+  min-width: 0;
+  max-width: 100%;
+}
+.modal-head h2 {
+  min-width: 0;
+}
+.modal:has(:global(.media-expanded)) { padding: 0; }
+.modal-card:has(:global(.media-expanded)) {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+}
+.modal-card:has(:global(.media-expanded)) > :is(.modal-head, .modal-footer) { display: none; }
+.modal-card:has(:global(.media-expanded)) > .modal-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+}
+</style>

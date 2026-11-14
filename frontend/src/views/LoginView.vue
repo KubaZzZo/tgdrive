@@ -40,3 +40,32 @@ async function submit(): Promise<void> {
     </form>
   </div>
 </template>
+
+<style scoped>
+.login-screen {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.login-card {
+  width: min(420px, 100%);
+  padding: 40px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: white;
+  box-shadow: var(--shadow);
+  text-align: center;
+}
+.login-card h1 {
+  margin: 20px 0 8px;
+}
+.login-card > p {
+  margin: 0 0 25px;
+  font-size: 13px;
+}
+.login-submit {
+  width: 100%;
+  margin-top: 14px;
+}
+</style>

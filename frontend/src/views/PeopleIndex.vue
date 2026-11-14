@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 
+import { RouterLink } from 'vue-router'
+
 import { api } from '@/api/client'
 import type { VideoPerson } from '@/api/types'
 import { useSyncStore } from '@/stores/sync'
 import { useToastStore } from '@/stores/toast'
-import AppIcon from './AppIcon.vue'
-import ConfirmDialog from './ConfirmDialog.vue'
-import PromptDialog from './PromptDialog.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
+import PromptDialog from '@/components/ui/PromptDialog.vue'
 
 const sync = useSyncStore()
 const toast = useToastStore()
@@ -90,7 +92,7 @@ watch(
       <label class="sr-only" for="people-search">搜索标签</label>
       <input id="people-search" v-model="query" type="search" placeholder="搜索人物标签…" maxlength="80" @input="page = 1" />
     </div>
-    <a class="ghost people-videos-link" href="#people?videos=1">全部视频</a>
+    <RouterLink class="ghost people-videos-link" :to="{ name: 'people', query: { videos: '1' } }">全部视频</RouterLink>
     <button class="primary" type="button" @click="adding = true">新增标签</button>
   </div>
   <div v-if="error" class="inline-error" role="alert">
@@ -103,14 +105,14 @@ watch(
   <template v-else-if="people.length">
     <div class="people-grid">
       <div v-for="person in people" :key="person.key" class="person-card">
-        <a class="person-card-link" :href="`#people?name=${encodeURIComponent(person.name)}`">
+        <RouterLink class="person-card-link" :to="{ name: 'people', query: { name: person.name } }">
           <span class="file-art video"><AppIcon name="people" :size="21" /></span>
           <span class="person-card-label">
             <strong>{{ person.display_name }}</strong>
             <small v-if="person.display_name !== person.name">{{ person.name }}</small>
             <small>{{ person.count }} 部视频</small>
           </span>
-        </a>
+        </RouterLink>
         <button class="text-btn danger-text" type="button" :aria-label="`删除标签 ${person.display_name}`" @click="deleting = person">删除</button>
       </div>
     </div>
@@ -165,3 +167,5 @@ watch(
 .person-card-label { display: grid; gap: 4px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .person-card-label small { color: var(--muted); }
 </style>
+
+<style scoped src="../styles/library.css"></style>

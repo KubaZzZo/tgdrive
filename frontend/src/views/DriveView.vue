@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, reactive, ref, watch } from 'vue'
 
+import { RouterLink, useRoute, useRouter } from 'vue-router'
+
 import { api } from '@/api/client'
 import type { BatchItemResult, DriveItem, FileAction, FileCategory } from '@/api/types'
 import type { DriveFilters } from '@/utils/driveLocation'
@@ -9,25 +11,39 @@ import { useToastStore } from '@/stores/toast'
 import { useUploadStore } from '@/stores/uploads'
 import { formatBytes, previewKind } from '@/utils/format'
 import { groupFolderFiles } from '@/utils/folderUpload'
-import AppIcon from './AppIcon.vue'
-import BaseModal from './BaseModal.vue'
-import ConfirmDialog from './ConfirmDialog.vue'
-import FileTable from './FileTable.vue'
-import PromptDialog from './PromptDialog.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import BaseModal from '@/components/ui/BaseModal.vue'
+import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
+import FileTable from '@/components/FileTable.vue'
+import PromptDialog from '@/components/ui/PromptDialog.vue'
 
-const AdvancedSearchDialog = defineAsyncComponent(() => import('./AdvancedSearchDialog.vue'))
-const MoveDialog = defineAsyncComponent(() => import('./MoveDialog.vue'))
-const PeopleIndex = defineAsyncComponent(() => import('./PeopleIndex.vue'))
-const PreviewModal = defineAsyncComponent(() => import('./PreviewModal.vue'))
-const ShareDialog = defineAsyncComponent(() => import('./ShareDialog.vue'))
-const TrashDialog = defineAsyncComponent(() => import('./TrashDialog.vue'))
-const VideoPeopleDialog = defineAsyncComponent(() => import('./VideoPeopleDialog.vue'))
+const AdvancedSearchDialog = defineAsyncComponent(() => import('@/components/AdvancedSearchDialog.vue'))
+const MoveDialog = defineAsyncComponent(() => import('@/components/MoveDialog.vue'))
+const PeopleIndex = defineAsyncComponent(() => import('@/views/PeopleIndex.vue'))
+const PreviewModal = defineAsyncComponent(() => import('@/components/PreviewModal.vue'))
+const ShareDialog = defineAsyncComponent(() => import('@/components/ShareDialog.vue'))
+const TrashDialog = defineAsyncComponent(() => import('@/components/TrashDialog.vue'))
+const VideoPeopleDialog = defineAsyncComponent(() => import('@/components/VideoPeopleDialog.vue'))
 
 const drive = useDriveStore()
 const uploads = useUploadStore()
 const toast = useToastStore()
-const props = defineProps<{ routeRevision: number; peopleVideos?: boolean }>()
-const inPeople = computed(() => drive.view === 'people' || props.peopleVideos)
+const route = useRoute()
+const router = useRouter()
+const inPeople = computed(() => route.name === 'people')
+const peopleVideos = computed(() => inPeople.value && route.query.videos === '1')
+
+function loadRoute(): void {
+  if (inPeople.value) {
+    const name = typeof route.query.name === 'string' ? route.query.name.trim() : ''
+    const person = name && Array.from(name).length <= 80 ? name : null
+    void drive.selectView(peopleVideos.value ? 'video' : 'people', person)
+  } else if (route.name === 'drive') {
+    void drive.restoreLocation(route.fullPath)
+  }
+}
+
+loadRoute()
 
 const classificationHelp = ref(false)
 let searchTimer: ReturnType<typeof setTimeout>
@@ -52,7 +68,7 @@ function navigate(view: 'all' | 'recent' | FileCategory): void {
   void drive.selectView(view)
 }
 function openPeople(): void {
-  window.location.hash = 'people'
+  void router.push({ name: 'people' })
 }
 function breadcrumb(id: string | null): void {
   clearTimeout(searchTimer)
@@ -66,7 +82,10 @@ function onAction(action: FileAction, item: DriveItem): void {
   if (action === 'remove') deleteTarget.value = item
   if (action === 'people') labelTarget.value = item
 }
-onBeforeUnmount(() => clearTimeout(searchTimer))
+onBeforeUnmount(() => {
+  clearTimeout(searchTimer)
+  drive.cancelLoad()
+})
 const overview = computed(() =>
   drive.categories.filter((c) => ['image', 'video', 'document', 'archive'].includes(c.id)),
 )
@@ -287,7 +306,10 @@ function closePreview(): void {
   previewTarget.value = null
 }
 
-watch(() => props.routeRevision, () => {
+watch(() => route.fullPath, () => {
+  if (route.name !== 'drive' && route.name !== 'people') return
+  if (drive.consumeWrittenLocation(route.fullPath)) return
+  loadRoute()
   clearTimeout(searchTimer)
   closePreview()
   renameTarget.value = null
@@ -466,7 +488,7 @@ watch(() => props.routeRevision, () => {
 
       <div class="location-row">
         <nav v-if="drive.person || peopleVideos" class="crumbs" aria-label="人物目录">
-          <a class="crumb" href="#people">人物标签</a>
+          <RouterLink class="crumb" :to="{ name: 'people' }">人物标签</RouterLink>
           <AppIcon name="chevron" :size="12" />
           <span>{{ drive.title }}</span>
         </nav>
@@ -688,6 +710,546 @@ watch(() => props.routeRevision, () => {
 </template>
 
 <style scoped>
+.active .nav-count {
+  color: #5282e7;
+}
+h1 {
+  margin: 0;
+  font-size: 27px;
+  line-height: 1.4;
+  letter-spacing: -0.6px;
+  font-weight: 650;
+}
+@media (max-width: 760px) {
+  h1 {
+    font-size: 24px;
+  }
+}
+label.file-btn:focus-within {
+  outline: 3px solid #93c5fd;
+  outline-offset: 3px;
+}
+.library-layout {
+  display: grid;
+  grid-template-columns: 224px minmax(0, 1fr);
+  gap: 34px;
+}
+.library-sidebar {
+  position: sticky;
+  top: 76px;
+  align-self: start;
+  min-height: calc(100dvh - 76px);
+  padding: 30px 16px;
+  background: white;
+  border-right: 1px solid var(--line);
+}
+.nav-heading {
+  margin: 0 14px 15px;
+  color: #94a3b8;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+.primary-nav,
+.category-nav {
+  display: grid;
+  gap: 5px;
+}
+.primary-nav button,
+.category-nav button {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 43px;
+  padding: 10px 13px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #5b6b82;
+  text-align: left;
+}
+.primary-nav button:hover,
+.category-nav button:hover {
+  background: #f6f8fc;
+}
+.primary-nav button.active,
+.category-nav button.active {
+  color: #245edb;
+  background: #ecf2ff;
+  font-weight: 650;
+}
+.nav-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}
+.nav-section-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 30px 14px 12px;
+  color: #94a3b8;
+  font-size: 11px;
+}
+.auto-tag {
+  color: #718098;
+  font-size: 10px;
+  background: #f1f5f9;
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.sidebar-storage {
+  margin: 34px 12px 0;
+  padding-top: 24px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+}
+.sidebar-storage > .app-icon {
+  margin-right: 8px;
+  color: #8b9ab0;
+}
+.sidebar-storage strong {
+  display: block;
+  margin: 12px 0 4px;
+  color: var(--text);
+  font-size: 25px;
+  letter-spacing: -0.6px;
+  font-weight: 600;
+}
+.sidebar-storage p {
+  margin: 0 0 13px;
+  font-size: 11px;
+}
+.sidebar-storage .text-btn {
+  margin-top: 14px;
+  color: var(--muted);
+}
+.storage-distribution {
+  display: flex;
+  gap: 2px;
+  height: 5px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: var(--line);
+}
+.storage-distribution span {
+  flex-basis: 0;
+  background: #60a5fa;
+}
+.storage-distribution .video {
+  background: #a78bfa;
+}
+.storage-distribution .audio {
+  background: #fb923c;
+}
+.storage-distribution .document {
+  background: #2dd4bf;
+}
+.storage-distribution .archive {
+  background: #fbbf24;
+}
+.storage-distribution .other,
+.storage-distribution .application,
+.storage-distribution .code {
+  background: #94a3b8;
+}
+.library-content {
+  min-width: 0;
+  padding-top: 32px;
+}
+.library-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 18px;
+  margin-bottom: 26px;
+}
+.eyebrow {
+  margin: 0 0 7px;
+  color: #8c9aaf;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.13em;
+}
+.page-description {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.file-btn {
+  cursor: pointer;
+}
+
+.file-btn:focus-within {
+  outline: 3px solid #93c5fd;
+  outline-offset: 3px;
+}
+.category-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 28px;
+}
+.category-card {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  padding: 19px 16px 38px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: white;
+  text-align: left;
+  transition:
+  border-color 0.15s,
+  box-shadow 0.15s;
+}
+.category-card:hover {
+  border-color: #b5cbf8;
+  box-shadow: 0 4px 16px #2563eb07;
+}
+.category-card-label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.category-card-label strong {
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.category-card-label small {
+  font-size: 10px;
+  color: #8d99ac;
+  font-weight: 400;
+}
+.category-card-size {
+  position: absolute;
+  bottom: 13px;
+  right: 16px;
+  font-size: 10px;
+  color: #93a0b3;
+}
+.display-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  flex-shrink: 0;
+}
+.display-controls select {
+  max-width: 160px;
+  padding: 9px 30px 9px 12px;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--muted);
+  font-size: 12px;
+}
+.search-scope {
+  display: inline-flex;
+}
+.selection-bar,
+.batch-result {
+  margin-bottom: 12px;
+}
+.batch-result {
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: white;
+  overflow-wrap: anywhere;
+}
+.batch-result ul {
+  margin: 8px 0 0;
+  padding-inline-start: 20px;
+}
+.file-btn.is-busy {
+  opacity: 0.65;
+  cursor: wait;
+}
+.view-switch {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+}
+.view-switch button {
+  display: grid;
+  place-items: center;
+  min-width: 35px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #94a3b8;
+}
+.view-switch button[aria-pressed="true"] {
+  color: var(--accent);
+  background: #edf3ff;
+}
+.location-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin: 0 2px 13px;
+  min-height: 22px;
+}
+.crumbs {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  color: #a0aec0;
+  min-width: 0;
+}
+.crumb {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font-size: 12px;
+  color: #64748b;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.crumb:last-child {
+  color: var(--text);
+  font-weight: 600;
+}
+.results-label {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.item-count {
+  font-size: 11px;
+  color: #93a0b3;
+  white-space: nowrap;
+}
+.drop-zone {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 24px;
+  padding: 20px;
+  border: 1px dashed #cdd8ea;
+  border-radius: 11px;
+  color: #7297d2;
+  background: #f3f7ff;
+}
+.drop-zone strong {
+  font-size: 12px;
+  font-weight: 500;
+  color: #7186a8;
+}
+.drop-zone p {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: #94a3b8;
+}
+.drop-zone.dragover {
+  border-color: var(--accent);
+  background: #eaf1ff;
+}
+.drop-caption {
+  margin-left: auto;
+  font-size: 10px;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+.classification-help p {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.9;
+}
+.classification-help dl > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 12px;
+}
+.classification-help dt {
+  min-width: 44px;
+}
+.classification-help dd {
+  margin: 0;
+  color: var(--muted);
+}
+@media (min-width: 1440px) {
+  .library-layout {
+    grid-template-columns: 244px minmax(0, 1fr);
+    gap: 44px;
+  }
+  .library-sidebar {
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+}
+@media (max-width: 1100px) {
+  .category-overview {
+    gap: 10px;
+  }
+  .category-card {
+    padding: 15px 12px 34px;
+    gap: 8px;
+  }
+  .category-card-label strong {
+    font-size: 19px;
+  }
+  .category-card .file-art {
+    width: 35px;
+    height: 35px;
+  }
+  .category-card-label small {
+    display: none;
+  }
+  .library-layout {
+    grid-template-columns: 195px minmax(0, 1fr);
+    gap: 24px;
+  }
+  .drop-caption {
+    display: none;
+  }
+  .page-description {
+    max-width: 300px;
+  }
+}
+@media (max-width: 760px) {
+  .library-layout {
+    display: block;
+  }
+  .library-sidebar {
+    position: static;
+    min-height: 0;
+    padding: 18px 0;
+    border: 0;
+    background: transparent;
+  }
+  .nav-heading,
+  .nav-section-label,
+  .sidebar-storage {
+    display: none;
+  }
+  .primary-nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 14px;
+  }
+  .primary-nav button {
+    width: auto;
+    min-height: 40px;
+    padding: 9px 12px;
+    font-size: 13px;
+  }
+  .primary-nav .nav-count {
+    margin-left: 5px;
+  }
+  .category-nav {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 7px;
+  }
+  .category-nav button {
+    flex-direction: column;
+    justify-content: center;
+    gap: 6px;
+    min-height: 66px;
+    padding: 9px 4px;
+    font-size: 11px;
+    border: 1px solid var(--line);
+    background: white;
+  }
+  .category-nav .nav-count {
+    display: none;
+  }
+  .category-nav button.active {
+    border-color: #b5cbf8;
+  }
+  .library-content {
+    padding-top: 9px;
+  }
+  .library-heading {
+    display: block;
+    margin-bottom: 20px;
+  }
+  .eyebrow {
+    display: none;
+  }
+  .page-description {
+    max-width: none;
+    font-size: 12px;
+  }
+  .toolbar-actions {
+    margin-top: 18px;
+  }
+  .toolbar-actions > * {
+    flex: 1;
+    min-height: 44px;
+  }
+  .category-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 22px;
+  }
+  .category-card {
+    padding: 13px 12px 27px;
+    gap: 12px;
+  }
+  .category-card-label strong {
+    font-size: 21px;
+  }
+  .category-card-label small {
+    display: inline;
+    font-size: 9px;
+  }
+  .category-card-size {
+    bottom: 10px;
+    font-size: 9px;
+  }
+  .display-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+  .display-controls select {
+    min-height: 44px;
+    font-size: 12px;
+  }
+  .view-switch button {
+    min-width: 42px;
+  }
+  .drop-zone {
+    padding: 16px;
+    gap: 12px;
+  }
+  .drop-zone strong {
+    font-size: 11px;
+  }
+  .drop-zone p {
+    font-size: 10px;
+  }
+}
+@media (max-width: 760px) {
+  .category-overview {
+    display: none;
+  }
+}
 .people-layout {
   grid-template-columns: minmax(0, 1fr);
   overflow-wrap: anywhere;
@@ -699,3 +1261,5 @@ watch(() => props.routeRevision, () => {
   .people-layout { padding-left: 44px; }
 }
 </style>
+
+<style scoped src="../styles/library.css"></style>

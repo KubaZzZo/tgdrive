@@ -12,7 +12,7 @@ import {
 import { formatBytes } from '@/utils/format'
 import { holdCoverQueue } from '@/utils/coverQueue'
 import { withMediaTimeout } from '@/utils/mediaTransfer'
-import AppIcon from './AppIcon.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
 
 const props = defineProps<{
   src: string; itemId: string; kind: 'video' | 'audio'; size: number; version: string; mime: string
@@ -717,3 +717,267 @@ onBeforeUnmount(() => {
     </div>
   </div>
 </template>
+
+<style scoped>
+.media-player {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid #29374d;
+  border-radius: 12px;
+  background: #101828;
+  color: #e2e8f0;
+  outline-offset: -3px;
+}
+.media-layout {
+  display: flex;
+  flex-direction: column;
+}
+.media-screen {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  overflow: hidden;
+  background: #030712;
+}
+.media-screen video {
+  display: block;
+  width: 100%;
+  max-height: 55dvh;
+  object-fit: contain;
+  cursor: pointer;
+}
+.media-quarter-turn {
+  height: 55dvh;
+  container-type: size;
+}
+.media-screen.media-quarter-turn video {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100cqh;
+  height: 100cqw;
+  max-height: none;
+  translate: -50% -50%;
+}
+.media-screen audio {
+  width: calc(100% - 36px);
+}
+.media-stage-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 60px;
+  border: 1px solid #ffffff40;
+  border-radius: 50%;
+  background: #101828d9;
+  color: white;
+}
+.media-stage-play:hover {
+  background: #263650;
+}
+.media-loading {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  pointer-events: none;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: #101828e6;
+  color: #dbeafe;
+  font-size: 12px;
+}
+.media-error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 20px;
+  background: #101828f5;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.media-error p { margin: 0; }
+.media-error .ghost { color: var(--text); }
+.media-controls {
+  position: relative;
+  padding: 8px 14px 12px;
+  background: #101828;
+}
+.media-timeline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #c9d5e6;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.media-timeline input,
+.media-volume {
+  min-width: 0;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  accent-color: #7bb9ff;
+}
+.media-timeline input { flex: 1; }
+.media-timeline span:last-child { text-align: right; }
+.media-toolbar,
+.media-buttons {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.media-toolbar {
+  justify-content: space-between;
+  margin-top: 4px;
+}
+.media-toolbar > :last-child { margin-inline-start: auto; }
+.media-buttons button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 38px;
+  min-height: 38px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 0 6px;
+  color: #dbeafe;
+  background: transparent;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.media-buttons button:hover:not(:disabled) {
+  background: #263650;
+}
+.media-buttons .media-play,
+.media-buttons button[aria-pressed="true"],
+.media-buttons button[aria-expanded="true"] {
+  border-color: #3c587b;
+  background: #203955;
+  color: #d8ecff;
+}
+.media-player :is(button, select, input):focus-visible {
+  outline: 2px solid #7bb9ff;
+  outline-offset: 1px;
+}
+.media-settings {
+  position: absolute;
+  z-index: 2;
+  inset-inline-end: 8px;
+  bottom: 100%;
+  display: grid;
+  gap: 8px;
+  width: min(280px, calc(100% - 16px));
+  max-height: min(40dvh, 270px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 12px;
+  border: 1px solid #344258;
+  border-radius: 10px;
+  background: #142036;
+  box-shadow: 0 8px 24px #03071288;
+  font-size: 13px;
+}
+.media-settings-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.media-settings-head span { color: #a5b5ca; }
+.media-setting {
+  display: grid;
+  grid-template-columns: 1fr minmax(0, 118px);
+  align-items: center;
+  gap: 8px;
+}
+.media-setting :is(select, input[type="number"]) {
+  min-height: 34px;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid #344258;
+  border-radius: 6px;
+  background: #1e293b;
+  color: #dbeafe;
+  font-size: 12px;
+}
+.media-close-timer {
+  display: grid;
+  gap: 8px;
+}
+.media-close-countdown { font-variant-numeric: tabular-nums; }
+.media-setting-actions {
+  border-top: 1px solid #344258;
+  padding-top: 5px;
+}
+.media-notice {
+  margin: 5px 0 0;
+  color: #a8cdf6;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.media-player:is(:fullscreen, .media-expanded) {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: #030712;
+}
+.media-player:is(:fullscreen, .media-expanded) .media-layout {
+  container-type: size;
+  width: 100%;
+  height: 100%;
+}
+.media-fullscreen .media-settings { max-height: min(45cqh, 270px); }
+.media-player:is(:fullscreen, .media-expanded) .media-screen {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+.media-player:is(:fullscreen, .media-expanded) .media-screen:not(.media-quarter-turn) video {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  max-height: none;
+}
+.media-fullscreen .media-controls {
+  flex: none;
+  padding-right: max(14px, env(safe-area-inset-right));
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+  padding-left: max(14px, env(safe-area-inset-left));
+}
+@media (orientation: portrait) and (pointer: coarse), (orientation: portrait) and (max-width: 760px) {
+  .media-player.media-fullscreen.media-landscape .media-layout {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 100dvh;
+    height: 100dvw;
+    transform: translate(-50%, -50%) rotate(90deg);
+  }
+}
+@media (pointer: coarse) {
+  .media-buttons button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+@media (max-width: 760px) {
+  .media-screen video { max-height: 48dvh; }
+  .media-quarter-turn { height: 48dvh; }
+  .media-controls { padding-inline: 10px; }
+}
+</style>

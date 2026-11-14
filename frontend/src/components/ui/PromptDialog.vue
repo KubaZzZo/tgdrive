@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 
-import BaseModal from './BaseModal.vue'
+import BaseModal from '@/components/ui/BaseModal.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -50,3 +50,12 @@ function submit(): void {
     </template>
   </BaseModal>
 </template>
+
+<style scoped>
+.dialog-form label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 9px;
+}
+</style>

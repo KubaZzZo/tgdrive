@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { DriveItem, FileAction } from '@/api/types'
-import AppIcon from './AppIcon.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
 
 defineProps<{ item: DriveItem }>()
 const emit = defineEmits<{ action: [action: FileAction] }>()
@@ -32,3 +32,63 @@ function choose(action: FileAction, event: Event): void {
     </div>
   </details>
 </template>
+
+<style scoped>
+.file-menu {
+  position: relative;
+}
+.file-menu summary {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 6px;
+  list-style: none;
+  color: #94a3b8;
+}
+.file-menu summary::-webkit-details-marker {
+  display: none;
+}
+.file-menu summary:hover,
+.file-menu[open] summary {
+  background: #ecf2ff;
+  color: var(--accent);
+}
+.file-menu[open] {
+  z-index: 15;
+}
+.file-menu-options {
+  position: absolute;
+  top: calc(100% + 3px);
+  right: 0;
+  width: 162px;
+  padding: 5px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  box-shadow: var(--shadow);
+  background: white;
+}
+.file-menu-options button {
+  display: block;
+  padding: 10px 12px;
+  min-height: 42px;
+  width: 100%;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+}
+.file-menu-options button:hover {
+  background: var(--bg);
+}
+@media (max-width: 760px) {
+  .file-menu summary {
+    width: 40px;
+    height: 44px;
+  }
+  .file-menu-options button {
+    min-height: 44px;
+  }
+}
+</style>

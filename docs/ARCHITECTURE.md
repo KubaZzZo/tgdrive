@@ -26,9 +26,11 @@
 ## 前端分层
 
 - `src/api/`：fetch 封装和 TypeScript 类型，统一错误与 401 处理。
+- `src/router/`：Vue Router 路由、登录守卫与旧版片段链接跳转。网盘的目录、搜索与分页状态保存在 `/drive` 的查询参数中。
+- `src/views/`：登录、网盘、人物视频、图床、流量与频道同步视图，由路由按需加载。FastAPI 为这些页面路径提供 SPA 入口。
 - `src/stores/`：Pinia 管理认证、文件列表、上传队列、Toast。
-- `src/components/`：展示与媒体交互；常规业务请求通过 API 层，媒体分段读取与本机缓存通过 `src/utils/`。
-- `src/styles/`：CSS 变量和响应式设计系统。
+- `src/components/`：业务组件与媒体交互。`src/components/ui/` 存放通用弹窗、图标和提示组件。
+- `src/styles/`：全局设计变量、基础样式和跨组件共享样式。页面布局和组件专用规则由各组件的 scoped 样式定义。
 
 ## 上传状态机
 

@@ -30,8 +30,8 @@ function date(value: string | null): string | undefined {
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().startsWith(value) ? value : undefined
 }
 
-export function readDriveLocation(hash: string): DriveLocation {
-  const params = new URLSearchParams(hash.startsWith('#drive?') ? hash.slice(7) : '')
+export function readDriveLocation(location: string): DriveLocation {
+  const params = new URLSearchParams(location.startsWith('/drive?') ? location.slice(7).split('#', 1)[0] : '')
   const folder = params.get('folder')
   const view = params.get('view') ?? ''
   const sort = params.get('sort') ?? ''
@@ -71,5 +71,5 @@ export function writeDriveLocation(state: DriveLocation): string {
   for (const [key, value] of Object.entries(state.filters)) {
     if (value !== undefined) params.set(key, String(value))
   }
-  return params.size ? `#drive?${params}` : '#drive'
+  return params.size ? `/drive?${params}` : '/drive'
 }

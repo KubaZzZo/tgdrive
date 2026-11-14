@@ -157,6 +157,12 @@ def create_app(
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
     @app.get("/", include_in_schema=False)
+    @app.get("/login", include_in_schema=False)
+    @app.get("/drive", include_in_schema=False)
+    @app.get("/people", include_in_schema=False)
+    @app.get("/images", include_in_schema=False)
+    @app.get("/traffic", include_in_schema=False)
+    @app.get("/sync", include_in_schema=False)
     async def index() -> Response:
         if cfg.index_file.is_file():
             return FileResponse(cfg.index_file, headers={"Cache-Control": "no-cache"})
