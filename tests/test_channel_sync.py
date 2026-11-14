@@ -8,7 +8,7 @@ from conftest import FakeTelegramStorage, make_settings
 from telethon.errors import FloodWaitError
 from telethon.tl import types
 
-from app.db import Database
+from app.infrastructure.db import Database
 from app.services.channel_sync import ChannelSyncService, describe_message
 
 

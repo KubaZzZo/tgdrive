@@ -5,7 +5,7 @@ import { readDriveLocation, writeDriveLocation } from '../src/utils/driveLocatio
 import { groupFolderFiles } from '../src/utils/folderUpload.ts'
 
 test('drive location round-trips a directory, search filters, sorting, layout and page', () => {
-  const hash = '#drive?folder=folder-id&view=video&q=%E6%97%85%E8%A1%8C&sort=size&page=3&layout=grid&scope=all&min_size=0&created_from=2024-02-29&extension=.mp4'
+  const hash = '/drive?folder=folder-id&view=video&q=%E6%97%85%E8%A1%8C&sort=size&page=3&layout=grid&scope=all&min_size=0&created_from=2024-02-29&extension=.mp4'
   const location = readDriveLocation(hash)
   assert.equal(location.folder, 'folder-id')
   assert.equal(location.query, '旅行')
@@ -15,7 +15,7 @@ test('drive location round-trips a directory, search filters, sorting, layout an
 })
 
 test('drive location ignores malformed and contradictory filter parameters', () => {
-  const location = readDriveLocation('#drive?folder=../abc&page=-1&view=bad&scope=recent&min_size=10&max_size=9&created_from=2025-02-29&extension=%25')
+  const location = readDriveLocation('/drive?folder=../abc&page=-1&view=bad&scope=recent&min_size=10&max_size=9&created_from=2025-02-29&extension=%25')
   assert.equal(location.folder, null)
   assert.equal(location.view, 'all')
   assert.equal(location.scope, '')

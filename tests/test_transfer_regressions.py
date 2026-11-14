@@ -13,10 +13,10 @@ from telethon.sessions import MemorySession
 from telethon.tl.types import InputDocumentFileLocation
 
 from app.api.routes.uploads import upload_chunk
-from app.auth import check_password
-from app.db import Database
+from app.core.security import check_password
+from app.infrastructure.db import Database
+from app.infrastructure.storage import TelegramStorage
 from app.services.uploads import UploadService
-from app.storage import TelegramStorage
 
 
 def test_unicode_password():

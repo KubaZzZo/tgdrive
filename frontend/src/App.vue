@@ -1,112 +1,77 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { defineAsyncComponent, onBeforeUnmount, watch } from 'vue'
+import { RouterView, useRoute, useRouter } from 'vue-router'
 
 import AppHeader from '@/components/AppHeader.vue'
-import FileBrowser from '@/components/FileBrowser.vue'
-import LoginView from '@/components/LoginView.vue'
 import StorageWarning from '@/components/StorageWarning.vue'
-import ToastHost from '@/components/ToastHost.vue'
-import { useSyncStore } from '@/stores/sync'
+import ToastHost from '@/components/ui/ToastHost.vue'
+import { loginDestination } from '@/router'
 import { useAuthStore } from '@/stores/auth'
 import { useDriveStore } from '@/stores/drive'
+import { useSyncStore } from '@/stores/sync'
 import { useToastStore } from '@/stores/toast'
+import { useTrafficStore } from '@/stores/traffic'
 import { useUploadStore } from '@/stores/uploads'
 
-const ImageHost = defineAsyncComponent(() => import('@/components/ImageHost.vue'))
 const UploadPanel = defineAsyncComponent(() => import('@/components/UploadPanel.vue'))
-
+const route = useRoute()
+const router = useRouter()
 const sync = useSyncStore()
 const auth = useAuthStore()
 const drive = useDriveStore()
+const traffic = useTrafficStore()
 const uploads = useUploadStore()
 const toast = useToastStore()
-const entered = ref(false)
-const hash = ref(window.location.hash)
-const routeRevision = ref(0)
-const module = computed(() => {
-  const [page] = hash.value.split('?', 2)
-  if (page === '#people') return 'people'
-  if (page === '#images') return 'images'
-  return 'drive'
-})
-const peopleVideos = computed(() => module.value === 'people' && new URLSearchParams(hash.value.split('?', 2)[1]).get('videos') === '1')
-const person = computed(() => {
-  if (module.value !== 'people') return undefined
-  const [, query] = hash.value.split('?', 2)
-  const name = new URLSearchParams(query).get('name')?.trim()
-  return name && Array.from(name).length <= 80 ? name : null
-})
+let session = 0
 
-function updateRoute(): void {
-  hash.value = window.location.hash
-  routeRevision.value++
-  if (auth.authenticated) void loadRoute()
-}
-
-async function loadRoute(): Promise<void> {
-  if (module.value === 'images') return
-  if (peopleVideos.value) await drive.selectView('video')
-  else if (person.value !== undefined) await drive.selectView('people', person.value)
-  else await drive.restoreLocation(hash.value)
-}
-
-async function enterApp(): Promise<void> {
-  if (entered.value) return
-  entered.value = true
-  await loadRoute()
+watch(() => auth.authenticated, async (authenticated) => {
+  const current = ++session
+  if (!authenticated) {
+    sync.stop()
+    traffic.stop()
+    drive.cancelLoad()
+    if (route.name && route.name !== 'login') {
+      await router.replace({ name: 'login', query: { redirect: route.fullPath } })
+    }
+    return
+  }
+  if (route.name === 'login') await router.replace(loginDestination(route.query.redirect))
+  if (session !== current) return
   sync.start()
+  if (auth.features.traffic) traffic.start()
   const pending = await uploads.restore()
-  if (pending > 0) {
+  if (session === current && pending > 0) {
     toast.push(`有 ${pending} 个未完成的上传，重新拖入同名文件即可续传`, 'info', 6000)
   }
-}
+})
+
+watch(() => uploads.completedCount, () => {
+  if (auth.authenticated && (route.name === 'drive' || route.name === 'people')) void drive.load()
+})
 
 function onUnauthorized(): void {
+  if (!auth.authenticated) return
   auth.markUnauthorized()
   toast.error('登录状态已失效，请重新登录')
 }
 
-watch(
-  () => auth.authenticated,
-  (authenticated) => {
-    if (authenticated) {
-      void enterApp()
-    } else {
-      sync.stop()
-      entered.value = false
-    }
-  },
-)
-
-watch(
-  () => uploads.completedCount,
-  () => {
-    if (auth.authenticated) void drive.load()
-  },
-)
-
-onMounted(async () => {
-  window.addEventListener('hashchange', updateRoute)
-  window.addEventListener('tgdrive:unauthorized', onUnauthorized)
-  await auth.bootstrap()
-  if (auth.authenticated) await enterApp()
-})
-
+window.addEventListener('tgdrive:unauthorized', onUnauthorized)
 onBeforeUnmount(() => {
+  session++
   sync.stop()
-  window.removeEventListener('hashchange', updateRoute)
+  traffic.stop()
+  drive.cancelLoad()
   window.removeEventListener('tgdrive:unauthorized', onUnauthorized)
 })
 </script>
 
 <template>
-  <LoginView v-if="auth.ready && !auth.authenticated" />
-  <div v-else-if="auth.authenticated" class="app-shell">
-    <AppHeader :module="module" />
+  <RouterView v-if="route.name === 'login'" />
+  <div v-else-if="auth.authenticated && route.name" class="app-shell">
+    <AppHeader />
     <StorageWarning :storage="auth.storage" />
     <main class="main" :class="{ 'has-transfers': uploads.hasJobs }">
-      <FileBrowser v-if="module !== 'images'" :route-revision="routeRevision" :people-videos="peopleVideos" />
-      <ImageHost v-else />
+      <RouterView />
     </main>
     <UploadPanel v-if="uploads.hasJobs" />
   </div>
@@ -116,3 +81,35 @@ onBeforeUnmount(() => {
   </div>
   <ToastHost />
 </template>
+
+<style scoped>
+.main {
+  margin: 0 auto;
+  max-width: 1680px;
+  padding: 0 28px 60px 0;
+}
+.main.has-transfers {
+  padding-bottom: 340px;
+}
+.boot-screen {
+  min-height: 100dvh;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 18px;
+  color: var(--muted);
+}
+@media (min-width: 1440px) {
+  .main {
+    padding-right: 44px;
+  }
+}
+@media (max-width: 760px) {
+  .main {
+    padding: 0 16px 36px;
+  }
+  .main.has-transfers {
+    padding-bottom: 340px;
+  }
+}
+</style>

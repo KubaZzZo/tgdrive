@@ -1,124 +1,53 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import sys
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime
 
 import pytest
 
-from app.db import Database
+from app.infrastructure.db import Database
 from app.services.traffic import TrafficMiddleware, TrafficMonitor
-from scripts.traffic_collector import read_interfaces, sample
 
 
-@pytest.mark.skipif(sys.platform != "linux", reason="Linux host counters")
-def test_linux_uplink_counters_match_sysfs():
-    names = list(read_interfaces())
-    before = {
-        name: [
-            int((Path("/sys/class/net") / name / "statistics" / field).read_text())
-            for field in ("rx_bytes", "tx_bytes")
-        ]
-        for name in names
-    }
-    measured = read_interfaces(selected=names)
-    for name in names:
-        after = [
-            int((Path("/sys/class/net") / name / "statistics" / field).read_text())
-            for field in ("rx_bytes", "tx_bytes")
-        ]
-        assert all(before[name][i] <= measured[name][i] <= after[i] for i in (0, 1))
-
-
-def instant(value="2026-11-04T04:00:00+00:00"):
-    return datetime.fromisoformat(value)
-
-
-def test_collector_baseline_restart_and_interface_filter(workdir):
-    proc = workdir / "proc"
-    (proc / "net").mkdir(parents=True)
-    (proc / "net/dev").write_text(
-        "header\nheader\nlo: 900 0 0 0 0 0 0 0 900\neth0: 100 0 0 0 0 0 0 0 200\nveth0: 800 0 0 0 0 0 0 0 800\n"
-    )
-    (proc / "net/route").write_text("header\neth0 00000000 00000000 0003\n")
-    assert read_interfaces(proc) == {"eth0": [100, 200]}
-    with pytest.raises(RuntimeError):
-        read_interfaces(proc, ["lo"])
-    first = sample(None, {"eth0": [100, 200]}, "boot1", instant())
-    assert first["days"]["2026-11-04"] == {"inbound": 0, "outbound": 0}
-    # JSON reload simulates restarting the collector without resetting accumulated usage.
-    second = sample(
-        json.loads(json.dumps(first)),
-        {"eth0": [150, 280]},
-        "boot1",
-        instant() + timedelta(seconds=5),
-    )
-    assert second["days"]["2026-11-04"] == {"inbound": 50, "outbound": 80}
-    assert first["days"]["2026-11-04"]["inbound"] == 0
-
-
-def test_collector_beijing_midnight_reset_and_reboot():
-    first = sample(None, {"eth0": [10, 20]}, "a", instant("2026-11-04T15:59:58+00:00"))
-    second = sample(first, {"eth0": [15, 30]}, "a", instant("2026-11-04T16:00:03+00:00"))
-    assert second["days"]["2026-11-05"] == {"inbound": 5, "outbound": 10}
-    assert "2026-11-05" not in second["incomplete_days"]
-    rebooted = sample(second, {"eth0": [2, 4]}, "b", instant("2026-11-04T16:00:08+00:00"))
-    assert rebooted["days"]["2026-11-05"] == {"inbound": 7, "outbound": 14}
-    assert "2026-11-05" in rebooted["incomplete_days"]
-
-
-def test_cross_day_gap_and_new_interface_mark_incomplete():
-    first = sample(None, {"eth0": [10, 20]}, "a", instant())
-    second = sample(
-        first, {"eth0": [100, 200], "eth1": [999, 999]}, "a", instant() + timedelta(days=1)
-    )
-    assert second["gaps"] == 1
-    assert "2026-11-05" in second["incomplete_days"]
-    assert second["days"]["2026-11-05"] == {"inbound": 90, "outbound": 180}
-
-
-def test_monitor_persistence_quota_and_stale_host_state(workdir):
+def test_monitor_persistence_history_and_quota(workdir):
     db = Database(workdir / "traffic.db")
-    host_path = workdir / "host.json"
-    monitor = TrafficMonitor(db, host_path)
-    monitor.record("web", inbound=123, outbound=456)
-    monitor.flush()
-    assert db.traffic_rows("2000")[0]["outbound"] == 456
-    state = sample(None, {"eth0": [0, 0]}, "a", instant())
-    state = sample(
-        state, {"eth0": [40_000_000_000, 45_000_000_000]}, "a", instant() + timedelta(seconds=5)
-    )
-    host_path.write_text(json.dumps(state))
-    status = monitor.snapshot(instant() + timedelta(seconds=6))
-    assert status["host"]["used"] == 85_000_000_000
-    assert status["host"]["warning"] == "near"
-    assert status["host"]["remaining"] == 15_000_000_000
+    monitor = TrafficMonitor(db)
+    db.record_traffic([("2026-11-04", "web", 10, 20)])
+    now = datetime.fromisoformat("2026-11-04T16:00:00+00:00")
+    db.record_traffic([("2026-11-05", "telegram", 40_000_000_000, 45_000_000_000)])
+    status = monitor.snapshot(now)
+    assert status["day"] == "2026-11-05"
+    assert status["usage"]["history"][-2] == {"day": "2026-11-04", "inbound": 10, "outbound": 20}
+    assert status["usage"]["used"] == 85_000_000_000
+    assert status["usage"]["warning"] == "near"
+    assert status["usage"]["remaining"] == 15_000_000_000
     db.update_traffic_config(80_000_000_000)
-    assert monitor.snapshot(instant() + timedelta(seconds=6))["host"]["warning"] == "exceeded"
-    assert monitor.snapshot(instant() + timedelta(minutes=2))["host"]["stale"]
+    assert monitor.snapshot(now)["usage"]["warning"] == "exceeded"
     db.close()
     reopened = Database(workdir / "traffic.db")
-    assert reopened.traffic_config()["quota_bytes"] == 80_000_000_000
-    assert reopened.traffic_rows("2000")[0]["inbound"] == 123
+    assert TrafficMonitor(reopened).snapshot(now)["quota_bytes"] == 80_000_000_000
     reopened.close()
 
 
-def test_monitor_missing_corrupt_and_failed_persistence(workdir, monkeypatch):
-    db = Database(workdir / "bad.db")
-    path = workdir / "bad.json"
-    monitor = TrafficMonitor(db, path)
-    assert not monitor.snapshot()["host"]["available"]
-    path.write_text("null")
-    assert not monitor.snapshot()["host"]["available"]
+def test_pending_bytes_visible_and_persistence_retries(workdir, monkeypatch):
+    db = Database(workdir / "retry.db")
+    monitor = TrafficMonitor(db)
+    monitor.record("web", inbound=123, outbound=456)
+    assert db.traffic_rows("2000") == []
+    assert monitor.snapshot()["usage"]["used"] == 579
     with monkeypatch.context() as patch:
-        patch.setattr(
-            db, "record_traffic", lambda rows: (_ for _ in ()).throw(OSError("disk full"))
-        )
-        monitor.record("web", inbound=1024 * 1024)
+
+        def fail(rows):
+            # Recording stays independent of database I/O.
+            monitor.record("telegram", inbound=10)
+            raise OSError("disk full")
+
+        patch.setattr(db, "record_traffic", fail)
+        monitor.flush()
+    assert monitor.snapshot()["usage"]["used"] == 589
     monitor.flush()
-    assert db.traffic_rows("2000")[0]["inbound"] == 1024 * 1024
+    assert monitor.snapshot()["usage"]["used"] == 589
+    assert len(db.traffic_rows("2000")) == 2
     db.close()
 
 
@@ -142,7 +71,7 @@ def test_traffic_api_authentication_and_quota(app_client):
 def test_streaming_middleware_counts_actual_bodies_including_partial_response(workdir):
     async def run():
         db = Database(workdir / "stream.db")
-        monitor = TrafficMonitor(db, workdir / "missing.json")
+        monitor = TrafficMonitor(db)
 
         async def application(scope, receive, send):
             await receive()
@@ -172,11 +101,11 @@ def test_telegram_payload_counters(workdir):
 
     from conftest import make_settings
 
-    from app.storage import TelegramStorage
+    from app.infrastructure.storage import TelegramStorage
 
     async def run():
         db = Database(workdir / "telegram.db")
-        monitor = TrafficMonitor(db, workdir / "no-host.json")
+        monitor = TrafficMonitor(db)
         storage = TelegramStorage(make_settings(workdir, tg_segment_size=3))
         storage.traffic = monitor
         storage.chat, storage._started = -100123, True

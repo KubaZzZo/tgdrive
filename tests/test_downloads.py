@@ -10,7 +10,12 @@ import pytest
 from conftest import make_settings
 
 from app.api.routes import files
-from app.storage import DOWNLOAD_BLOCK_SIZE, PREFETCH_DEPTH, PREFETCH_MIN_BYTES, TelegramStorage
+from app.infrastructure.storage import (
+    DOWNLOAD_BLOCK_SIZE,
+    PREFETCH_DEPTH,
+    PREFETCH_MIN_BYTES,
+    TelegramStorage,
+)
 
 
 def make_file(app, storage, sizes=(4, 6)):

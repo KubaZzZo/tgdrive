@@ -1,0 +1,16 @@
+:root {
+  color-scheme: light;
+  --bg: #f7f8fa;
+  --panel: #fff;
+  --panel-2: #f1f5f9;
+  --line: #e5e9f0;
+  --text: #1e293b;
+  --muted: #64748b;
+  --accent: #2563eb;
+  --accent-2: #0ea5e9;
+  --accent-ink: #fff;
+  --danger: #dc3545;
+  --ok: #16845b;
+  --shadow: 0 12px 36px #20324d14;
+  --radius: 14px;
+}

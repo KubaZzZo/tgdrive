@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import AsyncIterator
@@ -17,7 +18,8 @@ from app.core.errors import install_exception_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.core.security import LoginRateLimiter
-from app.db import Database
+from app.infrastructure.db import Database
+from app.infrastructure.storage import TelegramStorage
 from app.services.accounts import AccountManager, Runtime, WorkspaceMiddleware, account_settings
 from app.services.cdn import CDNMonitor
 from app.services.channel_sync import ChannelSyncService
@@ -26,7 +28,6 @@ from app.services.thumbnails import ThumbnailCache
 from app.services.traffic import TrafficMiddleware, TrafficMonitor
 from app.services.upload_temp import cleanup_faststart_outputs
 from app.services.uploads import UploadService, UploadSpace
-from app.storage import TelegramStorage
 
 logger = logging.getLogger("tgdrive")
 APP_VERSION = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
@@ -54,10 +55,10 @@ def create_app(
                 raise RuntimeError("频道数据库配置无效")
             database = Database(cfg.data_dir / "channels" / f"{key}.sqlite3")
     telegram = storage or TelegramStorage(account_settings(cfg, profile))
-    traffic = TrafficMonitor(control, cfg.traffic_host_state)
+    traffic = TrafficMonitor(control, enabled=cfg.traffic_enabled)
     cdn = CDNMonitor(control, cfg)
     traffic.cdn = cdn
-    telegram.traffic = traffic
+    telegram.traffic = traffic if cfg.traffic_enabled else None
     upload_service = UploadService(
         database,
         telegram,
@@ -66,6 +67,7 @@ def create_app(
         space=UploadSpace(cfg.upload_temp_max_mib, cfg.upload_temp_min_free_mib),
         faststart=cfg.video_faststart,
         faststart_timeout=cfg.video_faststart_timeout,
+        image_host_enabled=cfg.image_host_enabled,
     )
 
     channel_sync = ChannelSyncService(database, telegram, cfg)
@@ -90,6 +92,11 @@ def create_app(
             database.schema_version(),
             cfg.is_configured,
         )
+        traffic_worker = (
+            asyncio.create_task(traffic.persist_periodically(), name="traffic-persistence")
+            if cfg.traffic_enabled
+            else None
+        )
         try:
             app.state.media_cache.start()
             await cdn.start()
@@ -97,6 +104,9 @@ def create_app(
         finally:
             await app.state.media_cache.close()
             await cdn.stop()
+            if traffic_worker is not None:
+                traffic_worker.cancel()
+                await asyncio.gather(traffic_worker, return_exceptions=True)
             await account_manager.shutdown()
             logger.info("TG Drive stopped")
 
@@ -113,7 +123,7 @@ def create_app(
     app.state.storage = telegram
     app.state.traffic = traffic
     app.state.cdn = cdn
-    app.state.thumbnails = ThumbnailCache()
+    app.state.thumbnails = ThumbnailCache(upload_service.video_slots)
     app.state.media_cache = MediaSliceCache(
         cfg.media_cache_dir or cfg.data_dir / "media-slices",
         cfg.media_cache_max_mib * MIB,
@@ -138,7 +148,8 @@ def create_app(
         max_age=cfg.session_max_age,
     )
     app.add_middleware(RequestContextMiddleware)
-    app.add_middleware(TrafficMiddleware, monitor=traffic)
+    if cfg.traffic_enabled:
+        app.add_middleware(TrafficMiddleware, monitor=traffic)
     install_exception_handlers(app)
 
     app.include_router(system.router)
@@ -146,8 +157,9 @@ def create_app(
     app.include_router(auth.router)
     app.include_router(items.router)
     app.include_router(uploads.router)
-    app.include_router(images.router)
-    app.include_router(images.public_router)
+    if cfg.image_host_enabled:
+        app.include_router(images.router)
+        app.include_router(images.public_router)
     app.include_router(files.auth_router)
     app.include_router(files.router)
 
@@ -157,6 +169,12 @@ def create_app(
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
     @app.get("/", include_in_schema=False)
+    @app.get("/login", include_in_schema=False)
+    @app.get("/drive", include_in_schema=False)
+    @app.get("/people", include_in_schema=False)
+    @app.get("/images", include_in_schema=False)
+    @app.get("/traffic", include_in_schema=False)
+    @app.get("/sync", include_in_schema=False)
     async def index() -> Response:
         if cfg.index_file.is_file():
             return FileResponse(cfg.index_file, headers={"Cache-Control": "no-cache"})

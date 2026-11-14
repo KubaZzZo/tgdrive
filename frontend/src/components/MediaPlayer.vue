@@ -1,21 +1,13 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { mediaFailure } from '@/api/client'
-import {
-  mediaTime, playbackPaths, playbackPosition, savedPlaybackMode, savePlayback, savePlaybackMode, type PlaybackPath,
-} from '@/utils/playback'
-import type { MediaPrefix, MediaSession } from '@/utils/fragmentedMp4'
-import {
-  cacheVideo, cacheVideoPrefix, cacheVideoSegment, cachedVideo, cachedVideoSegments,
-  clearVideoCache, deviceCacheAvailable, readCachedVideoSegment,
-} from '@/utils/deviceCache'
+import { mediaTime, playbackPosition, savePlayback } from '@/utils/playback'
 import { formatBytes } from '@/utils/format'
 import { holdCoverQueue } from '@/utils/coverQueue'
-import { withMediaTimeout } from '@/utils/mediaTransfer'
-import AppIcon from './AppIcon.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
 
 const props = defineProps<{
-  src: string; itemId: string; kind: 'video' | 'audio'; size: number; version: string; mime: string
+  src: string; itemId: string; kind: 'video' | 'audio'; size: number
   poster?: string; downloadPending?: boolean; downloadStatus?: string
 }>()
 const emit = defineEmits<{ download: []; close: [] }>()
@@ -27,47 +19,6 @@ type SafariVideo = HTMLVideoElement & {
   webkitPresentationMode?: 'inline' | 'picture-in-picture' | 'fullscreen'
   webkitSupportsPresentationMode?: (mode: 'picture-in-picture') => boolean
   webkitSetPresentationMode?: (mode: 'inline' | 'picture-in-picture') => void
-}
-const cacheSupported = deviceCacheAvailable()
-const cacheBusy = ref(false)
-const cacheProgress = ref(0)
-const local = ref(false)
-const downloaded = ref(false)
-const bufferSeconds = ref(0)
-const playbackMode = ref(savedPlaybackMode())
-let localFile: Blob | undefined
-let releaseLocal: (() => void) | undefined
-let cacheController: AbortController | undefined
-const cacheKey = () => `${props.src}|${props.version}`
-async function cacheHere(): Promise<void> {
-  cacheBusy.value = true
-  cacheProgress.value = 0
-  cacheController = new AbortController()
-  try {
-    await cacheVideo(props.src, cacheKey(), props.size, cacheController.signal,
-      bytes => { cacheProgress.value = Math.floor(bytes / props.size * 100) },
-      () => !paused.value || document.hidden)
-    if (disposed) return
-    downloaded.value = true
-    notice.value = '已缓存到本机，下次打开时会优先使用。'
-  } catch (e) {
-    if (!disposed) notice.value = cacheController.signal.aborted ? '已取消缓存' : (e instanceof Error ? e.message : '本机缓存失败')
-  } finally { cacheBusy.value = false }
-}
-async function clearCache(): Promise<void> {
-  try {
-    await clearVideoCache(localFile ? () => {
-      save()
-      localFile = undefined
-      local.value = false
-      restored = false
-      start()
-      releaseLocal?.()
-      releaseLocal = undefined
-    } : undefined)
-    downloaded.value = false
-    notice.value = '本机视频缓存已清除'
-  } catch (e) { notice.value = e instanceof Error ? e.message : '清除失败' }
 }
 const player = ref<HTMLMediaElement | null>(null)
 const container = ref<HTMLElement | null>(null)
@@ -106,20 +57,15 @@ const videoElement = () => props.kind === 'video' ? player.value as SafariVideo 
 let restored = false
 let resumePending = false
 let lastSaved = 0
-let disposed = false
-let session: MediaSession | undefined
 let controller = new AbortController()
-const streaming = ref(false)
+let disposed = false
 const startupBudgetMs = 15_000
 const nativeVideoStartupLimitMs = 180_000
 let startupTimer: ReturnType<typeof setTimeout> | undefined
 let startupStarted = 0
-let paths: PlaybackPath[] = []
-let prefix: MediaPrefix | undefined
-let playRequested = false
-let active: { path: PlaybackPath; started: number; ready: boolean } | undefined
+let active = false
+let startedPlayback = false
 let releaseCovers: (() => void) | undefined
-let frameCallback: number | undefined
 
 function cancelCloseTimer(): void {
   clearTimeout(closeTimeout)
@@ -195,19 +141,15 @@ function update(): void {
 async function toggle(): Promise<void> {
   const media = player.value
   if (!media || !active) return
-  playRequested = media.paused
-  if (playRequested) await playAttached()
-  else media.pause()
-}
-async function playAttached(): Promise<void> {
-  const media = player.value
+  if (!media.paused) {
+    media.pause()
+    return
+  }
   const signal = controller.signal
-  if (playRequested && media?.getAttribute('src')) {
-    try {
-      await media.play()
-    } catch {
-      if (!signal.aborted) notice.value = '请点击播放器中的播放按钮，或等待缓冲完成。'
-    }
+  try {
+    await media.play()
+  } catch {
+    if (!signal.aborted && active) notice.value = '请点击播放器中的播放按钮，或等待缓冲完成。'
   }
 }
 function seek(value: number): void {
@@ -299,29 +241,27 @@ async function pictureInPicture(): Promise<void> {
 function failed(): void {
   const code = player.value?.error?.code
   if (!code || !active) return
-  recover('media-error',
+  recover(
     code === 2
       ? '媒体传输中断，请重试加载。'
       : '浏览器无法解码此文件，可以下载后使用本地播放器观看。',
   )
 }
-function reportFailure(fallback: string): void {
-  const signal = controller.signal
+function recover(fallback: string): void {
+  if (!active) return
+  save()
+  resetMedia()
   loading.value = false
   error.value = fallback
-  if (localFile) return
-  void withMediaTimeout(signal, 2_000, async check => {
-    const message = await mediaFailure(props.src, fallback, check)
-    if (!check.aborted) error.value = message
-  }).catch(() => {})
+  const signal = controller.signal
+  void mediaFailure(props.src, fallback, AbortSignal.any([signal, AbortSignal.timeout(2000)]))
+    .then(message => { if (!signal.aborted) error.value = message })
+    .catch(() => {})
 }
 function resetMedia(): void {
   clearTimeout(startupTimer)
-  cancelFrameTrace()
-  active = undefined
+  active = false
   controller.abort()
-  session?.dispose()
-  session = undefined
   controller = new AbortController()
   const media = player.value
   if (media) {
@@ -330,75 +270,23 @@ function resetMedia(): void {
     media.load()
   }
   paused.value = true
-  streaming.value = false
-}
-function trace(stage: string, requestId?: string, timestamp = performance.now()): void {
-  if (!active) return
-  console.debug('[TG Drive] media startup', {
-    itemId: props.itemId, path: active.path, stage, requestId,
-    elapsedMs: Math.round(timestamp - startupStarted), attemptMs: Math.round(timestamp - active.started),
-  })
-}
-function cancelFrameTrace(): void {
-  if (frameCallback !== undefined) videoElement()?.cancelVideoFrameCallback?.(frameCallback)
-  frameCallback = undefined
-}
-function traceRenderedFrame(signal: AbortSignal): void {
-  frameCallback = videoElement()?.requestVideoFrameCallback?.(now => {
-    if (signal.aborted) return
-    frameCallback = undefined
-    trace('first-frame-rendered', undefined, now)
-  })
 }
 function ready(): void {
   const media = player.value
-  const attempt = active
-  if (!media || !attempt || media.readyState < (props.kind === 'audio' ? 1 : 2) || media.seeking) return
+  if (!media || !active || media.readyState < (props.kind === 'audio' ? 1 : 2) || media.seeking) return
   loading.value = false
-  if (attempt.ready) return
-  attempt.ready = true
+  startedPlayback = true
   clearTimeout(startupTimer)
-  if (attempt.path === 'native' && !localFile) {
-    const url = new URL(props.src, location.href).href
-    const request = (performance.getEntriesByName(url, 'resource') as PerformanceResourceTiming[])
-      .find(entry => entry.startTime >= attempt.started && entry.initiatorType === props.kind && entry.responseStart > 0)
-    if (request) trace('first-byte', undefined, request.responseStart)
-  }
-  trace(props.kind === 'audio' ? 'metadata-ready' : 'first-frame-ready')
 }
-function recover(reason: string, message: string): void {
-  if (!active) return
-  trace(reason)
-  save()
-  const next = (!active.ready || active.path === 'compat') && paths.shift()
-  if (next) {
-    notice.value = next === 'native' ? '正在切换到浏览器原生播放…' : '正在切换到兼容播放…'
-    void startAttempt(next)
-  } else {
-    resetMedia()
-    reportFailure(message)
-  }
-}
-function start(useCache = false): void {
-  notice.value = ''
-  playRequested = false
-  prefix = undefined
-  paths = playbackPaths(playbackMode.value, props.kind, props.mime)
-  startupStarted = performance.now()
-  void startAttempt(paths.shift()!, useCache)
+function startupProgress(): void {
+  if (!active || startedPlayback || props.kind !== 'video') return
+  waitForStartup(Math.max(0, Math.min(startupBudgetMs, startupStarted + nativeVideoStartupLimitMs - performance.now())))
 }
 function waitForStartup(budget: number): void {
   clearTimeout(startupTimer)
-  startupTimer = setTimeout(() => recover('startup-timeout', '媒体启动超时，请重试或下载后播放。'), budget)
+  startupTimer = setTimeout(() => recover('媒体启动超时，请重试或下载后播放。'), budget)
 }
-function startupProgress(): void {
-  if (!active || active.ready || active.path !== 'native' || props.kind !== 'video' || localFile ||
-    !player.value?.getAttribute('src')) return
-  // Native playback can read a large MP4 index from the tail before reporting metadata.
-  const remaining = active.started + nativeVideoStartupLimitMs - performance.now()
-  waitForStartup(Math.max(0, Math.min(startupBudgetMs, remaining)))
-}
-async function startAttempt(path: PlaybackPath, useCache = false): Promise<void> {
+function start(): void {
   resetMedia()
   restored = false
   resumePending = false
@@ -406,82 +294,17 @@ async function startAttempt(path: PlaybackPath, useCache = false): Promise<void>
   current.value = 0
   loading.value = true
   error.value = ''
-  const signal = controller.signal
-  const media = player.value
-  if (!media) return
-  active = { path, started: performance.now(), ready: false }
-  trace('start')
-  waitForStartup(path === 'compat' && paths.length ? 8_000 : startupBudgetMs)
-  try {
-    if (useCache && cacheSupported && props.kind === 'video') {
-      const hit = await cachedVideo(cacheKey(), props.size, path === 'compat')
-      if (hit) {
-        let usingFile = false
-        try {
-          signal.throwIfAborted()
-          const response = await withMediaTimeout(signal, 1200, cacheSignal => fetch(props.src, {
-            method: 'HEAD', headers: { Range: 'bytes=0-0' }, cache: 'no-store', signal: cacheSignal,
-          }))
-          if (!signal.aborted && response.status === 206 && response.headers.get('ETag') === hit.etag &&
-            response.headers.get('Content-Range') === 'bytes 0-0/' + props.size) {
-            if (hit.file.size === props.size) {
-              localFile = hit.file.slice(0, hit.file.size, props.mime)
-              releaseLocal = hit.release
-              usingFile = true
-              local.value = true
-              downloaded.value = true
-            } else prefix = { bytes: new Uint8Array(await hit.file.arrayBuffer()), etag: hit.etag }
-          }
-        } catch { /* The network source remains available if cache validation fails. */ }
-        finally { if (!usingFile) hit.release() }
-      }
-    }
-    signal.throwIfAborted()
-    if (path === 'native') {
-      if (localFile) {
-        const objectUrl = URL.createObjectURL(localFile)
-        media.src = objectUrl
-        session = { streaming: false, dispose: () => URL.revokeObjectURL(objectUrl) }
-      } else media.src = props.src
-      traceRenderedFrame(signal)
-      void playAttached()
-      return
-    }
-    const { attachMedia } = await import('@/utils/fragmentedMp4')
-    signal.throwIfAborted()
-    const key = cacheKey()
-    const value = await attachMedia(media, props.src, signal, () => {
-      if (!signal.aborted) recover('stream-error', '视频流加载失败，请重试或下载后播放。')
-    }, {
-      file: localFile, bufferSeconds: () => bufferSeconds.value || undefined, version: props.version,
-      size: props.size, prefix, onStage: (stage, id) => { if (!signal.aborted) trace(stage, id) },
-      onPrefix: cacheSupported ? data => { void cacheVideoPrefix(key, data.bytes, data.etag) } : undefined,
-      segments: cacheSupported ? {
-        list: etag => cachedVideoSegments(key, etag),
-        read: (etag, start, end) => readCachedVideoSegment(key, etag, start, end),
-        write: (etag, segment, bytes) => cacheVideoSegment(key, segment, bytes, etag),
-      } : undefined,
-      onSeekUnavailable: () => { notice.value = '未能在缓冲预算内定位，已返回原进度。可重试或切换播放方式。' },
-    })
-    if (signal.aborted) value.dispose()
-    else {
-      session = value
-      streaming.value = value.streaming
-      traceRenderedFrame(signal)
-      void playAttached()
-    }
-  } catch (cause) {
-    if (!signal.aborted) recover(cause instanceof DOMException && cause.name === 'TimeoutError' ? 'probe-timeout' : 'setup-error',
-      '视频加载失败，请重试或下载后播放。')
-  }
+  notice.value = ''
+  startedPlayback = false
+  if (!player.value) return
+  active = true
+  startupStarted = performance.now()
+  waitForStartup(startupBudgetMs)
+  player.value.src = props.src
 }
 function retry(): void {
   save()
   start()
-}
-function changePlaybackMode(): void {
-  savePlaybackMode(playbackMode.value)
-  retry()
 }
 function onKey(event: KeyboardEvent): void {
   if (event.key === 'Escape' && (settingsOpen.value || fullscreenActive.value)) {
@@ -506,13 +329,12 @@ function pause(): void {
   if (!player.value?.paused) return
   paused.value = true
   if (!player.value?.getAttribute('src')) return
-  playRequested = false
   save()
 }
 onMounted(() => {
   releaseCovers = holdCoverQueue()
   syncPresentation()
-  start(true)
+  start()
   window.addEventListener('pagehide', save)
   document.addEventListener('visibilitychange', save)
   if (props.kind === 'video') document.addEventListener('visibilitychange', updateCloseTimer)
@@ -523,10 +345,7 @@ onBeforeUnmount(() => {
   disposed = true
   cancelCloseTimer()
   clearTimeout(startupTimer)
-  cancelFrameTrace()
-  cacheController?.abort()
   controller.abort()
-  session?.dispose()
   window.removeEventListener('pagehide', save)
   document.removeEventListener('visibilitychange', save)
   document.removeEventListener('visibilitychange', updateCloseTimer)
@@ -538,7 +357,6 @@ onBeforeUnmount(() => {
     player.value.removeAttribute('src')
     player.value.load()
   }
-  releaseLocal?.()
   releaseCovers?.()
 })
 </script>
@@ -573,7 +391,7 @@ onBeforeUnmount(() => {
           @timeupdate="update"
           @seeking="seeking"
           @seeked="ready"
-          @play="paused = false; playRequested = true"
+          @play="paused = false"
           @pause="pause"
           @ended="pause"
           @waiting="loading = true"
@@ -679,12 +497,6 @@ onBeforeUnmount(() => {
           <label class="media-setting">音量
             <input class="media-volume" aria-label="音量" type="range" min="0" max="1" step=".05" v-model.number="volume" @input="changeVolume" />
           </label>
-          <label v-if="kind === 'video'" class="media-setting">播放方式
-            <select v-model="playbackMode" aria-label="播放方式" @change="changePlaybackMode"><option value="auto">自动</option><option value="compat">兼容模式</option><option value="native">浏览器原生</option></select>
-          </label>
-          <label v-if="streaming" class="media-setting">预缓冲时长
-            <select v-model.number="bufferSeconds" aria-label="预缓冲时长"><option :value="0">自动</option><option :value="60">最多 60 秒</option><option :value="120">最多 120 秒</option></select>
-          </label>
           <form v-if="kind === 'video'" class="media-close-timer" @submit.prevent="startCloseTimer">
             <label class="media-setting">定时关闭
               <select v-model="closeTimerChoice">
@@ -703,17 +515,276 @@ onBeforeUnmount(() => {
           <div class="media-buttons media-setting-actions">
             <button v-if="duration" type="button" @click="restart">从头播放</button>
             <button v-if="kind === 'video'" type="button" @click="rotation = (rotation + 90) % 360">旋转视频 {{ rotation }}°</button>
-            <button v-if="kind === 'video' && cacheSupported && !cacheBusy && !downloaded" type="button" @click="cacheHere">缓存到本机</button>
-            <button v-if="cacheBusy" type="button" @click="cacheController?.abort()">取消缓存 {{ cacheProgress }}%</button>
-            <button v-if="kind === 'video' && cacheSupported && !cacheBusy" type="button" @click="clearCache">清除本机缓存</button>
           </div>
         </div>
         <p v-if="closeSeconds" class="media-notice media-close-countdown" role="timer">将在 {{ mediaTime(closeSeconds) }} 后关闭</p>
-        <p v-if="notice || cacheBusy || local" class="media-notice" role="status">
-          {{ cacheBusy ? '正在缓存到本机 ' + cacheProgress + '%' : notice || '正在播放本机缓存' }}
-        </p>
+        <p v-if="notice" class="media-notice" role="status">{{ notice }}</p>
         <p v-if="downloadStatus" class="media-notice" role="status">{{ downloadStatus }}</p>
       </div>
     </div>
   </div>
 </template>
+
+<style scoped>
+.media-player {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid #29374d;
+  border-radius: 12px;
+  background: #101828;
+  color: #e2e8f0;
+  outline-offset: -3px;
+}
+.media-layout {
+  display: flex;
+  flex-direction: column;
+}
+.media-screen {
+  position: relative;
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  overflow: hidden;
+  background: #030712;
+}
+.media-screen video {
+  display: block;
+  width: 100%;
+  max-height: 55dvh;
+  object-fit: contain;
+  cursor: pointer;
+}
+.media-quarter-turn {
+  height: 55dvh;
+  container-type: size;
+}
+.media-screen.media-quarter-turn video {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 100cqh;
+  height: 100cqw;
+  max-height: none;
+  translate: -50% -50%;
+}
+.media-screen audio {
+  width: calc(100% - 36px);
+}
+.media-stage-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+  display: grid;
+  place-items: center;
+  width: 60px;
+  height: 60px;
+  border: 1px solid #ffffff40;
+  border-radius: 50%;
+  background: #101828d9;
+  color: white;
+}
+.media-stage-play:hover {
+  background: #263650;
+}
+.media-loading {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  pointer-events: none;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: #101828e6;
+  color: #dbeafe;
+  font-size: 12px;
+}
+.media-error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 12px;
+  padding: 20px;
+  background: #101828f5;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.media-error p { margin: 0; }
+.media-error .ghost { color: var(--text); }
+.media-controls {
+  position: relative;
+  padding: 8px 14px 12px;
+  background: #101828;
+}
+.media-timeline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #c9d5e6;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.media-timeline input,
+.media-volume {
+  min-width: 0;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  accent-color: #7bb9ff;
+}
+.media-timeline input { flex: 1; }
+.media-timeline span:last-child { text-align: right; }
+.media-toolbar,
+.media-buttons {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.media-toolbar {
+  justify-content: space-between;
+  margin-top: 4px;
+}
+.media-toolbar > :last-child { margin-inline-start: auto; }
+.media-buttons button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 38px;
+  min-height: 38px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  padding: 0 6px;
+  color: #dbeafe;
+  background: transparent;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.media-buttons button:hover:not(:disabled) {
+  background: #263650;
+}
+.media-buttons .media-play,
+.media-buttons button[aria-pressed="true"],
+.media-buttons button[aria-expanded="true"] {
+  border-color: #3c587b;
+  background: #203955;
+  color: #d8ecff;
+}
+.media-player :is(button, select, input):focus-visible {
+  outline: 2px solid #7bb9ff;
+  outline-offset: 1px;
+}
+.media-settings {
+  position: absolute;
+  z-index: 2;
+  inset-inline-end: 8px;
+  bottom: 100%;
+  display: grid;
+  gap: 8px;
+  width: min(280px, calc(100% - 16px));
+  max-height: min(40dvh, 270px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 12px;
+  border: 1px solid #344258;
+  border-radius: 10px;
+  background: #142036;
+  box-shadow: 0 8px 24px #03071288;
+  font-size: 13px;
+}
+.media-settings-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+.media-settings-head span { color: #a5b5ca; }
+.media-setting {
+  display: grid;
+  grid-template-columns: 1fr minmax(0, 118px);
+  align-items: center;
+  gap: 8px;
+}
+.media-setting :is(select, input[type="number"]) {
+  min-height: 34px;
+  min-width: 0;
+  padding: 4px 8px;
+  border: 1px solid #344258;
+  border-radius: 6px;
+  background: #1e293b;
+  color: #dbeafe;
+  font-size: 12px;
+}
+.media-close-timer {
+  display: grid;
+  gap: 8px;
+}
+.media-close-countdown { font-variant-numeric: tabular-nums; }
+.media-setting-actions {
+  border-top: 1px solid #344258;
+  padding-top: 5px;
+}
+.media-notice {
+  margin: 5px 0 0;
+  color: #a8cdf6;
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.media-player:is(:fullscreen, .media-expanded) {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: #030712;
+}
+.media-player:is(:fullscreen, .media-expanded) .media-layout {
+  container-type: size;
+  width: 100%;
+  height: 100%;
+}
+.media-fullscreen .media-settings { max-height: min(45cqh, 270px); }
+.media-player:is(:fullscreen, .media-expanded) .media-screen {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+.media-player:is(:fullscreen, .media-expanded) .media-screen:not(.media-quarter-turn) video {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+  max-height: none;
+}
+.media-fullscreen .media-controls {
+  flex: none;
+  padding-right: max(14px, env(safe-area-inset-right));
+  padding-bottom: max(8px, env(safe-area-inset-bottom));
+  padding-left: max(14px, env(safe-area-inset-left));
+}
+@media (orientation: portrait) and (pointer: coarse), (orientation: portrait) and (max-width: 760px) {
+  .media-player.media-fullscreen.media-landscape .media-layout {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 100dvh;
+    height: 100dvw;
+    transform: translate(-50%, -50%) rotate(90deg);
+  }
+}
+@media (pointer: coarse) {
+  .media-buttons button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+@media (max-width: 760px) {
+  .media-screen video { max-height: 48dvh; }
+  .media-quarter-turn { height: 48dvh; }
+  .media-controls { padding-inline: 10px; }
+}
+</style>

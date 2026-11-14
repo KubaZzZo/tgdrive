@@ -3,9 +3,9 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import type { DriveItem, FileAction } from '@/api/types'
 import { formatBytes, formatDate } from '@/utils/format'
 import { categoryLabel } from '@/utils/categories'
-import AppIcon from './AppIcon.vue'
-import FileActions from './FileActions.vue'
-import VideoCover from './VideoCover.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
+import FileActions from '@/components/FileActions.vue'
+import VideoCover from '@/components/VideoCover.vue'
 
 withDefaults(defineProps<{ items: DriveItem[]; layout?: 'list' | 'grid'; selected?: Set<string>; selecting?: boolean }>(), {
   layout: 'list',
@@ -103,3 +103,218 @@ function open(item: DriveItem): void {
     </table>
   </div>
 </template>
+
+<style scoped>
+.file-selection {
+  flex: 0 0 auto;
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.table-wrap {
+  background: white;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+}
+.files-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+}
+.files-table th {
+  text-align: left;
+  color: #8a98ad;
+  font-size: 11px;
+  font-weight: 400;
+  padding: 14px 18px;
+  background: #fcfdff;
+  border-bottom: 1px solid var(--line);
+}
+.files-table th:first-child {
+  width: 44%;
+  border-radius: 11px 0 0 0;
+}
+.files-table th:nth-child(2) {
+  width: 12%;
+}
+.files-table th:nth-child(3) {
+  width: 12%;
+}
+.files-table th:nth-child(4) {
+  width: 25%;
+}
+.files-table td {
+  padding: 12px 18px;
+  border-bottom: 1px solid #f0f2f6;
+  font-size: 12px;
+}
+.files-table tr:last-child td {
+  border-bottom: 0;
+}
+.files-table tbody tr:hover {
+  background: #fafcff;
+}
+.name-cell {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.file-name-block {
+  min-width: 0;
+}
+.name-btn {
+  display: block;
+  max-width: 100%;
+  padding: 9px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.name-btn:hover {
+  color: var(--accent);
+}
+.meta-type,
+.meta-size,
+.meta-time {
+  color: #7c8a9e;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.mobile-meta {
+  display: none;
+}
+.actions-col {
+  width: 7%;
+}
+.file-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 16px;
+}
+.file-card {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: white;
+  padding: 12px 15px 16px;
+}
+.file-card:hover {
+  border-color: #c5d6f7;
+}
+.file-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.type-label {
+  font-size: 10px;
+  color: #94a3b8;
+}
+.file-card-open {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  width: 100%;
+  padding: 12px 0 0;
+  border: 0;
+  background: transparent;
+}
+.file-card-open .file-art {
+  width: 78px;
+  height: 78px;
+  border-radius: 18px;
+}
+.file-card-open strong {
+  max-width: 100%;
+  font-weight: 500;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.file-card > p {
+  margin: 7px 0 0;
+  text-align: center;
+  font-size: 10px;
+  color: #94a3b8;
+}
+@media (max-width: 1100px) {
+  .files-table th:nth-child(4),
+  .files-table td:nth-child(4) {
+    display: none;
+  }
+  .files-table th:first-child {
+    width: 58%;
+  }
+  .files-table th:nth-child(3) {
+    width: 20%;
+  }
+}
+@media (max-width: 760px) {
+  .files-table th,
+  .files-table td {
+    padding: 12px;
+  }
+  .files-table th:nth-child(2),
+  .files-table td:nth-child(2),
+  .files-table th:nth-child(3),
+  .files-table td:nth-child(3) {
+    display: none;
+  }
+  .files-table th:first-child {
+    width: auto;
+  }
+  .files-table th:last-child {
+    width: 60px;
+  }
+  .name-cell {
+    gap: 10px;
+  }
+  .name-btn {
+    font-size: 13px;
+    padding: 0 0 5px;
+    min-height: 28px;
+  }
+  .mobile-meta {
+    display: block;
+    font-size: 10px;
+    color: #94a3b8;
+  }
+  .file-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  .file-card {
+    padding: 10px 12px 15px;
+  }
+  .file-card-open {
+    gap: 17px;
+  }
+  .file-card-open .file-art {
+    width: 62px;
+    height: 62px;
+    border-radius: 14px;
+  }
+  .file-card-open :deep(.app-icon) {
+    width: 32px;
+    height: 32px;
+  }
+}
+.source-badge {
+  display: inline-block;
+  margin-left: 6px;
+  color: #637eaa;
+  background: #eef3fb;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+}
+</style>

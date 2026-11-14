@@ -13,18 +13,32 @@
 ## 后端分层
 
 - `app/api/routes/`：HTTP 边界，只做参数校验、依赖注入和响应组装。
+- `app/api/schemas/`：按路由模块组织 HTTP 请求数据模型。没有请求体的路由无需对应的模型文件。
+- `app/services/`：文件分类、人物识别与名称规则、频道同步等业务逻辑。
 - `app/services/uploads.py`：后台上传任务、哈希、临时文件生命周期。
-- `app/storage.py`：Telegram 客户端、分段上传、Range 读取、消息删除。
-- `app/db.py`：SQLite schema 版本、事务和查询。
-- `app/core/`：日志、请求 ID、安全中间件、登录限流、异常处理。
+- `app/infrastructure/storage.py`：Telegram 客户端、分段上传、Range 读取、消息删除。
+- `app/infrastructure/db/session.py`：SQLite 连接、PRAGMA 初始化和共享锁。
+- `app/infrastructure/db/repositories/`：文件树、回收站、上传、账号、频道同步、人物、图床、分享、流量等领域的 SQLite 查询。`Database` 对外保留统一接口，让跨领域操作继续使用同一个连接和锁。
+- `app/infrastructure/db/migrations.py`：按 `PRAGMA user_version` 顺序运行版本迁移。打开数据库时自动升级，各版本沿用原有事务边界，包括兼容旧版 Bot/CDN 数据库的迁移。
+- `app/core/`：日志、请求 ID、会话认证、登录限流、异常处理、代理配置与 HTTP Range 解析。
 - `app/main.py`：app factory，便于测试时注入临时数据库和 fake storage。
 
 ## 前端分层
 
 - `src/api/`：fetch 封装和 TypeScript 类型，统一错误与 401 处理。
+- `src/router/`：Vue Router 路由、登录守卫与旧版片段链接跳转。网盘的目录、搜索与分页状态保存在 `/drive` 的查询参数中。
+- `src/views/`：登录、网盘、人物视频、图床、流量与频道同步视图，由路由按需加载。FastAPI 为这些页面路径提供 SPA 入口。
 - `src/stores/`：Pinia 管理认证、文件列表、上传队列、Toast。
-- `src/components/`：展示与媒体交互；常规业务请求通过 API 层，媒体分段读取与本机缓存通过 `src/utils/`。
-- `src/styles/`：CSS 变量和响应式设计系统。
+- `src/components/`：业务组件与媒体交互。`src/components/ui/` 存放通用弹窗、图标和提示组件。
+- `src/styles/`：全局设计变量、基础样式和跨组件共享样式。页面布局和组件专用规则由各组件的 scoped 样式定义。
+
+## 后台任务与功能开关
+
+上传完成、人物模型识别和 Telegram 清理沿用各自的后台任务与 SQLite 状态。人物模型的 HTTP 调用是异步的，结果解析和队列数据库操作在线程中执行。永久删除写入清理队列后立即返回，由当前频道的后台任务删除远端消息。
+
+上传转封装与视频抽帧共用一个 FFmpeg 并发名额，频道切换沿用该限制。缩略图请求最多接纳 8 个未完成任务，其中最多 2 个同时准备输入。满载或超时时返回无封面结果，浏览器可显示占位图。图片处理在线程中执行，FFmpeg 在子进程中运行。
+
+`PEOPLE_ENABLED`、`IMAGE_HOST_ENABLED` 和 `TRAFFIC_ENABLED` 默认开启。将对应值设为 `false` 并重启可关闭入口和后台处理。人物标签和已发布图片的数据保留，重新开启后可以继续使用。关闭流量模块停止应用内采集和查询。应用按 HTTP 与 Telegram 的有效载荷分方向统计并每 5 秒批量写入 SQLite，CDN 限流继续按 CDN 配置运行。
 
 ## 上传状态机
 
@@ -53,7 +67,7 @@ uploading -> processing -> done
 
 ## 自动分类与查询
 
-`app/categories.py` 是所有上传客户端共用的分类规则。已知扩展名优先，其次根据 MIME 类型识别，未知格式归为 `other`。创建文件和重命名时更新 `items.category`；创建时为通用 MIME 推断具体类型，供预览使用。
+`app/services/categories.py` 是所有上传客户端共用的分类规则。已知扩展名优先，其次根据 MIME 类型识别，未知格式归为 `other`。创建文件和重命名时更新 `items.category`；创建时为通用 MIME 推断具体类型，供预览使用。
 
 schema v2 为历史文件补齐分类和通用 MIME，并创建分类、创建时间索引；DDL 与回填在同一事务中执行。文件所属目录和 Telegram 消息记录均保留。
 
@@ -81,7 +95,7 @@ schema v14 保存手动标签及单个视频的关联调整。列表和人物详
 
 前端 Sync store 定期读取鉴权后的 `/api/sync`，只在 revision 变化时刷新当前列表；旧会话的异步响应在退出登录后丢弃。MediaPlayer 使用浏览器媒体元素，不做转码；进度在本地存储中限量保存，关闭时暂停并移除媒体源。
 
-分片 MP4 通过 MediaSource 或 iPhone 的 ManagedMediaSource 播放，后者在绑定前禁用远程播放，并遵守系统流式缓冲窗口。播放器用真实 Range 请求采样网速，调整请求大小和缓冲窗口。视频文件头和手动缓存的完整文件保存在浏览器 OPFS，使用 ETag 校验和 Web Locks 协调跨标签页读写及淘汰。鉴权后的封面接口读取 Telegram 静态缩略图，缺少缩略图时浏览器最多同时提取两张，前台播放器打开时暂停提取。
+视频通过浏览器原生媒体元素请求 HTTP Range。后端提供磁盘切片缓存、MP4 索引预热和顺序读取预读，分享直链复用相同的 Range 响应。鉴权后的封面接口读取 Telegram 静态缩略图。
 ## Telegram 连接与频道空间
 
 主数据库保存账号/频道连接清单、活动连接、频道数据库映射，以及全局流量统计。

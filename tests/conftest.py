@@ -66,7 +66,6 @@ def make_settings(tmp_path: Path, **overrides: Any) -> Settings:
         "temp_dir": tmp_path / "tmp",
         "db_path": tmp_path / "data" / "test.sqlite3",
         "frontend_dist": tmp_path / "dist",
-        "traffic_host_state": tmp_path / "host.json",
         "axisnow_api_token": "",
         "media_cache_max_mib": 0,
         "app_password": "correct-horse-battery-staple",

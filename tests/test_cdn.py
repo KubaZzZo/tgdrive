@@ -10,7 +10,7 @@ import pytest
 from conftest import make_settings
 from fastapi import HTTPException
 
-from app.db import Database
+from app.infrastructure.db import Database
 from app.services.cdn import CDNMonitor, subscription_rows
 
 

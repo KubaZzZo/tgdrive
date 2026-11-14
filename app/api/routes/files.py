@@ -18,15 +18,16 @@ from starlette.types import Send
 from telethon.errors import RPCError
 
 from app.api.deps import get_db, get_settings, get_storage
-from app.auth import require_auth
 from app.config import Settings
-from app.db import Database
-from app.ranges import parse_range
+from app.core.ranges import parse_range
+from app.core.security import require_auth
+from app.infrastructure.db import Database
+from app.infrastructure.storage import PREFETCH_MIN_BYTES, TelegramStorage
 from app.services.cdn import CDNMonitor
 from app.services.image_host import MAX_IMAGE_SIZE
 from app.services.telegram_bot import MAX_BOT_DOWNLOAD, BotAPIError
 from app.services.thumbnails import VIDEO_SAMPLE_BYTES, Thumbnail, image_thumbnail, video_thumbnail
-from app.storage import PREFETCH_MIN_BYTES, TelegramStorage
+from app.services.video_prepare import warm_mp4_index
 
 router = APIRouter(tags=["files"])
 auth_router = APIRouter(prefix="/api", tags=["files"], dependencies=[Depends(require_auth)])
@@ -183,9 +184,7 @@ async def stream_item(
         "X-Content-Type-Options": "nosniff",
         "Content-Length": str(length),
         "Content-Disposition": content_disposition(item["name"], inline=inline),
-        "Cache-Control": (
-            "public, max-age=3600" if public else "private, max-age=0, must-revalidate"
-        ),
+        "Cache-Control": "private, no-store" if public else "private, max-age=0, must-revalidate",
     }
     if partial:
         headers["Content-Range"] = f"bytes {start}-{end - 1}/{size}"
@@ -232,11 +231,42 @@ async def stream_item(
             return release
 
         def fetch_slice(first: int, last: int):
-            return iter_item_range(db, storage, item, first, last, parts, prefetch=True)
+            return iter_item_range(db, storage, item, first, last, parts)
 
-        stream = charge_media_stream(
-            cache.stream(db.path, etag, start, end, size, fetch_slice, retain=retain_runtime), cdn
-        )
+        def cached_range(first: int, last: int, *, warming: bool = False):
+            return cache.stream(
+                db.path,
+                etag,
+                first,
+                last,
+                size,
+                fetch_slice,
+                retain=retain_runtime,
+                read_ahead=not warming,
+                prioritize_seek=not warming,
+            )
+
+        async def video_stream():
+            async with aclosing(cached_range(start, end)) as source:
+                warm = (
+                    start == 0
+                    and size > max(cache.slice_bytes, PREFETCH_MIN_BYTES)
+                    and mime.split(";", 1)[0] in {"video/mp4", "video/x-m4v"}
+                )
+                async for chunk in source:
+                    yield chunk
+                    if warm:
+                        warm = False
+                        cache.warm_index(
+                            db.path,
+                            etag,
+                            lambda: warm_mp4_index(
+                                size, lambda first, last: cached_range(first, last, warming=True)
+                            ),
+                            retain_runtime,
+                        )
+
+        stream = charge_media_stream(video_stream(), cdn)
     else:
         stream = iter_item_range(db, storage, item, start, end, parts, cdn, prefetch=not inline)
     if trace:
@@ -360,7 +390,8 @@ async def generate_thumbnail(
     else:
         return None
     if video:
-        return await video_thumbnail(data)
+        async with request.app.state.thumbnails.video_slots:
+            return await video_thumbnail(data)
     return await anyio.to_thread.run_sync(image_thumbnail, data)
 
 

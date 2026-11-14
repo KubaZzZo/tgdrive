@@ -1,0 +1,134 @@
+.library-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 22px;
+}
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: min(400px, 100%);
+  min-width: 120px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: white;
+  color: #94a3b8;
+}
+.search-field:focus-within {
+  border-color: #a7c4fb;
+}
+.search-field input {
+  padding: 12px 0;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+}
+.search-field input:focus {
+  box-shadow: none;
+}
+.search-field input::-webkit-search-cancel-button {
+  display: none;
+}
+.empty {
+  display: grid;
+  justify-items: center;
+  text-align: center;
+  min-height: 270px;
+  align-content: center;
+  padding: 35px 20px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: white;
+}
+.empty-art {
+  display: grid;
+  place-items: center;
+  width: 76px;
+  height: 76px;
+  border-radius: 22px;
+  background: #f0f5ff;
+  color: #83a6e7;
+}
+.empty h2 {
+  margin: 18px 0 8px;
+  font-size: 16px;
+  font-weight: 550;
+}
+.empty p {
+  margin: 0;
+  color: #8c9aaf;
+  font-size: 12px;
+  max-width: 350px;
+}
+.empty .ghost {
+  margin-top: 18px;
+}
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.pagination > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pagination .ghost {
+  min-height: 34px;
+  padding: 6px 11px;
+  font-size: 11px;
+}
+.skeleton-wrap {
+  padding: 12px 18px;
+}
+.skeleton-row {
+  height: 45px;
+  margin: 8px 0;
+  border-radius: 7px;
+  background: linear-gradient(90deg, #f1f5f9 20%, #e8edf5 50%, #f1f5f9 80%);
+  background-size: 240% 100%;
+  animation: shimmer 1.4s infinite linear;
+}
+@keyframes shimmer {
+  to {
+    background-position: -240% 0;
+  }
+}
+@media (max-width: 760px) {
+  .library-controls {
+    flex-wrap: wrap;
+    margin-bottom: 17px;
+    gap: 12px;
+  }
+  .search-field {
+    width: 100%;
+    min-height: 46px;
+  }
+  .search-field input {
+    font-size: 16px;
+    padding: 11px 0;
+  }
+  .empty {
+    min-height: 245px;
+    padding: 25px 17px;
+  }
+  .empty p {
+    font-size: 11px;
+  }
+  .pagination {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .pagination > div {
+    width: 100%;
+    justify-content: space-between;
+  }
+}

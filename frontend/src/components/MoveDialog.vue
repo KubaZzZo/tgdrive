@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
 import type { BatchItemResult, DriveItem, PathItem } from '@/api/types'
-import BaseModal from './BaseModal.vue'
+import BaseModal from '@/components/ui/BaseModal.vue'
 
 const props = defineProps<{ items: DriveItem[]; initialFolder: string | null }>()
 const emit = defineEmits<{ close: []; result: [results: BatchItemResult[], items: DriveItem[]] }>()
@@ -107,3 +107,31 @@ onBeforeUnmount(() => request?.abort())
     </template>
   </BaseModal>
 </template>
+
+<style scoped>
+.operation-errors {
+  overflow-wrap: anywhere;
+}
+.operation-errors {
+  white-space: pre-line;
+}
+.destination-list {
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  list-style: none;
+}
+.destination-list button {
+  display: flex;
+  width: 100%;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: start;
+}
+.destination-list span {
+  overflow-wrap: anywhere;
+}
+.destination-list small {
+  flex: 0 0 auto;
+}
+</style>

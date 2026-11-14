@@ -9,7 +9,7 @@ import sys
 import pytest
 from conftest import FakeTelegramStorage
 
-from app.db import Database
+from app.infrastructure.db import Database
 from app.services import video_prepare
 from app.services.uploads import UploadService, UploadSpace, UploadSpaceError
 from app.services.video_prepare import mp4_layout, prepared_video, remux_faststart

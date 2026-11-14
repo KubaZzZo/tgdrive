@@ -6,10 +6,11 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import anyio
 from telethon.errors import FloodWaitError, MessageDeleteForbiddenError, MessageIdInvalidError
 
-from app.db import Database
-from app.storage import TelegramStorage
+from app.infrastructure.db import Database
+from app.infrastructure.storage import TelegramStorage
 
 logger = logging.getLogger("tgdrive.telegram_cleanup")
 TRASH_RETENTION_DAYS = 30
@@ -20,6 +21,7 @@ class TelegramCleanup:
         self.db = db
         self.storage = storage
         self._lock = asyncio.Lock()
+        self._wake = asyncio.Event()
         self._worker: asyncio.Task[None] | None = None
 
     def start(self) -> None:
@@ -32,15 +34,29 @@ class TelegramCleanup:
             worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
 
+    def wake(self) -> None:
+        self._wake.set()
+
     async def _run(self) -> None:
         while True:
             try:
+                self._wake.clear()
                 cutoff = datetime.now(UTC) - timedelta(days=TRASH_RETENTION_DAYS)
-                self.purge_trash(cutoff.isoformat(), single_batch=True)
+                purge = asyncio.create_task(
+                    asyncio.to_thread(self.purge_trash, cutoff.isoformat(), single_batch=True)
+                )
+                try:
+                    await asyncio.shield(purge)
+                except asyncio.CancelledError:
+                    await asyncio.gather(purge, return_exceptions=True)
+                    raise
                 await self.process()
             except Exception:
                 logger.exception("Telegram cleanup worker failed")
-            await asyncio.sleep(15)
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=15)
+            except TimeoutError:
+                pass
 
     def purge_trash(self, cutoff: str, *, single_batch: bool = False) -> int:
         chat = self.storage.chat
@@ -62,7 +78,9 @@ class TelegramCleanup:
         chat_id = str(self.storage.chat)
         while True:
             async with self._lock:
-                rows = self.db.due_telegram_cleanup(chat_id, time.time(), batch_id)
+                rows = await anyio.to_thread.run_sync(
+                    self.db.due_telegram_cleanup, chat_id, time.time(), batch_id
+                )
                 if not rows:
                     return
                 if not await self._delete_batch(chat_id, rows):
@@ -86,7 +104,8 @@ class TelegramCleanup:
             now = time.time()
             error = f"{type(exc).__name__}: {exc}"[:1000]
             flood_wait = exc.seconds if isinstance(exc, FloodWaitError) else 0
-            self.db.defer_telegram_cleanup(
+            await anyio.to_thread.run_sync(
+                self.db.defer_telegram_cleanup,
                 chat_id,
                 [
                     (
@@ -98,5 +117,5 @@ class TelegramCleanup:
                 ],
             )
             return message_error
-        self.db.finish_telegram_cleanup(chat_id, message_ids)
+        await anyio.to_thread.run_sync(self.db.finish_telegram_cleanup, chat_id, message_ids)
         return True

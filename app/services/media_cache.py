@@ -7,7 +7,8 @@ import re
 import shutil
 import sqlite3
 import time
-from collections.abc import AsyncGenerator, Callable
+from collections import OrderedDict
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing, closing, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,6 +19,7 @@ MIB = 1024 * 1024
 SLICE_BYTES = 2 * MIB
 OUTPUT_CHUNK_BYTES = 256 * 1024
 MAX_PENDING_FILLS = 8
+MAX_INDEX_WARMERS = 2
 CACHE_TTL_SECONDS = 600
 FILL_TIMEOUT_SECONDS = 60
 DISK_BLOCK_BYTES = 4096
@@ -60,6 +62,8 @@ class MediaSliceCache:
         self.slice_bytes = slice_bytes
         self.ttl_seconds = ttl_seconds
         self.pending: dict[Path, PendingSlice] = {}
+        self._warmers: dict[Path, asyncio.Task[None]] = {}
+        self._warmed: OrderedDict[Path, float] = OrderedDict()
         self._maintenance: asyncio.Task[None] | None = None
         self._closed = False
         self.hits = 0
@@ -96,6 +100,7 @@ class MediaSliceCache:
     async def close(self) -> None:
         self._closed = True
         tasks = [fill.task for fill in self.pending.values() if fill.task is not None]
+        tasks.extend(self._warmers.values())
         if self._maintenance:
             tasks.append(self._maintenance)
         for task in tasks:
@@ -103,6 +108,40 @@ class MediaSliceCache:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._maintenance = None
+
+    def warm_index(
+        self,
+        namespace: str,
+        etag: str,
+        warm: Callable[[], Awaitable[None]],
+        retain: Callable[[], Callable[[], None]],
+    ) -> None:
+        key = self._path(namespace, etag, 0)
+        if (
+            self._closed
+            or len(self._warmers) >= MAX_INDEX_WARMERS
+            or key in self._warmers
+            or time.monotonic() - self._warmed.get(key, float("-inf")) < self.ttl_seconds
+        ):
+            return
+        release = retain()
+
+        async def run() -> None:
+            with suppress(Exception):
+                async with asyncio.timeout(FILL_TIMEOUT_SECONDS):
+                    await warm()
+                self._warmed[key] = time.monotonic()
+                self._warmed.move_to_end(key)
+                if len(self._warmed) > 256:
+                    self._warmed.popitem(last=False)
+
+        task = self._warmers[key] = asyncio.create_task(run(), name="media-index-warm")
+
+        def done(_task: asyncio.Task[None]) -> None:
+            self._warmers.pop(key, None)
+            release()
+
+        task.add_done_callback(done)
 
     async def _maintain(self) -> None:
         while True:
@@ -207,6 +246,8 @@ class MediaSliceCache:
         fetch: FetchRange,
         *,
         retain: Callable[[], Callable[[], None]] | None = None,
+        read_ahead: bool = False,
+        prioritize_seek: bool = True,
     ) -> AsyncGenerator[bytes, None]:
         cursor = start
         while cursor < end:
@@ -224,7 +265,7 @@ class MediaSliceCache:
             else:
                 self.misses += 1
                 pending = self.pending.get(path)
-                if offset and (pending is None or len(pending.data) <= offset):
+                if prioritize_seek and offset and (pending is None or len(pending.data) <= offset):
                     # A cold seek must not wait for the slice prefix. Start its fill only
                     # after the requested bytes reached the caller, without competing.
                     async with aclosing(fetch(cursor, requested_end)) as source:
@@ -241,6 +282,7 @@ class MediaSliceCache:
                 coalesced = pending is not None and not created
                 if pending is not None:
                     self.coalesced += int(coalesced)
+                    prefetch_next = read_ahead and requested_end == slice_end < end
                     async with aclosing(
                         self._follow(pending, offset, offset + requested)
                     ) as source:
@@ -248,6 +290,11 @@ class MediaSliceCache:
                             if coalesced:
                                 self.coalesced_bytes += len(chunk)
                             yield chunk
+                            if prefetch_next:
+                                prefetch_next = False
+                                await self._read_ahead(
+                                    namespace, etag, slice_end, end, size, fetch, retain
+                                )
                 else:
                     # Low disk or a full queue: preserve the requested upstream range.
                     requested_end = end
@@ -255,6 +302,23 @@ class MediaSliceCache:
                         async for chunk in source:
                             yield chunk
             cursor = requested_end
+
+    async def _read_ahead(
+        self,
+        namespace: str,
+        etag: str,
+        start: int,
+        end: int,
+        size: int,
+        fetch: FetchRange,
+        retain: Callable[[], Callable[[], None]] | None,
+    ) -> None:
+        if len(self.pending) >= MAX_PENDING_FILLS // 2:
+            return
+        path = self._path(namespace, etag, start)
+        stop = min(start + self.slice_bytes, size)
+        if await anyio.to_thread.run_sync(self._read, path, stop - start, 0, 1) is None:
+            await self._get_or_start_fill(path, start, stop, start, min(stop, end), fetch, retain)
 
     async def _get_or_start_fill(
         self,
@@ -322,7 +386,6 @@ class MediaSliceCache:
             # A fill may have completed while this request checked disk space.
             cached = await anyio.to_thread.run_sync(self._read, path, end - start, 0, end - start)
             if cached is not None:
-                self.misses -= 1
                 pending.data.extend(cached)
                 pending.notify()
                 return

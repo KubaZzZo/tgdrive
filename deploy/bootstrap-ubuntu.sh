@@ -90,8 +90,6 @@ else
   log ".env 已存在，跳过"
 fi
 
-bash "$APP_DIR/deploy/install-traffic.sh"
-
 if [[ "$MODE" == "docker" ]]; then
   command -v docker >/dev/null 2>&1 || { log "安装 Docker…"; curl -fsSL https://get.docker.com | sh; }
   systemctl enable --now docker >/dev/null 2>&1 || true

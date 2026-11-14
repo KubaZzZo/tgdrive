@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException
 
 from app.config import Settings
-from app.db import Database
+from app.infrastructure.db import Database
 
 logger = logging.getLogger("tgdrive.cdn")
 API_URL = "https://api.axisnow.io/client/v1/tenant_subscriptions/filter"

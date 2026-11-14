@@ -3,7 +3,7 @@ import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { DriveItem } from '@/api/types'
 import { api } from '@/api/client'
 import { acquireCoverSlot } from '@/utils/coverQueue'
-import AppIcon from './AppIcon.vue'
+import AppIcon from '@/components/ui/AppIcon.vue'
 
 const props = defineProps<{ item: DriveItem }>()
 const root = ref<HTMLElement | null>(null)
@@ -54,3 +54,8 @@ onBeforeUnmount(() => { observer?.disconnect(); stop() })
     <AppIcon v-else name="video" :size="32" />
   </span>
 </template>
+
+<style scoped>
+.video-cover {display:flex;width:100%;height:100%;align-items:center;justify-content:center;overflow:hidden;border-radius:inherit}
+.video-cover img {width:100%;height:100%;object-fit:cover}
+</style>

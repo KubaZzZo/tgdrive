@@ -10,6 +10,7 @@ import type {
   PathItem,
   Stats,
 } from '@/api/types'
+import { router } from '@/router/index'
 import { categories as defaultCategories } from '@/utils/categories'
 import { readDriveLocation, writeDriveLocation } from '@/utils/driveLocation'
 import type { DriveFilters, SearchScope } from '@/utils/driveLocation'
@@ -53,22 +54,37 @@ export const useDriveStore = defineStore('drive', () => {
     return 'folder'
   })
 
+  let writtenLocation: string | undefined
+
   function remember(replace = false): void {
-    if (typeof window === 'undefined' || !window.history || !window.location) return
-    const current = window.location.hash
-    if ((current && current !== '#drive' && !current.startsWith('#drive?')) || view.value === 'people') return
-    const hash = writeDriveLocation({
+    if (router.currentRoute.value.name !== 'drive' || view.value === 'people') return
+    const location = writeDriveLocation({
       folder: folderId.value, view: view.value, query: query.value, sort: sortOption.value,
       page: page.value, layout: layout.value, scope: searchScope.value, filters: filters.value,
     })
-    if (current !== hash) {
-      if (replace) window.history.replaceState(null, '', hash)
-      else window.history.pushState(null, '', hash)
-    }
+    if (router.currentRoute.value.fullPath === location) return
+    writtenLocation = location
+    const navigation = replace ? router.replace(location) : router.push(location)
+    void navigation.finally(() => {
+      if (writtenLocation === location) writtenLocation = undefined
+    })
   }
 
-  async function restoreLocation(hash: string): Promise<void> {
-    const route = readDriveLocation(hash)
+  function consumeWrittenLocation(location: string): boolean {
+    if (writtenLocation !== location) return false
+    writtenLocation = undefined
+    return true
+  }
+
+  function cancelLoad(): void {
+    loadVersion++
+    controller?.abort()
+    controller = null
+    loading.value = false
+  }
+
+  async function restoreLocation(location: string): Promise<void> {
+    const route = readDriveLocation(location)
     folderId.value = route.folder
     view.value = route.view
     query.value = route.query
@@ -232,6 +248,8 @@ export const useDriveStore = defineStore('drive', () => {
     setPage,
     setLayout,
     restoreLocation,
+    consumeWrittenLocation,
+    cancelLoad,
     folderId,
     items,
     path,

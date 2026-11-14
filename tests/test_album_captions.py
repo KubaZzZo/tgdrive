@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 from conftest import make_settings
 from test_channel_sync import ChannelStorage, message
 
-from app.db import Database
+from app.infrastructure.db import Database
 from app.services.channel_sync import ChannelSyncService
 
 
@@ -163,7 +163,7 @@ def test_deleted_edited_cover_removes_shared_title_after_rescan(workdir):
 
 
 def test_album_lookup_filters_neighboring_messages_and_keeps_request_bounded():
-    from app.storage import TelegramStorage
+    from app.infrastructure.storage import TelegramStorage
 
     async def run():
         target = album_message(14, 100, "222.mp4")

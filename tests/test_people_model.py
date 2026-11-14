@@ -8,7 +8,7 @@ import httpx
 from conftest import make_settings
 from test_channel_sync import ChannelStorage, message
 
-from app.db import Database
+from app.infrastructure.db import Database
 from app.services import people_model
 from app.services.channel_sync import ChannelSyncService
 

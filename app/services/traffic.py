@@ -1,121 +1,115 @@
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
 import threading
-import time
 from collections import defaultdict
-from datetime import UTC, datetime
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
+import anyio
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.db import Database
+from app.infrastructure.db import Database
 from app.services.cdn import CDNMonitor
 
 logger = logging.getLogger("tgdrive.traffic")
+TRAFFIC_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 
 class TrafficMonitor:
     """Application payload estimates, buffered to avoid a SQLite write for every chunk."""
 
-    def __init__(self, db: Database, host_state: Path):
+    def __init__(self, db: Database, *, enabled: bool = True):
+        self.enabled = enabled
         self.db = db
-        self.host_state = host_state
         self._lock = threading.Lock()
+        self._flush_lock = threading.Lock()
         self._pending: dict[tuple[str, str], list[int]] = defaultdict(lambda: [0, 0])
-        self._bytes = 0
-        self._last_flush = time.monotonic()
         self.cdn: CDNMonitor | None = None
 
     def record(self, source: Literal["web", "telegram"], inbound: int = 0, outbound: int = 0):
-        if not inbound and not outbound:
+        if not self.enabled or not (inbound or outbound):
             return
-        day = datetime.now(ZoneInfo("Asia/Shanghai")).date().isoformat()
+        day = datetime.now(TRAFFIC_TIMEZONE).date().isoformat()
         with self._lock:
             values = self._pending[(day, source)]
             values[0] += inbound
             values[1] += outbound
-            self._bytes += inbound + outbound
-            if self._bytes >= 1024 * 1024 or time.monotonic() - self._last_flush >= 5:
-                self._flush()
+
+    async def persist_periodically(self) -> None:
+        while True:
+            await asyncio.sleep(5)
+            await anyio.to_thread.run_sync(self.flush)
 
     def _flush(self) -> None:
-        if not self._pending:
-            return
+        with self._lock:
+            pending = self._pending
+            if not pending:
+                return
+            self._pending = defaultdict(lambda: [0, 0])
         try:
             self.db.record_traffic(
-                [(day, source, *values) for (day, source), values in self._pending.items()]
+                [(day, source, *values) for (day, source), values in pending.items()]
             )
         except Exception:
-            # Monitoring must never interrupt a transfer. Retain the buffer for retry.
             logger.exception("Could not persist traffic counters")
-            return
-        self._pending.clear()
-        self._bytes = 0
-        self._last_flush = time.monotonic()
+            with self._lock:
+                for key, (inbound, outbound) in pending.items():
+                    values = self._pending[key]
+                    values[0] += inbound
+                    values[1] += outbound
 
     def flush(self) -> None:
-        with self._lock:
+        with self._flush_lock:
             self._flush()
 
     def snapshot(self, now: datetime | None = None) -> dict:
-        self.flush()
-        now = (now or datetime.now(UTC)).astimezone(ZoneInfo("Asia/Shanghai"))
-        day = now.date().isoformat()
-        config = self.db.traffic_config()
+        today = (now or datetime.now(UTC)).astimezone(TRAFFIC_TIMEZONE).date()
+        day = today.isoformat()
+        history = {
+            (today - timedelta(days=offset)).isoformat(): {"inbound": 0, "outbound": 0}
+            for offset in range(6, -1, -1)
+        }
         sources = {key: {"inbound": 0, "outbound": 0} for key in ("web", "telegram")}
-        for row in self.db.traffic_rows(day):
-            if row["day"] == day:
-                sources[row["source"]] = {key: row[key] for key in ("inbound", "outbound")}
-        host = {"available": False, "stale": False, "error": "尚未安装 VPS 宿主机采集服务"}
-        try:
-            state = json.loads(self.host_state.read_text(encoding="utf-8"))
-            updated = datetime.fromisoformat(state["updated_at"])
-            age = (now - updated).total_seconds()
-            if state["timezone"] != "Asia/Shanghai":
-                raise ValueError("采集服务必须使用 Asia/Shanghai 时区")
-            counters = state["days"].get(day, {"inbound": 0, "outbound": 0})
-            if any(
-                type(counters[k]) is not int or counters[k] < 0 for k in ("inbound", "outbound")
-            ):
-                raise ValueError("网卡计数无效")
-            used = counters["inbound"] + counters["outbound"]
-            quota = config["quota_bytes"]
-            stale = age > 30 or age < -5
-            host = {
-                "available": True,
-                "stale": stale,
-                "error": "采集数据已过期，请检查宿主机采集服务" if stale else None,
-                "updated_at": state["updated_at"],
-                "started_at": state["started_at"],
-                "interfaces": state["interfaces"],
-                **counters,
+        # Serialize against flush so a pending batch is counted exactly once.
+        with self._flush_lock:
+            config = self.db.traffic_config()
+            rows = self.db.traffic_rows(next(iter(history)))
+            with self._lock:
+                rows.extend(
+                    {"day": date, "source": source, "inbound": values[0], "outbound": values[1]}
+                    for (date, source), values in self._pending.items()
+                )
+        for row in rows:
+            if row["day"] not in history or row["source"] not in sources:
+                continue
+            for field in ("inbound", "outbound"):
+                history[row["day"]][field] += row[field]
+                if row["day"] == day:
+                    sources[row["source"]][field] += row[field]
+        totals = history[day]
+        used = totals["inbound"] + totals["outbound"]
+        quota = config["quota_bytes"]
+        return {
+            "day": day,
+            "timezone": TRAFFIC_TIMEZONE.key,
+            "quota_bytes": quota,
+            "started_at": config["started_at"],
+            "sources": sources,
+            "usage": {
+                **totals,
                 "used": used,
                 "remaining": max(0, quota - used),
                 "percent": round(used / quota * 100, 2),
-                "warning": "exceeded" if used >= quota else "near" if used >= quota * 0.8 else None,
-                "history": [
-                    {"day": key, **value, "incomplete": key in state.get("incomplete_days", [])}
-                    for key, value in sorted(state["days"].items())[-7:]
-                ],
-                "gaps": state.get("gaps", 0),
-                "incomplete": day in state.get("incomplete_days", []),
-            }
-        except FileNotFoundError:
-            pass
-        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-            logger.warning("Host traffic state unavailable: %s", type(exc).__name__)
-            host["error"] = "无法读取网卡统计，请检查宿主机采集服务"
-        return {
-            "day": day,
-            "timezone": "Asia/Shanghai",
-            "quota_bytes": config["quota_bytes"],
-            "started_at": config["started_at"],
-            "sources": sources,
-            "host": host,
+                "warning": "exceeded"
+                if used >= quota
+                else "near"
+                if used * 5 >= quota * 4
+                else None,
+                "history": [{"day": date, **values} for date, values in history.items()],
+            },
             "cdn": self.cdn.snapshot() if self.cdn else None,
         }
 

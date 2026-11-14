@@ -263,11 +263,11 @@ flowchart TB
 
 Bot 模式也可用于网页上传：设置 `TG_MODE=bot`、`TG_BOT_TOKEN`，同时保留 `TG_API_ID`、`TG_API_HASH` 和 `TG_CHAT_ID`，并将 Bot 设为频道管理员。Bot 模式受 Telegram 历史读取限制，不能保证完整频道历史导入。
 
-### VPS 每日流量
+### TG Drive 每日流量
 
 顶部流量按钮显示今日用量、剩余额度和近 7 天记录。默认额度为 **100 GB/天**，按北京时间 00:00 重置，可在页面调整；达到 80% 和 100% 时提醒，不会自动中断传输。
 
-宿主机采集统计公网网卡的入站与出站，包含其他应用和网络重传；项目传输明细单独展示。需要按 [部署指南](DEPLOY.md) 安装采集服务，未安装时显示“流量待接入”。
+应用统计 HTTP 和 Telegram 两段传输的有效载荷，每 5 秒批量写入 SQLite。用量包含 TG Drive 的入站和出站流量，CDN 套餐由单独的指标展示。
 
 ## 配置参考
 
@@ -326,19 +326,17 @@ npm run typecheck
 npm run build
 ```
 
-也可在支持 Make 的环境执行 `make check`。GitHub Actions 检查后端 lint / 格式 / 测试、前端测试与构建、宿主机采集脚本兼容性，以及 Docker 镜像构建。
+也可在支持 Make 的环境执行 `make check`。GitHub Actions 检查后端 lint / 格式 / 测试、前端测试与构建，以及 Docker 镜像构建。
 
 ### 目录结构
 
 ```text
 app/
 ├── api/routes/          # 认证、文件、上传、同步、账号及流量接口
-├── services/            # 上传任务、频道同步、账号切换、流量统计
+├── services/            # 文件分类、人物识别、上传任务、频道同步、账号切换及流量统计
 ├── core/                # 日志、请求上下文、限流与异常处理
-├── categories.py        # 文件分类与 MIME 规则
 ├── config.py            # 环境配置与校验
-├── db.py                # SQLite 查询与 schema 迁移
-├── storage.py           # Telegram 上传、下载及频道消息访问
+├── infrastructure/      # SQLite 与 Telegram 存储适配
 └── main.py              # FastAPI 应用入口
 frontend/
 ├── src/components/      # 文件界面、播放器及配置面板
@@ -346,7 +344,7 @@ frontend/
 ├── src/utils/           # 分片播放、本机缓存、封面提取等
 └── tests/               # 前端回归测试与浏览器缓存检查
 tests/                   # 后端单元与集成测试
-scripts/                 # Telegram 登录、频道 ID、宿主机流量采集
+scripts/                 # Telegram 登录和频道 ID
 deploy/                  # VPS、Caddy 与 systemd 部署辅助
 docs/                    # 架构、播放指南与历史验证记录
 static/dist/             # 前端构建产物，不提交到 Git
@@ -365,7 +363,7 @@ static/dist/             # 前端构建产物，不提交到 Git
 
 | 文档 | 内容 |
 | --- | --- |
-| [VPS 部署与运维](DEPLOY.md) | HTTPS、数据卷、流量采集、备份、升级与故障排查 |
+| [VPS 部署与运维](DEPLOY.md) | HTTPS、数据卷、流量监控、备份、升级与故障排查 |
 | [架构说明](docs/ARCHITECTURE.md) | 后端与前端分层、状态机、频道空间和请求生命周期 |
 | [视频播放与本机缓存](docs/video-playback.md) | iPhone 兼容播放、缓存边界、封面和简介命名 |
 | [更新记录](CHANGELOG.md) | 已完成的功能与修复 |

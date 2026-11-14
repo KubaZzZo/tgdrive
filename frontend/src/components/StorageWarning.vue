@@ -16,3 +16,25 @@ const sync = useSyncStore()
     {{ storage.error || '请检查 .env 配置并重启服务。' }}
   </div>
 </template>
+
+<style scoped>
+.warning {
+  margin: 16px 28px 0;
+  padding: 12px 16px;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 10px;
+}
+.warning strong {
+  display: block;
+}
+.warning p {
+  margin: 4px 0 0;
+}
+@media (max-width: 760px) {
+  .warning {
+    margin: 12px 16px;
+  }
+}
+</style>

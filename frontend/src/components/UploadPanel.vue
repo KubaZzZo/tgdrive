@@ -80,3 +80,117 @@ function stateClass(state: string): string {
     </div>
   </aside>
 </template>
+
+<style scoped>
+.upload-panel {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  width: min(430px, calc(100% - 32px));
+  max-height: 45dvh;
+  overflow: auto;
+  z-index: 30;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: white;
+  box-shadow: 0 10px 50px #20324d24;
+}
+.upload-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+}
+.upload-head strong {
+  font-size: 13px;
+}
+.upload-active {
+  color: var(--accent);
+  font-size: 10px;
+  margin-left: 8px;
+}
+.upload-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+.upload-list {
+  margin-top: 8px;
+}
+.upload-row {
+  border-top: 1px solid var(--line);
+  padding: 11px 0;
+}
+.upload-name {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.upload-name span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pct {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.bar {
+  height: 5px;
+  background: #edf1f7;
+  border-radius: 5px;
+  overflow: hidden;
+}
+.bar > div {
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 0.2s;
+}
+.upload-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 7px;
+}
+.upload-status {
+  flex: 1;
+  font-size: 10px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.upload-status.error {
+  color: var(--danger);
+}
+.upload-status.done {
+  color: var(--ok);
+}
+.upload-size {
+  font-size: 10px;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+@media (max-width: 760px) {
+  .upload-panel {
+    bottom: max(10px, env(safe-area-inset-bottom));
+    right: 10px;
+    width: calc(100% - 20px);
+    max-height: 43dvh;
+  }
+  .upload-head-actions .icon-btn,
+  .upload-foot .text-btn {
+    min-height: 40px;
+    padding: 7px;
+  }
+  .upload-size {
+    display: none;
+  }
+}
+</style>

@@ -5,9 +5,9 @@ from typing import Any
 from fastapi import Depends, HTTPException, Request, status
 
 from app.config import Settings
-from app.db import Database
+from app.infrastructure.db import Database
+from app.infrastructure.storage import TelegramStorage
 from app.services.uploads import UploadService
-from app.storage import TelegramStorage
 
 
 def get_settings(request: Request) -> Settings:

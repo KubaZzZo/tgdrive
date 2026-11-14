@@ -2,24 +2,21 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import get_db, get_settings, get_storage
-from app.auth import is_authenticated, require_auth
+from app.api.schemas.system import SyncBody, TrafficSettingsBody
 from app.config import Settings
-from app.db import Database
-from app.storage import TelegramStorage
+from app.core.security import is_authenticated, require_auth
+from app.infrastructure.db import Database
+from app.infrastructure.storage import TelegramStorage
 
 router = APIRouter(prefix="/api", tags=["system"])
 
 
-class TrafficSettingsBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    quota_bytes: int = Field(ge=1, le=10**16)
-
-
 @router.get("/traffic", dependencies=[Depends(require_auth)])
-async def traffic_status(request: Request) -> dict:
+def traffic_status(request: Request) -> dict:
+    if not request.app.state.settings.traffic_enabled:
+        raise HTTPException(404, "流量监控已关闭")
     return {
         **request.app.state.traffic.snapshot(),
         "media_cache": request.app.state.media_cache.snapshot(),
@@ -27,7 +24,9 @@ async def traffic_status(request: Request) -> dict:
 
 
 @router.put("/traffic/settings", dependencies=[Depends(require_auth)])
-async def traffic_settings(body: TrafficSettingsBody, request: Request) -> dict:
+def traffic_settings(body: TrafficSettingsBody, request: Request) -> dict:
+    if not request.app.state.settings.traffic_enabled:
+        raise HTTPException(404, "流量监控已关闭")
     request.app.state.traffic.db.update_traffic_config(body.quota_bytes)
     return request.app.state.traffic.snapshot()
 
@@ -39,6 +38,11 @@ async def meta(
     storage: TelegramStorage = Depends(get_storage),
 ) -> dict:
     return {
+        "features": {
+            "people": settings.people_enabled,
+            "images": settings.image_host_enabled,
+            "traffic": settings.traffic_enabled,
+        },
         "app_name": settings.app_name,
         "version": request.app.version,
         "authenticated": is_authenticated(request),
@@ -77,11 +81,6 @@ async def health_ready(
             "storage_error": storage_status.get("error"),
         },
     )
-
-
-class SyncBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    full: bool = False
 
 
 @router.get("/sync", dependencies=[Depends(require_auth)])

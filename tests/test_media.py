@@ -7,7 +7,7 @@ import pytest
 from conftest import make_settings
 from test_channel_sync import ChannelStorage, message
 
-from app.db import Database
+from app.infrastructure.db import Database
 from app.services.channel_sync import ChannelSyncService, describe_message
 
 
@@ -172,7 +172,7 @@ def test_telegram_thumbnail_fetches_bytes_and_selects_static_size():
 
     from telethon.tl.types import PhotoSize, PhotoStrippedSize
 
-    from app.storage import TelegramStorage
+    from app.infrastructure.storage import TelegramStorage
 
     async def run():
         storage = TelegramStorage()

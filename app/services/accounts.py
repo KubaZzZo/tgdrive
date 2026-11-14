@@ -25,12 +25,12 @@ from telethon.errors import (
 from telethon.tl.types import Channel
 
 from app.config import Settings
-from app.db import Database
-from app.network import get_proxy
+from app.core.network import get_proxy
+from app.infrastructure.db import Database
+from app.infrastructure.storage import TelegramStorage
 from app.services.channel_sync import ChannelSyncService
 from app.services.telegram_cleanup import TelegramCleanup
 from app.services.uploads import UploadService
-from app.storage import TelegramStorage
 
 logger = logging.getLogger("tgdrive.accounts")
 
@@ -493,7 +493,7 @@ class AccountManager:
             raise HTTPException(409, "当前仍有文件正在写入 Telegram，请等待完成后切换")
         self.switching = True
         old.uploads._closed = True
-        candidate.traffic = self.app.state.traffic
+        candidate.traffic = self.app.state.traffic if self.settings.traffic_enabled else None
         new = None
         try:
             db, key = self.workspace(profile["chat_id"])
@@ -509,6 +509,8 @@ class AccountManager:
                     locks=old.uploads.locks,
                     faststart=self.settings.video_faststart,
                     faststart_timeout=self.settings.video_faststart_timeout,
+                    image_host_enabled=self.settings.image_host_enabled,
+                    video_slots=old.uploads.video_slots,
                 ),
                 ChannelSyncService(db, candidate, self.settings),
             )
@@ -561,7 +563,7 @@ class AccountManager:
             await asyncio.gather(*list(self.tasks), return_exceptions=True)
         for runtime in list(self.retired):
             await self._dispose(runtime)
-        self.app.state.traffic.flush()
+        await asyncio.to_thread(self.app.state.traffic.flush)
         for db in self.databases.values():
             db.close()
 

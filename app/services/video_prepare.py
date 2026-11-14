@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from contextlib import AsyncExitStack, aclosing, asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -16,6 +16,40 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("tgdrive.video_prepare")
 REMUX_SLACK_BYTES = 8 * 1024 * 1024
+MP4_WARM_MAX_BOXES = 16
+MP4_WARM_MAX_BYTES = 8 * 1024 * 1024
+
+
+async def warm_mp4_index(
+    size: int, read: Callable[[int, int], AsyncGenerator[bytes, None]]
+) -> None:
+    """Walk top-level headers by range, skipping the intervening media payload."""
+    offset = 0
+    for _ in range(MP4_WARM_MAX_BOXES):
+        if offset + 8 > size:
+            return
+        async with aclosing(read(offset, min(offset + 16, size))) as source:
+            header = b"".join([chunk async for chunk in source])
+        if len(header) < 8:
+            return
+        length = int.from_bytes(header[:4], "big")
+        kind = header[4:8]
+        header_size = 8
+        if length == 1:
+            if len(header) < 16:
+                return
+            length = int.from_bytes(header[8:16], "big")
+            header_size = 16
+        elif length == 0:
+            length = size - offset
+        if length < header_size or offset + length > size or (offset == 0 and kind != b"ftyp"):
+            return
+        if kind == b"moov":
+            async with aclosing(read(offset, offset + min(length, MP4_WARM_MAX_BYTES))) as source:
+                async for _chunk in source:
+                    pass
+            return
+        offset += length
 
 
 def mp4_layout(path: Path) -> str | None:
@@ -105,7 +139,13 @@ async def remux_faststart(source: Path, target: Path, max_bytes: int, timeout: i
 
 @asynccontextmanager
 async def prepared_video(
-    path: Path, name: str, space: UploadSpace, *, enabled: bool, timeout: int
+    path: Path,
+    name: str,
+    space: UploadSpace,
+    *,
+    enabled: bool,
+    timeout: int,
+    slots: asyncio.Semaphore | None = None,
 ) -> AsyncIterator[Path]:
     if not enabled or Path(name).suffix.lower() != ".mp4":
         yield path
@@ -127,7 +167,11 @@ async def prepared_video(
         try:
             optimized = False
             try:
-                optimized = await remux_faststart(path, target, limit, timeout)
+                if slots is None:
+                    optimized = await remux_faststart(path, target, limit, timeout)
+                else:
+                    async with slots:
+                        optimized = await remux_faststart(path, target, limit, timeout)
             except (OSError, TimeoutError) as exc:
                 logger.info("MP4 faststart skipped (%s)", type(exc).__name__)
             yield target if optimized else path

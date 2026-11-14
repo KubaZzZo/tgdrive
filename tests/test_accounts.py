@@ -447,7 +447,7 @@ def test_saved_connection_and_workspace_survive_application_restart(
         return settings, target, item
 
     settings, target, item = asyncio.run(setup())
-    monkeypatch.setattr("app.storage.TelegramClient", Client)
+    monkeypatch.setattr("app.infrastructure.storage.TelegramClient", Client)
     # Startup restoration must select the workspace before serving any requests.
     app = create_app(settings)
     assert app.state.db.get_item(item["id"])["name"] == "Persists"
@@ -469,7 +469,7 @@ def test_session_settings_reject_untrusted_paths(workdir):
 def test_saved_connection_switch_reconnects_and_keeps_workspace(
     workdir, fake_telegram, monkeypatch
 ):
-    monkeypatch.setattr("app.storage.TelegramClient", Client)
+    monkeypatch.setattr("app.infrastructure.storage.TelegramClient", Client)
     Client.lookup_miss = False
 
     async def run():
@@ -565,7 +565,7 @@ def test_revoked_history_session_requires_qr_login_and_recovers_same_workspace(
         finally:
             await manager.shutdown()
 
-    monkeypatch.setattr("app.storage.TelegramClient", HistoryClient)
+    monkeypatch.setattr("app.infrastructure.storage.TelegramClient", HistoryClient)
     monkeypatch.setattr(module, "TelegramClient", HistoryClient)
     asyncio.run(run())
 

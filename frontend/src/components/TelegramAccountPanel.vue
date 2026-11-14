@@ -5,7 +5,7 @@ import type { TelegramAccountStatus, TelegramChannel, TelegramLogin } from '@/ap
 import { useAuthStore } from '@/stores/auth'
 import { useSyncStore } from '@/stores/sync'
 import { useUploadStore } from '@/stores/uploads'
-import BaseModal from './BaseModal.vue'
+import BaseModal from '@/components/ui/BaseModal.vue'
 
 const auth = useAuthStore()
 const sync = useSyncStore()
@@ -223,3 +223,18 @@ onBeforeUnmount(() => { generation++; clearTimeout(timer); password.value = '' }
     </div>
   </BaseModal>
 </template>
+
+<style scoped>
+.telegram-panel { display: grid; gap: 16px; }
+.telegram-panel p { margin: 0; line-height: 1.65; overflow-wrap: anywhere; }
+.telegram-profile { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.telegram-profile > div { min-width: 0; }
+.telegram-profile-actions { display: flex; flex-shrink: 0; gap: 8px; }
+.telegram-qr { display: grid; justify-items: center; gap: 12px; text-align: center; }
+.telegram-qr img { width: 224px; max-width: 100%; background: white; border: 1px solid var(--line); border-radius: 12px; }
+.telegram-qr p { max-width: 420px; font-size: 13px; color: var(--muted); }
+.telegram-password,
+.telegram-channel-picker { display: grid; gap: 12px; }
+.telegram-panel input,
+.telegram-panel select { width: 100%; min-height: 42px; }
+</style>

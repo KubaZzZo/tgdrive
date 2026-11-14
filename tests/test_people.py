@@ -3,9 +3,9 @@ from datetime import timedelta
 from test_album_captions import album_message
 from test_channel_sync import message
 
-from app.people import extract_people
-from app.person_names import chinese_person_name
 from app.services.channel_sync import describe_message
+from app.services.people import extract_people
+from app.services.person_names import chinese_person_name
 
 
 def test_caption_recognizes_chinese_names_and_prefers_explicit_credits():

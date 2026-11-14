@@ -2,7 +2,7 @@
 import { ref } from 'vue'
 
 import type { DriveFilters } from '@/utils/driveLocation'
-import BaseModal from './BaseModal.vue'
+import BaseModal from '@/components/ui/BaseModal.vue'
 
 const props = defineProps<{ filters: DriveFilters }>()
 const emit = defineEmits<{ close: []; apply: [filters: DriveFilters] }>()
@@ -60,3 +60,33 @@ function apply(): void {
     </form>
   </BaseModal>
 </template>
+
+<style scoped>
+.advanced-search-form label {
+  display: grid;
+  gap: 5px;
+}
+.advanced-search-form input {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: inherit;
+  font: inherit;
+}
+.advanced-search-form {
+  display: grid;
+  gap: 12px;
+}
+.advanced-search-form fieldset {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr));
+  gap: 10px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+</style>

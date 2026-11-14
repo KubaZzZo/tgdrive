@@ -4,9 +4,9 @@ import { computed, defineAsyncComponent, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import type { DriveItem } from '@/api/types'
 import { formatBytes, previewKind } from '@/utils/format'
-import BaseModal from './BaseModal.vue'
+import BaseModal from '@/components/ui/BaseModal.vue'
 
-const MediaPlayer = defineAsyncComponent(() => import('./MediaPlayer.vue'))
+const MediaPlayer = defineAsyncComponent(() => import('@/components/MediaPlayer.vue'))
 
 const props = defineProps<{ open: boolean; item: DriveItem | null; downloadPending: boolean; downloadStatus: string }>()
 const emit = defineEmits<{ close: []; download: [item: DriveItem] }>()
@@ -31,8 +31,6 @@ const src = computed(() => (props.item ? api.downloadUrl(props.item.id) : ''))
       :item-id="item.id"
       :kind="kind"
       :size="item.size"
-      :version="item.updated_at"
-      :mime="item.mime || 'video/mp4'"
       :download-pending="downloadPending"
       :download-status="downloadStatus"
       :poster="kind === 'video' ? api.thumbnailUrl(item.id, item.updated_at) : undefined"
@@ -53,3 +51,37 @@ const src = computed(() => (props.item ? api.downloadUrl(props.item.id) : ''))
     </template>
   </BaseModal>
 </template>
+
+<style scoped>
+.preview-stage {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  background: #101828;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.preview-stage :deep(video),
+.preview-stage img {
+  display: block;
+  max-width: 100%;
+  max-height: 66dvh;
+  margin: 0 auto;
+}
+.preview-stage :deep(audio) {
+  width: 95%;
+  margin: 25px 0;
+}
+.preview-stage iframe {
+  width: 100%;
+  height: 65dvh;
+  border: 0;
+  background: white;
+}
+.preview-fallback {
+  padding: 32px;
+  color: #cbd5e1;
+  font-size: 13px;
+  text-align: center;
+}
+</style>
