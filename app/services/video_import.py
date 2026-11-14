@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import uuid
 from pathlib import Path
 from typing import Any
 
 from app.config import Settings
 from app.infrastructure.db import Database
+from app.services.ed2k_source import download_ed2k, parse_link, work_dir
 from app.services.upload_temp import remove_upload_files
 from app.services.uploads import UploadService, UploadSpaceError
 from app.services.video_source import open_video, validate_url, video_metadata
@@ -28,6 +30,7 @@ class VideoImport:
         if settings.max_file_size:
             limits.append(settings.max_file_size)
         self.max_bytes = min(limits)
+        self.ed2k_seeds = settings.video_import_ed2k_seeds
         self.chunk_size = settings.upload_chunk_size
         self.batch = db.get_video_import()
         self.worker: asyncio.Task[None] | None = None
@@ -66,7 +69,17 @@ class VideoImport:
             raise RuntimeError("上一批视频的临时文件尚未清理")
         if not 1 <= len(links) <= 2:
             raise ValueError("每批最多导入两个视频")
-        urls = [str(validate_url(link)) for link in links]
+        urls = []
+        for link in links:
+            if link.lower().startswith("ed2k:"):
+                _, size, _, normalized = parse_link(link)
+                if self.ed2k_seeds is None:
+                    raise ValueError("服务器尚未启用 eD2k 导入")
+                if size > self.max_bytes:
+                    raise ValueError("视频超过导入大小上限")
+                urls.append(normalized)
+            else:
+                urls.append(str(validate_url(link)))
         previous = self.batch
         batch_id = uuid.uuid4().hex
         self.batch = {
@@ -186,6 +199,8 @@ class VideoImport:
             self._save()
 
     def _clean(self, directory: Path, path: Path, job: dict, state: str) -> None:
+        if work_dir(path).exists():
+            shutil.rmtree(work_dir(path))
         remove_upload_files(path)
         assert self.batch is not None
         if directory.exists() and not any(
@@ -205,6 +220,18 @@ class VideoImport:
     async def _download(
         self, uploads: UploadService, path: Path, job: dict[str, Any], index: int
     ) -> tuple[str, str, int]:
+        if job["url"].startswith("ed2k:"):
+            if self.ed2k_seeds is None:
+                raise ValueError("服务器尚未启用 eD2k 导入")
+            return await download_ed2k(
+                job["url"],
+                path,
+                self.ed2k_seeds,
+                uploads.space,
+                self.max_bytes,
+                lambda: self.cancelling,
+                lambda size: job.update(downloaded=size),
+            )
         url = validate_url(job["url"])
         async with open_video(url) as (response, final_url):
             name, mime = video_metadata(final_url, response, index)
