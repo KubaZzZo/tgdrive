@@ -2,19 +2,10 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field
 
+from app.api.schemas.base import ApiModel
 from app.services.people import MAX_PERSON_LENGTH
-
-
-class ApiModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
-
-class LoginBody(ApiModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=False)
-
-    password: str = Field(min_length=1, max_length=512)
 
 
 class FolderBody(ApiModel):
@@ -68,11 +59,3 @@ class ShareTokenBody(ApiModel):
 
 class UpdateShareBody(ShareTokenBody):
     expires_hours: int = Field(ge=0, le=24 * 365)
-
-
-class UploadCreateBody(ApiModel):
-    image_host: bool = False
-    name: str = Field(min_length=1, max_length=255)
-    size: int = Field(gt=0)
-    mime: str | None = Field(default=None, max_length=255)
-    parent_id: str | None = Field(default=None, max_length=64)

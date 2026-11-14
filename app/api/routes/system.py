@@ -2,20 +2,15 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import get_db, get_settings, get_storage
+from app.api.schemas.system import SyncBody, TrafficSettingsBody
 from app.config import Settings
 from app.core.security import is_authenticated, require_auth
 from app.infrastructure.db import Database
 from app.infrastructure.storage import TelegramStorage
 
 router = APIRouter(prefix="/api", tags=["system"])
-
-
-class TrafficSettingsBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    quota_bytes: int = Field(ge=1, le=10**16)
 
 
 @router.get("/traffic", dependencies=[Depends(require_auth)])
@@ -77,11 +72,6 @@ async def health_ready(
             "storage_error": storage_status.get("error"),
         },
     )
-
-
-class SyncBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    full: bool = False
 
 
 @router.get("/sync", dependencies=[Depends(require_auth)])

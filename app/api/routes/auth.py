@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.deps import get_settings
-from app.api.schemas import LoginBody
+from app.api.schemas.auth import LoginBody
 from app.config import Settings
 from app.core.security import check_password
 

@@ -1,19 +1,9 @@
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, ConfigDict, Field
 
+from app.api.schemas.accounts import ChannelBody, PasswordBody
 from app.core.security import require_auth
 
 router = APIRouter(prefix="/api/telegram", tags=["telegram"], dependencies=[Depends(require_auth)])
-
-
-class PasswordBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    password: str = Field(min_length=1, max_length=512)
-
-
-class ChannelBody(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    chat_id: str = Field(min_length=1, max_length=128)
 
 
 @router.get("")

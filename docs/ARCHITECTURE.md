@@ -13,11 +13,13 @@
 ## 后端分层
 
 - `app/api/routes/`：HTTP 边界，只做参数校验、依赖注入和响应组装。
-- `app/api/schemas.py`：HTTP 请求数据模型。
+- `app/api/schemas/`：按路由模块组织 HTTP 请求数据模型。没有请求体的路由无需对应的模型文件。
 - `app/services/`：文件分类、人物识别与名称规则、频道同步等业务逻辑。
 - `app/services/uploads.py`：后台上传任务、哈希、临时文件生命周期。
 - `app/infrastructure/storage.py`：Telegram 客户端、分段上传、Range 读取、消息删除。
-- `app/infrastructure/db.py`：SQLite schema 版本、事务和查询。
+- `app/infrastructure/db/session.py`：SQLite 连接、PRAGMA 初始化和共享锁。
+- `app/infrastructure/db/repositories/`：文件树、回收站、上传、账号、频道同步、人物、图床、分享、流量等领域的 SQLite 查询。`Database` 对外保留统一接口，让跨领域操作继续使用同一个连接和锁。
+- `app/infrastructure/db/migrations.py`：按 `PRAGMA user_version` 顺序运行版本迁移。打开数据库时自动升级，各版本沿用原有事务边界，包括兼容旧版 Bot/CDN 数据库的迁移。
 - `app/core/`：日志、请求 ID、会话认证、登录限流、异常处理、代理配置与 HTTP Range 解析。
 - `app/main.py`：app factory，便于测试时注入临时数据库和 fake storage。
 

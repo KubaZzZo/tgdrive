@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.api.deps import get_db, get_settings, get_upload_service, require_storage
-from app.api.schemas import UploadCreateBody
+from app.api.schemas.uploads import UploadCreateBody
 from app.config import Settings
 from app.core.security import require_auth
 from app.infrastructure.db import Database

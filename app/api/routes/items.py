@@ -8,7 +8,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.api.deps import get_db
-from app.api.schemas import (
+from app.api.schemas.items import (
     BatchItemsBody,
     FolderBody,
     FolderPathsBody,
