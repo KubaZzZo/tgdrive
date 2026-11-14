@@ -379,6 +379,7 @@ def test_resumable_upload_download_share_and_delete(authenticated_client):
     assert deleted.status_code == 200
     assert storage.deleted_message_ids == []
     assert client.delete(f"/api/trash/{item['id']}").status_code == 200
+    client.portal.call(app.state.accounts.current.cleanup.process)
     assert storage.deleted_message_ids == [101]
 
 

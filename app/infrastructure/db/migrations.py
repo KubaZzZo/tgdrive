@@ -5,7 +5,7 @@ import sqlite3
 from app.infrastructure.db.common import utcnow
 from app.services.categories import classify_file, effective_mime
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -277,6 +277,18 @@ def _upgrade_to_16(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA user_version=16")
 
 
+def _upgrade_to_17(conn: sqlite3.Connection) -> None:
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(uploads)")}
+        if "link_import" not in columns:
+            conn.execute("ALTER TABLE uploads ADD COLUMN link_import INTEGER NOT NULL DEFAULT 0")
+        conn.execute("""CREATE TABLE IF NOT EXISTS video_import_batch (
+            id INTEGER PRIMARY KEY CHECK (id=1), data TEXT NOT NULL
+        )""")
+        conn.execute("PRAGMA user_version=17")
+
+
 _MIGRATIONS = (
     (1, _upgrade_to_1),
     (2, _upgrade_to_2),
@@ -292,6 +304,7 @@ _MIGRATIONS = (
     (14, _upgrade_to_14),
     (15, _upgrade_to_15),
     (16, _upgrade_to_16),
+    (17, _upgrade_to_17),
 )
 
 

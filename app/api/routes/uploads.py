@@ -106,7 +106,11 @@ async def get_upload(
     uploads: UploadService = Depends(get_upload_service),
 ) -> dict[str, Any]:
     upload = db.get_upload(upload_id)
-    if not upload or (upload["image_host"] and not uploads.image_host_enabled):
+    if (
+        not upload
+        or upload["link_import"]
+        or (upload["image_host"] and not uploads.image_host_enabled)
+    ):
         raise HTTPException(404, "上传任务不存在")
     return public_upload(upload)
 
@@ -120,7 +124,7 @@ async def upload_chunk(
 ) -> dict[str, Any] | JSONResponse:
     async with uploads.lock(upload_id):
         upload = db.get_upload(upload_id)
-        if not upload:
+        if not upload or upload["link_import"]:
             raise HTTPException(404, "上传任务不存在")
         if upload["image_host"] and not uploads.image_host_enabled:
             raise HTTPException(404, "图床功能已关闭")
@@ -204,7 +208,7 @@ async def cancel_upload(
 ) -> dict[str, bool]:
     async with uploads.lock(upload_id):
         upload = db.get_upload(upload_id)
-        if not upload:
+        if not upload or upload["link_import"]:
             raise HTTPException(404, "上传任务不存在")
         if upload["state"] == "processing":
             raise HTTPException(409, "正在写入 Telegram，无法取消")
@@ -225,7 +229,7 @@ async def complete_upload(
         if uploads._closed:
             raise HTTPException(409, "账号正在切换，请刷新页面后重试")
         upload = db.get_upload(upload_id)
-        if not upload:
+        if not upload or upload["link_import"]:
             raise HTTPException(404, "上传任务不存在")
         if upload["image_host"] and not uploads.image_host_enabled:
             raise HTTPException(404, "图床功能已关闭")

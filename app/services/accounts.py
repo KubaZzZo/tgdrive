@@ -489,6 +489,8 @@ class AccountManager:
 
     async def _activate(self, candidate: TelegramStorage, profile: dict) -> None:
         old = self.current
+        if self.app.state.video_import.active:
+            raise HTTPException(409, "请等待视频导入完成并清理临时文件后再切换频道")
         if old.uploads.active_count():
             raise HTTPException(409, "当前仍有文件正在写入 Telegram，请等待完成后切换")
         self.switching = True

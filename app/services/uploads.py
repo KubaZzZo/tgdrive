@@ -171,7 +171,9 @@ class UploadService:
 
     def recover_interrupted(self) -> int:
         # Called before this workspace's tasks start; keep originals for retry.
-        for upload in self.db.list_uploads(states=("processing", "uploading", "error", "done")):
+        for upload in self.db.list_uploads(
+            states=("processing", "uploading", "error", "done"), include_imports=True
+        ):
             try:
                 faststart_path(Path(upload["temp_path"])).unlink(missing_ok=True)
             except OSError:
@@ -206,6 +208,10 @@ class UploadService:
         except asyncio.CancelledError:
             self.db.update_upload(upload_id, state="error", error="服务关闭，上传已中断，请重试")
             raise
+
+    async def run_import(self, upload_id: str) -> None:
+        self.db.update_upload(upload_id, state="processing", error=None, progress=0)
+        await self._run(upload_id)
 
     def schedule(self, upload_id: str) -> bool:
         if self._closed or upload_id in self._tasks:

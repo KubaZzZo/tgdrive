@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.api.routes import accounts, auth, files, images, items, system, uploads
+from app.api.routes import accounts, auth, files, images, items, system, uploads, video_import
 from app.config import ROOT_DIR, Settings
 from app.config import settings as default_settings
 from app.core.errors import install_exception_handlers
@@ -28,6 +28,7 @@ from app.services.thumbnails import ThumbnailCache
 from app.services.traffic import TrafficMiddleware, TrafficMonitor
 from app.services.upload_temp import cleanup_faststart_outputs
 from app.services.uploads import UploadService, UploadSpace
+from app.services.video_import import VideoImport
 
 logger = logging.getLogger("tgdrive")
 APP_VERSION = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()
@@ -83,6 +84,7 @@ def create_app(
         upload_service.start()
         await channel_sync.start()
         await account_manager.start()
+        app.state.video_import.resume(account_manager.current.uploads)
         if telegram.error:
             logger.warning("Telegram unavailable: %s", telegram.error)
         logger.info(
@@ -107,6 +109,7 @@ def create_app(
             if traffic_worker is not None:
                 traffic_worker.cancel()
                 await asyncio.gather(traffic_worker, return_exceptions=True)
+            await app.state.video_import.stop()
             await account_manager.shutdown()
             logger.info("TG Drive stopped")
 
@@ -138,6 +141,7 @@ def create_app(
         app, cfg, control, Runtime(database, telegram, upload_service, channel_sync)
     )
     app.state.accounts = account_manager
+    app.state.video_import = VideoImport(control, cfg)
 
     app.add_middleware(WorkspaceMiddleware, manager=account_manager)
     app.add_middleware(
@@ -157,6 +161,7 @@ def create_app(
     app.include_router(auth.router)
     app.include_router(items.router)
     app.include_router(uploads.router)
+    app.include_router(video_import.router)
     if cfg.image_host_enabled:
         app.include_router(images.router)
         app.include_router(images.public_router)
@@ -175,6 +180,7 @@ def create_app(
     @app.get("/images", include_in_schema=False)
     @app.get("/traffic", include_in_schema=False)
     @app.get("/sync", include_in_schema=False)
+    @app.get("/video-import", include_in_schema=False)
     async def index() -> Response:
         if cfg.index_file.is_file():
             return FileResponse(cfg.index_file, headers={"Cache-Control": "no-cache"})

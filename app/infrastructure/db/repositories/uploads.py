@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -17,13 +18,15 @@ class UploadsRepository(SQLiteSession):
         temp_path: str,
         chunk_size: int,
         image_host: bool = False,
+        *,
+        import_id: str | None = None,
     ) -> dict[str, Any]:
         name = clean_name(name)
         if int(size) <= 0:
             raise ValueError("文件大小必须大于 0")
         if int(chunk_size) <= 0:
             raise ValueError("分片大小必须大于 0")
-        upload_id = uuid.uuid4().hex
+        upload_id = import_id or uuid.uuid4().hex
         now = utcnow()
         with self._lock, self.conn:
             self.conn.execute(
@@ -33,7 +36,8 @@ class UploadsRepository(SQLiteSession):
                 (upload_id, parent_id, name, int(size), mime, temp_path, int(chunk_size), now, now),
             )
             self.conn.execute(
-                "UPDATE uploads SET image_host=? WHERE id=?", (int(image_host), upload_id)
+                "UPDATE uploads SET image_host=?, link_import=?, received=? WHERE id=?",
+                (int(image_host), int(import_id is not None), size if import_id else 0, upload_id),
             )
         return self.get_upload(upload_id)  # type: ignore[return-value]
 
@@ -61,7 +65,7 @@ class UploadsRepository(SQLiteSession):
             self.conn.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
 
     def list_uploads(
-        self, states: tuple[str, ...] = ("uploading", "error")
+        self, states: tuple[str, ...] = ("uploading", "error"), *, include_imports: bool = False
     ) -> list[dict[str, Any]]:
         """未完成的上传任务，供前端刷新后断点续传。"""
         if not states:
@@ -69,8 +73,8 @@ class UploadsRepository(SQLiteSession):
         placeholders = ",".join("?" for _ in states)
         with self._lock:
             rows = self.conn.execute(
-                f"SELECT * FROM uploads WHERE state IN ({placeholders}) ORDER BY created_at DESC",
-                tuple(states),
+                f"SELECT * FROM uploads WHERE state IN ({placeholders}) AND (link_import=0 OR ?) ORDER BY created_at DESC",
+                (*states, include_imports),
             ).fetchall()
         return [dict(r) for r in rows]
 
@@ -86,7 +90,19 @@ class UploadsRepository(SQLiteSession):
     def list_stale_uploads(self, before: str) -> list[dict[str, Any]]:
         with self._lock:
             rows = self.conn.execute(
-                "SELECT * FROM uploads WHERE state IN ('uploading','error') AND updated_at < ?",
+                "SELECT * FROM uploads WHERE link_import=0 AND state IN ('uploading','error') AND updated_at < ?",
                 (before,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_video_import(self) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.conn.execute("SELECT data FROM video_import_batch WHERE id=1").fetchone()
+            return json.loads(row[0]) if row else None
+
+    def save_video_import(self, batch: dict[str, Any]) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "INSERT INTO video_import_batch VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+                (json.dumps(batch, ensure_ascii=False),),
+            )

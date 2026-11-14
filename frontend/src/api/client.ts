@@ -162,7 +162,20 @@ export async function uploadChunk(
   }
 }
 
+export interface VideoImportStatus {
+  active: boolean
+  running: boolean
+  jobs: { id: string; state: string; name?: string; error?: string; downloaded: number; uploaded?: number }[]
+}
+
 export const api = {
+  videoImport: () => request<VideoImportStatus>('/api/video-import'),
+  startVideoImport: (links: string[]) => request<VideoImportStatus>('/api/video-import', {
+    method: 'POST', body: JSON.stringify({ links }),
+  }),
+  retryVideoImport: () => request<VideoImportStatus>('/api/video-import/retry', { method: 'POST' }),
+  cancelVideoImport: () => request<VideoImportStatus>('/api/video-import/cancel', { method: 'POST' }),
+
   listImages: (q = '', offset = 0) => request<{ images: HostedImage[]; total: number }>(
     `/api/images?${new URLSearchParams({ q, offset: String(offset), limit: '24' })}`),
   publishImage: (id: string) => request<{ url: string }>(`/api/images/${encodeURIComponent(id)}`, { method: 'POST' }),

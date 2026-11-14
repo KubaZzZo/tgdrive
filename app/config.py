@@ -107,6 +107,14 @@ class Settings:
         default_factory=lambda: _env_int("MAX_FILE_SIZE", 0)
     )  # 0 = unlimited
     upload_stale_hours: int = field(default_factory=lambda: _env_int("UPLOAD_STALE_HOURS", 72))
+    video_import_dir: Path | None = field(
+        default_factory=lambda: (
+            _env_path("VIDEO_IMPORT_DIR", "") if os.getenv("VIDEO_IMPORT_DIR", "").strip() else None
+        )
+    )
+    video_import_max_mib: int = field(
+        default_factory=lambda: _env_int("VIDEO_IMPORT_MAX_MIB", 8192)
+    )
     upload_temp_max_mib: int = field(default_factory=lambda: _env_int("UPLOAD_TEMP_MAX_MIB", 51200))
     upload_temp_min_free_mib: int = field(
         default_factory=lambda: _env_int("UPLOAD_TEMP_MIN_FREE_MIB", 512)
@@ -169,6 +177,8 @@ class Settings:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def validate(self) -> None:
+        if self.video_import_max_mib <= 0:
+            raise RuntimeError("VIDEO_IMPORT_MAX_MIB 必须大于 0")
         if self.video_faststart_timeout <= 0:
             raise RuntimeError("VIDEO_FASTSTART_TIMEOUT 必须大于 0")
         if self.media_cache_slice_mib not in {1, 2, 4} or self.media_cache_ttl_seconds <= 0:

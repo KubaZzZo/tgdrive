@@ -45,6 +45,7 @@ async function logout(): Promise<void> {
     </div>
     <nav class="module-nav" aria-label="功能模块">
       <RouterLink :to="{ name: 'drive' }">网盘</RouterLink>
+      <RouterLink :to="{ name: 'video-import' }">链接导入</RouterLink>
       <RouterLink v-if="auth.features.people" :to="{ name: 'people' }">人物视频</RouterLink>
       <RouterLink v-if="auth.features.images" :to="{ name: 'images' }">图床</RouterLink>
     </nav>
