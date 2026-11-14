@@ -14,16 +14,14 @@ export const useTrafficStore = defineStore('traffic', () => {
   const error = ref('')
   let timer: ReturnType<typeof setInterval> | undefined
   let version = 0
-  const host = computed(() => data.value?.host)
+  const usage = computed(() => data.value?.usage)
   const cdn = computed(() => data.value?.cdn)
-  const uncertain = computed(() => !host.value?.available || host.value.stale || host.value.incomplete)
   const label = computed(() => {
     if (cdn.value?.configured && cdn.value.blocked) return 'CDN 传输保护中'
     if (cdn.value?.configured && cdn.value.warning) return 'CDN 余量预警'
     if (cdn.value?.configured && cdn.value.available) return 'CDN 流量正常'
-    if (!host.value?.available) return '流量待接入'
-    if (error.value || host.value.stale) return '流量数据过期'
-    return `今日 ${gb(host.value.used ?? 0)} GB${host.value.incomplete ? '*' : ''}`
+    if (error.value) return '流量读取失败'
+    return usage.value ? `今日 ${gb(usage.value.used)} GB` : '流量'
   })
   async function refresh(): Promise<void> {
     const current = ++version
@@ -64,6 +62,6 @@ export const useTrafficStore = defineStore('traffic', () => {
     data.value = null
     error.value = ''
   }
-  const warning = computed(() => Boolean(cdn.value?.warning || host.value?.warning || uncertain.value || error.value))
-  return { data, error, saving, host, cdn, label, warning, start, stop, save }
+  const warning = computed(() => Boolean(cdn.value?.warning || usage.value?.warning || error.value))
+  return { data, error, saving, usage, cdn, label, warning, start, stop, save }
 })

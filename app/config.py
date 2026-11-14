@@ -52,9 +52,6 @@ class Settings:
     people_enabled: bool = field(default_factory=lambda: _env_bool("PEOPLE_ENABLED", True))
     image_host_enabled: bool = field(default_factory=lambda: _env_bool("IMAGE_HOST_ENABLED", True))
     traffic_enabled: bool = field(default_factory=lambda: _env_bool("TRAFFIC_ENABLED", True))
-    traffic_host_state: Path = field(
-        default_factory=lambda: _env_path("TRAFFIC_HOST_STATE", "data/traffic/host.json")
-    )
     axisnow_api_token: str = field(
         default_factory=lambda: os.getenv("AXISNOW_API_TOKEN", "").strip(), repr=False
     )

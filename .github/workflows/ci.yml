@@ -25,8 +25,7 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m ruff check app tests
       - run: python -m ruff format --check app tests
-      - run: python -m ruff check scripts/traffic_collector.py && python -m ruff format --check scripts/traffic_collector.py
-      - run: bash -n deploy/install-traffic.sh deploy/bootstrap-ubuntu.sh
+      - run: bash -n deploy/bootstrap-ubuntu.sh
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: python -m pytest --cov=app --cov-report=term-missing
         env:
@@ -56,21 +55,10 @@ jobs:
           path: static/dist/
           if-no-files-found: error
 
-  host-collector:
-    name: Host collector Python 3.10 compatibility
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
-      - run: python scripts/traffic_collector.py --help
-      - run: python -c "from scripts.traffic_collector import read_interfaces; assert read_interfaces()"
-
   docker:
     name: Docker image build
     runs-on: ubuntu-latest
-    needs: [backend, frontend, host-collector]
+    needs: [backend, frontend]
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3

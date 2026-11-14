@@ -27,12 +27,10 @@ export interface TrafficStatus {
   quota_bytes: number
   started_at: string
   sources: { web: TrafficTotals; telegram: TrafficTotals }
-  host: {
-    available: boolean; stale: boolean; error: string | null
-    updated_at?: string; started_at?: string; interfaces?: string[]
-    inbound?: number; outbound?: number; used?: number; remaining?: number; percent?: number
-    warning?: 'near' | 'exceeded' | null; incomplete?: boolean
-    history?: (TrafficTotals & { day: string; incomplete?: boolean })[]
+  usage: TrafficTotals & {
+    used: number; remaining: number; percent: number
+    warning: 'near' | 'exceeded' | null
+    history: (TrafficTotals & { day: string })[]
   }
 }
 export type FileCategory =

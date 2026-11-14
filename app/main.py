@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from collections.abc import AsyncIterator
@@ -54,7 +55,7 @@ def create_app(
                 raise RuntimeError("频道数据库配置无效")
             database = Database(cfg.data_dir / "channels" / f"{key}.sqlite3")
     telegram = storage or TelegramStorage(account_settings(cfg, profile))
-    traffic = TrafficMonitor(control, cfg.traffic_host_state, enabled=cfg.traffic_enabled)
+    traffic = TrafficMonitor(control, enabled=cfg.traffic_enabled)
     cdn = CDNMonitor(control, cfg)
     traffic.cdn = cdn
     telegram.traffic = traffic if cfg.traffic_enabled else None
@@ -91,6 +92,11 @@ def create_app(
             database.schema_version(),
             cfg.is_configured,
         )
+        traffic_worker = (
+            asyncio.create_task(traffic.persist_periodically(), name="traffic-persistence")
+            if cfg.traffic_enabled
+            else None
+        )
         try:
             app.state.media_cache.start()
             await cdn.start()
@@ -98,6 +104,9 @@ def create_app(
         finally:
             await app.state.media_cache.close()
             await cdn.stop()
+            if traffic_worker is not None:
+                traffic_worker.cancel()
+                await asyncio.gather(traffic_worker, return_exceptions=True)
             await account_manager.shutdown()
             logger.info("TG Drive stopped")
 

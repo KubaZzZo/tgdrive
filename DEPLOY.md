@@ -107,7 +107,7 @@ docker compose stop app
 docker run --rm -v tgdrive_tgdata:/d -v $PWD:/out alpine \
   tar czf /out/data-$(date +%F).tgz -C /d .
 docker compose start app
-# 另备份宿主机 data/traffic/ 和 .env；它们不在 tgdata 卷内
+# 另备份 .env；它不在 tgdata 卷内
 ```
 
 ## 7. 升级
@@ -145,7 +145,7 @@ SQLite schema 使用 `PRAGMA user_version` 管理；启动时会拒绝打开版�
 5. 重要数据保留第二份独立备份；Telegram 不是有 SLA 的对象存储。
 ## AxisNow CDN 套餐监控与保护
 
-在服务器 `.env` 设置 `AXISNOW_API_TOKEN` 并重启应用，即可在顶部“CDN 与 VPS 流量”面板查看各订阅月额度、平台已用量、保护估算、余量和更新时间。令牌只用于后端调用 `https://api.axisnow.io/client/v1/tenant_subscriptions/filter` 只读查询接口，不返回给浏览器。请勿将令牌写入前端环境变量或 Git。
+在服务器 `.env` 设置 `AXISNOW_API_TOKEN` 并重启应用，即可在顶部“TG Drive 流量”面板查看各订阅月额度、平台已用量、保护估算、余量和更新时间。令牌只用于后端调用 `https://api.axisnow.io/client/v1/tenant_subscriptions/filter` 只读查询接口，不返回给浏览器。请勿将令牌写入前端环境变量或 Git。
 
 默认每 60 秒查询全部有效订阅，使用平台返回的 `quota_period`（北京时间自然月）和额度；平台 MB 按 MiB（1024² 字节）换算。`AXISNOW_SUBSCRIPTION_IDS` 可限定参与保护的订阅 UUID，以英文逗号分隔；留空时任意一个受限订阅余量不足都会触发全站媒体保护，不会自动修改平台订阅或 DNS。
 
@@ -153,50 +153,14 @@ SQLite schema 使用 `PRAGMA user_version` 管理；启动时会拒绝打开版�
 
 本地 SQLite 持久化每订阅每月的保护估算：取平台计数与本地估算的较大值，再把本站每个媒体块加到所有受监控的有限额订阅上，覆盖平台统计延迟及多请求并发，重启和切换频道不清零。无法判断请求由哪个订阅转发，因此该估算有意偏保守，可能提前触发保护。不限制额度的订阅不会被当成零额度。
 
-应用只能限制本站回源媒体流量，CDN 缓存命中、协议开销及同套餐其他站点的流量无法由此硬性封顶。请同时在 AxisNow 配置订阅额度或平台侧限制，并保留余量。VPS 网卡额度和 CDN 套餐独立统计。部署后请检查 CDN API/分享路径不缓存，沿用本项目 Caddy 的 `private, no-store` 配置；令牌须有订阅读取权限。
+应用只能限制本站回源媒体流量，CDN 缓存命中、协议开销及同套餐其他站点的流量无法由此硬性封顶。请同时在 AxisNow 配置订阅额度或平台侧限制，并保留余量。TG Drive 应用额度和 CDN 套餐独立统计。部署后请检查 CDN API/分享路径不缓存，沿用本项目 Caddy 的 `private, no-store` 配置；令牌须有订阅读取权限。
 
-## VPS 每日 100 GB 流量监测
+## TG Drive 每日流量
 
-更新代码后，在 Linux VPS **宿主机**的项目目录执行（不要在容器内执行）：
+应用自动统计 HTTP 和 Telegram 两段的入站、出站有效载荷，每 5 秒批量写入 SQLite，正常停止时写入剩余计数。Docker Compose 启动后即可使用。面板显示近 7 天用量，默认每日额度为 100 GB，可在网页调整，北京时间 00:00 换日。项目额度只提示，CDN 套餐保护独立执行。
 
-```bash
-sudo bash deploy/install-traffic.sh
-docker compose up -d --build --force-recreate app
-systemctl status tgdrive-traffic
-```
+升级前已安装旧采集服务的机器，可以用 `sudo systemctl disable --now tgdrive-traffic.service` 停用它，再重新创建应用容器。应用沿用 SQLite 中的传输明细和额度设置。
 
-裸机部署执行第一条命令后，重启 `tgdrive` 服务即可。新安装的 bootstrap 脚本会自动安装采集服务。
-采集器只需要系统 Python 3.10+，无需应用依赖；Ubuntu 22.04/24.04 的系统 Python 可用。
-网页按钮中可修改每日额度，默认 100 GB，入站和出站合计，北京时间 00:00 换日。
-
-采集服务每 5 秒读取 `/proc/net/dev` 的网卡字节计数，原子写入 `data/traffic/host.json`，
-保留 35 天数据。Docker 只读挂载此目录；容器重建不会重置宿主机计数。
-默认选择 IPv4 默认路由的网卡，避免把 Docker 网桥、veth 和回环的同一份流量重复累加。
-请在面板核对显示的网卡确实是服务商计费的公网网卡。仅 IPv6、公私网分离、VPN、bond 等网络需手动指定。
-
-自定义网卡：`sudo systemctl edit tgdrive-traffic`，填入下列内容（替换路径和网卡名）：
-
-```ini
-[Service]
-ExecStart=
-ExecStart=/usr/bin/python3 /opt/tgdrive/scripts/traffic_collector.py --state /opt/tgdrive/data/traffic/host.json --interfaces eth0
-```
-
-再执行 `sudo systemctl daemon-reload && sudo systemctl restart tgdrive-traffic`。
-选择多个独立公网网卡可写 `--interfaces eth0,eth1`；不要同时选择桥或 bond 与其下层网卡。
-安装脚本默认使用 `tgdrive` 系统用户，项目须位于该用户可访问的目录（建议 `/opt/tgdrive`）。
-
-准确性与故障提示：
-
-- 从首次启用时建立基线，不把开机以来流量误当成当天流量；因此首日记录不完整。
-- 服务重启从上次采样继续；系统重启、网卡计数重置、更换网卡及跨日长时间中断会标记不完整。
-- 正常跨日最多有一个采样间隔的归属偏差。跨日长时间中断无法回溯，恢复时差额保守计入恢复当天并标记缺口。
-- 文件超过 30 秒未更新显示过期；采集文件损坏时服务报错，不会悄悄清零。
-- 网卡计数包含网络层开销及重传，但宿主机与服务商计费层、取整和重置时间仍可能有差异，账单以服务商为准。
-- 应用明细仅统计实际读取/发送的 HTTP 和 Telegram 有效载荷，不包含全部底层重试，不能据此推断 VPS 账单。
-- 监测只告警，不自动限速或断流。若采集暂停，不能把显示的剩余额度当作实时值。
-
-登录密码使用 VPS `.env` 的 `APP_PASSWORD`。修改后需重建/重启应用以加载；本地 `.env` 不会随 Git 推送到 VPS。
 ## Telegram 账号和频道切换的部署与备份
 
 更新后重建/重启应用，登录网页，通过顶部“Telegram 账号”完成扫码、两步验证与频道选择。
@@ -204,7 +168,7 @@ ExecStart=/usr/bin/python3 /opt/tgdrive/scripts/traffic_collector.py --state /op
 新账号需先加入目标频道并取得发送、删除消息的管理员权限。
 
 数据库 schema v6 自动保存账号/频道组合和频道数据库映射。备份不能只包含 `tgdrive.sqlite3`：
-必须同时保存整个 `/data` 卷，包括 `accounts/*.session`、`channels/*.sqlite3` 和初始 session，另备份宿主机 `data/traffic/` 和 `.env`。
+必须同时保存整个 `/data` 卷，包括 `accounts/*.session`、`channels/*.sqlite3` 和初始 session，另备份 `.env`。
 为得到一致的完整备份，应先停止应用，再归档整个数据卷；恢复时也应整组恢复，不能混用不同备份中的映射和频道数据库。
 会话文件等同登录凭证，备份需加密保存，不能提交 Git。切换功能使用单应用进程部署。
 

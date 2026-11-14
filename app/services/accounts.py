@@ -563,7 +563,7 @@ class AccountManager:
             await asyncio.gather(*list(self.tasks), return_exceptions=True)
         for runtime in list(self.retired):
             await self._dispose(runtime)
-        self.app.state.traffic.flush()
+        await asyncio.to_thread(self.app.state.traffic.flush)
         for db in self.databases.values():
             db.close()
 
