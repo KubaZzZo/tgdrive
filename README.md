@@ -333,12 +333,10 @@ npm run build
 ```text
 app/
 ├── api/routes/          # 认证、文件、上传、同步、账号及流量接口
-├── services/            # 上传任务、频道同步、账号切换、流量统计
+├── services/            # 文件分类、人物识别、上传任务、频道同步、账号切换及流量统计
 ├── core/                # 日志、请求上下文、限流与异常处理
-├── categories.py        # 文件分类与 MIME 规则
 ├── config.py            # 环境配置与校验
-├── db.py                # SQLite 查询与 schema 迁移
-├── storage.py           # Telegram 上传、下载及频道消息访问
+├── infrastructure/      # SQLite 与 Telegram 存储适配
 └── main.py              # FastAPI 应用入口
 frontend/
 ├── src/components/      # 文件界面、播放器及配置面板

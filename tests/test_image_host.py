@@ -6,7 +6,7 @@ from io import BytesIO
 import pytest
 from PIL import Image
 
-from app.db import Database
+from app.infrastructure.db import Database
 from app.services.image_host import MAX_IMAGE_SIZE, image_mime
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"test-image" * 8

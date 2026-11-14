@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any
 from unicodedata import normalize
 
-from app.categories import CATEGORY_LABELS, classify_file, effective_mime
-from app.people import MAX_PERSON_LENGTH, person_key
-from app.person_names import chinese_person_name
+from app.services.categories import CATEGORY_LABELS, classify_file, effective_mime
+from app.services.people import MAX_PERSON_LENGTH, person_key
+from app.services.person_names import chinese_person_name
 
 SCHEMA_VERSION = 16
 PEOPLE_AI_MAX_ATTEMPTS = 3

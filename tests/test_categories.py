@@ -5,8 +5,8 @@ import time
 
 import pytest
 
-from app.categories import classify_file, effective_mime
-from app.db import SCHEMA, SCHEMA_VERSION, Database
+from app.infrastructure.db import SCHEMA, SCHEMA_VERSION, Database
+from app.services.categories import classify_file, effective_mime
 
 
 @pytest.mark.parametrize(
@@ -61,7 +61,7 @@ def test_failed_migration_rolls_back_schema_for_retry(workdir, monkeypatch):
         def fail(*args):
             raise RuntimeError("backfill interrupted")
 
-        patch.setattr("app.db.classify_file", fail)
+        patch.setattr("app.infrastructure.db.classify_file", fail)
         with pytest.raises(RuntimeError, match="backfill interrupted"):
             Database(path)
     with sqlite3.connect(path) as conn:

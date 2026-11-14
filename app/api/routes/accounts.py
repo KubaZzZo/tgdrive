@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.auth import require_auth
+from app.core.security import require_auth
 
 router = APIRouter(prefix="/api/telegram", tags=["telegram"], dependencies=[Depends(require_auth)])
 

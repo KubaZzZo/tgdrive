@@ -17,7 +17,8 @@ from app.core.errors import install_exception_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.core.security import LoginRateLimiter
-from app.db import Database
+from app.infrastructure.db import Database
+from app.infrastructure.storage import TelegramStorage
 from app.services.accounts import AccountManager, Runtime, WorkspaceMiddleware, account_settings
 from app.services.cdn import CDNMonitor
 from app.services.channel_sync import ChannelSyncService
@@ -26,7 +27,6 @@ from app.services.thumbnails import ThumbnailCache
 from app.services.traffic import TrafficMiddleware, TrafficMonitor
 from app.services.upload_temp import cleanup_faststart_outputs
 from app.services.uploads import UploadService, UploadSpace
-from app.storage import TelegramStorage
 
 logger = logging.getLogger("tgdrive")
 APP_VERSION = (ROOT_DIR / "VERSION").read_text(encoding="utf-8").strip()

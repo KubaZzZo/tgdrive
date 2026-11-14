@@ -9,7 +9,7 @@ from conftest import FakeTelegramStorage, make_settings
 from fastapi.testclient import TestClient
 from test_video_prepare import box, tail_mp4
 
-from app.db import Database
+from app.infrastructure.db import Database
 from app.main import create_app
 from app.services import video_prepare
 from app.services.upload_temp import faststart_path

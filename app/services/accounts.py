@@ -25,12 +25,12 @@ from telethon.errors import (
 from telethon.tl.types import Channel
 
 from app.config import Settings
-from app.db import Database
-from app.network import get_proxy
+from app.core.network import get_proxy
+from app.infrastructure.db import Database
+from app.infrastructure.storage import TelegramStorage
 from app.services.channel_sync import ChannelSyncService
 from app.services.telegram_cleanup import TelegramCleanup
 from app.services.uploads import UploadService
-from app.storage import TelegramStorage
 
 logger = logging.getLogger("tgdrive.accounts")
 

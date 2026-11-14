@@ -9,14 +9,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app.api.deps import get_db, get_settings, get_upload_service, require_storage
-from app.auth import require_auth
+from app.api.schemas import UploadCreateBody
 from app.config import Settings
-from app.db import Database
-from app.schemas import UploadCreateBody
+from app.core.security import require_auth
+from app.infrastructure.db import Database
+from app.infrastructure.storage import TelegramStorage
 from app.services.image_host import MAX_IMAGE_SIZE
 from app.services.upload_temp import remove_upload_files
 from app.services.uploads import UploadService, UploadSpaceError
-from app.storage import TelegramStorage
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"], dependencies=[Depends(require_auth)])
 

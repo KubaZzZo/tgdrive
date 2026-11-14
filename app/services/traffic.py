@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from app.db import Database
+from app.infrastructure.db import Database
 from app.services.cdn import CDNMonitor
 
 logger = logging.getLogger("tgdrive.traffic")

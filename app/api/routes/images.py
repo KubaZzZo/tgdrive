@@ -7,10 +7,10 @@ from fastapi.responses import Response
 
 from app.api.deps import get_db, get_storage, require_storage
 from app.api.routes.files import iter_item_range, stream_item
-from app.auth import require_auth
-from app.db import Database
+from app.core.security import require_auth
+from app.infrastructure.db import Database
+from app.infrastructure.storage import TelegramStorage
 from app.services.image_host import IMAGE_MIMES, MAX_IMAGE_SIZE, image_mime
-from app.storage import TelegramStorage
 
 router = APIRouter(prefix="/api/images", tags=["images"], dependencies=[Depends(require_auth)])
 public_router = APIRouter(tags=["images"])

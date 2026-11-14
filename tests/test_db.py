@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from app.db import SCHEMA_VERSION, Database
+from app.infrastructure.db import SCHEMA_VERSION, Database
 
 
 def test_folder_and_file_lifecycle(workdir: Path):

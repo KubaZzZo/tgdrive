@@ -14,11 +14,11 @@ from weakref import WeakValueDictionary
 
 from anyio import CancelScope
 
-from app.db import Database
+from app.infrastructure.db import Database
+from app.infrastructure.storage import TelegramStorage
 from app.services.image_host import MAX_IMAGE_SIZE, image_mime
 from app.services.upload_temp import faststart_path, remove_upload_files
 from app.services.video_prepare import prepared_video
-from app.storage import TelegramStorage
 
 logger = logging.getLogger("tgdrive.uploads")
 

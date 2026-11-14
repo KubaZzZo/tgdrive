@@ -16,13 +16,13 @@ from typing import Any, TypeVar
 from telethon.errors import FloodWaitError
 from telethon.tl.types import MessageMediaDocument, MessageMediaPhoto
 
-from app.categories import classify_file, effective_mime
 from app.config import Settings
-from app.db import Database
-from app.people import extract_people
+from app.infrastructure.db import Database
+from app.infrastructure.storage import SESSION_AUTH_ERRORS, TelegramStorage
+from app.services.categories import classify_file, effective_mime
+from app.services.people import extract_people
 from app.services.people_model import PeopleModel, PeopleModelError
 from app.services.telegram_bot import MAX_BOT_COVER, BotAPIError, TelegramBot
-from app.storage import SESSION_AUTH_ERRORS, TelegramStorage
 
 logger = logging.getLogger("tgdrive.sync")
 T = TypeVar("T")

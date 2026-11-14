@@ -8,11 +8,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.api.deps import get_db
-from app.auth import require_auth
-from app.categories import Category
-from app.db import Database, utcnow
-from app.people import MAX_PERSON_LENGTH, person_key
-from app.schemas import (
+from app.api.schemas import (
     BatchItemsBody,
     FolderBody,
     FolderPathsBody,
@@ -23,6 +19,10 @@ from app.schemas import (
     UpdateShareBody,
     VideoPeopleBody,
 )
+from app.core.security import require_auth
+from app.infrastructure.db import Database, utcnow
+from app.services.categories import Category
+from app.services.people import MAX_PERSON_LENGTH, person_key
 from app.services.telegram_cleanup import TRASH_RETENTION_DAYS
 
 router = APIRouter(prefix="/api", tags=["items"], dependencies=[Depends(require_auth)])

@@ -10,7 +10,7 @@ from conftest import FakeTelegramStorage, make_settings
 from fastapi.testclient import TestClient
 from telethon.errors import AuthKeyUnregisteredError
 
-from app.db import Database
+from app.infrastructure.db import Database
 from app.main import create_app
 from app.services import telegram_bot
 from app.services.channel_sync import describe_bot_post

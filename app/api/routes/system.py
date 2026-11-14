@@ -5,10 +5,10 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.api.deps import get_db, get_settings, get_storage
-from app.auth import is_authenticated, require_auth
 from app.config import Settings
-from app.db import Database
-from app.storage import TelegramStorage
+from app.core.security import is_authenticated, require_auth
+from app.infrastructure.db import Database
+from app.infrastructure.storage import TelegramStorage
 
 router = APIRouter(prefix="/api", tags=["system"])
 

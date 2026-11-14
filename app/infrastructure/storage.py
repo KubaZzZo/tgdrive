@@ -24,7 +24,7 @@ from telethon.tl.types import DocumentAttributeFilename
 
 from app.config import Settings
 from app.config import settings as default_settings
-from app.network import get_proxy
+from app.core.network import get_proxy
 
 ProgressCallback = Callable[[int, int], Awaitable[None] | None]
 logger = logging.getLogger("tgdrive.storage")

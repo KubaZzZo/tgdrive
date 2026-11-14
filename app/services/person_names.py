@@ -7,7 +7,7 @@ from unicodedata import normalize
 import cmudict
 from opencc import OpenCC
 
-from app.people import person_key
+from app.services.people import person_key
 
 # Common Chinese spellings take precedence over the approximate sound mapping.
 COMMON_ENGLISH = {

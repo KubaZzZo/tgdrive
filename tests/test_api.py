@@ -354,7 +354,7 @@ def test_upload_rejects_wrong_chunk_size(authenticated_client):
 
 
 def test_recover_interrupted_upload(workdir):
-    from app.db import Database
+    from app.infrastructure.db import Database
 
     db = Database(workdir / "recover.sqlite3")
     upload = db.create_upload(None, "a.bin", 10, None, str(workdir / "a.part"), 8)
@@ -389,7 +389,7 @@ def test_production_settings_reject_weak_secrets(workdir):
 
 
 def test_stale_upload_cleanup(workdir):
-    from app.db import Database
+    from app.infrastructure.db import Database
     from app.services.uploads import UploadService
 
     db = Database(workdir / "stale.sqlite3")

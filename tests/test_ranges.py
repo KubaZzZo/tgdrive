@@ -1,7 +1,7 @@
 import pytest
 from fastapi import HTTPException
 
-from app.ranges import parse_range
+from app.core.ranges import parse_range
 
 
 def test_full_file():

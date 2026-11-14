@@ -18,15 +18,15 @@ from starlette.types import Send
 from telethon.errors import RPCError
 
 from app.api.deps import get_db, get_settings, get_storage
-from app.auth import require_auth
 from app.config import Settings
-from app.db import Database
-from app.ranges import parse_range
+from app.core.ranges import parse_range
+from app.core.security import require_auth
+from app.infrastructure.db import Database
+from app.infrastructure.storage import PREFETCH_MIN_BYTES, TelegramStorage
 from app.services.cdn import CDNMonitor
 from app.services.image_host import MAX_IMAGE_SIZE
 from app.services.telegram_bot import MAX_BOT_DOWNLOAD, BotAPIError
 from app.services.thumbnails import VIDEO_SAMPLE_BYTES, Thumbnail, image_thumbnail, video_thumbnail
-from app.storage import PREFETCH_MIN_BYTES, TelegramStorage
 
 router = APIRouter(tags=["files"])
 auth_router = APIRouter(prefix="/api", tags=["files"], dependencies=[Depends(require_auth)])

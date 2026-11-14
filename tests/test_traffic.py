@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from app.db import Database
+from app.infrastructure.db import Database
 from app.services.traffic import TrafficMiddleware, TrafficMonitor
 from scripts.traffic_collector import read_interfaces, sample
 
@@ -172,7 +172,7 @@ def test_telegram_payload_counters(workdir):
 
     from conftest import make_settings
 
-    from app.storage import TelegramStorage
+    from app.infrastructure.storage import TelegramStorage
 
     async def run():
         db = Database(workdir / "telegram.db")

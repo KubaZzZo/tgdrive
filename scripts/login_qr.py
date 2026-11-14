@@ -13,7 +13,7 @@ from telethon.errors import SessionPasswordNeededError
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.config import settings  # noqa: E402
-from app.network import get_proxy  # noqa: E402
+from app.core.network import get_proxy  # noqa: E402
 
 
 async def main() -> int:

@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.people import MAX_PERSON_LENGTH
+from app.services.people import MAX_PERSON_LENGTH
 
 
 class ApiModel(BaseModel):

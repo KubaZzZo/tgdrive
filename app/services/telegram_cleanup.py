@@ -8,8 +8,8 @@ from typing import Any
 
 from telethon.errors import FloodWaitError, MessageDeleteForbiddenError, MessageIdInvalidError
 
-from app.db import Database
-from app.storage import TelegramStorage
+from app.infrastructure.db import Database
+from app.infrastructure.storage import TelegramStorage
 
 logger = logging.getLogger("tgdrive.telegram_cleanup")
 TRASH_RETENTION_DAYS = 30

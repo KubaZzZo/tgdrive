@@ -13,10 +13,12 @@
 ## 后端分层
 
 - `app/api/routes/`：HTTP 边界，只做参数校验、依赖注入和响应组装。
+- `app/api/schemas.py`：HTTP 请求数据模型。
+- `app/services/`：文件分类、人物识别与名称规则、频道同步等业务逻辑。
 - `app/services/uploads.py`：后台上传任务、哈希、临时文件生命周期。
-- `app/storage.py`：Telegram 客户端、分段上传、Range 读取、消息删除。
-- `app/db.py`：SQLite schema 版本、事务和查询。
-- `app/core/`：日志、请求 ID、安全中间件、登录限流、异常处理。
+- `app/infrastructure/storage.py`：Telegram 客户端、分段上传、Range 读取、消息删除。
+- `app/infrastructure/db.py`：SQLite schema 版本、事务和查询。
+- `app/core/`：日志、请求 ID、会话认证、登录限流、异常处理、代理配置与 HTTP Range 解析。
 - `app/main.py`：app factory，便于测试时注入临时数据库和 fake storage。
 
 ## 前端分层
@@ -53,7 +55,7 @@ uploading -> processing -> done
 
 ## 自动分类与查询
 
-`app/categories.py` 是所有上传客户端共用的分类规则。已知扩展名优先，其次根据 MIME 类型识别，未知格式归为 `other`。创建文件和重命名时更新 `items.category`；创建时为通用 MIME 推断具体类型，供预览使用。
+`app/services/categories.py` 是所有上传客户端共用的分类规则。已知扩展名优先，其次根据 MIME 类型识别，未知格式归为 `other`。创建文件和重命名时更新 `items.category`；创建时为通用 MIME 推断具体类型，供预览使用。
 
 schema v2 为历史文件补齐分类和通用 MIME，并创建分类、创建时间索引；DDL 与回填在同一事务中执行。文件所属目录和 Telegram 消息记录均保留。
 

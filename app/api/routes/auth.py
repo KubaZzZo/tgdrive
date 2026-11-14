@@ -3,9 +3,9 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.api.deps import get_settings
-from app.auth import check_password
+from app.api.schemas import LoginBody
 from app.config import Settings
-from app.schemas import LoginBody
+from app.core.security import check_password
 
 router = APIRouter(prefix="/api", tags=["auth"])
 
