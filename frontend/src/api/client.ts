@@ -170,6 +170,7 @@ export interface VideoImportStatus {
     state: string
     name?: string
     error?: string
+    size?: number
     downloaded: number
     uploaded?: number
     ed2k_sources?: number

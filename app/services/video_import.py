@@ -56,7 +56,7 @@ class VideoImport:
             if self.batch["workspace"] == uploads.db.path and job["state"] == "uploading":
                 upload = uploads.db.get_upload(job["id"])
                 if upload:
-                    info["uploaded"] = upload["progress"]
+                    info.update(uploaded=upload["progress"], size=upload["size"])
             jobs.append(info)
         return {
             "active": self.active,
@@ -78,7 +78,7 @@ class VideoImport:
                     raise ValueError("服务器尚未启用 eD2k 导入")
                 if size > self.max_bytes:
                     raise ValueError("视频超过导入大小上限")
-                job.update(name=name, url=normalized)
+                job.update(name=name, size=size, url=normalized)
             else:
                 job["url"] = str(validate_url(link))
             jobs.append(job)
@@ -174,7 +174,7 @@ class VideoImport:
                 if self.batch["cancel"]:
                     self._clean(directory, path, job, "cancelled")
                     return
-                job["name"] = name
+                job.update(name=name, size=size)
                 uploads.db.create_upload(
                     None, name, size, mime, str(path), self.chunk_size, import_id=job["id"]
                 )
@@ -223,6 +223,8 @@ class VideoImport:
         if job["url"].startswith("ed2k:"):
             if self.ed2k_seeds is None:
                 raise ValueError("服务器尚未启用 eD2k 导入")
+            if "size" not in job:
+                job["size"] = parse_link(job["url"])[1]
 
             def report_progress(downloaded: int, sources: int | None) -> None:
                 job["downloaded"] = downloaded
@@ -240,6 +242,7 @@ class VideoImport:
                 lambda: self.cancelling,
                 report_progress,
             )
+        job.pop("size", None)
         url = validate_url(job["url"])
         async with open_video(url) as (response, final_url):
             name, mime = video_metadata(final_url, response, index)
@@ -247,6 +250,8 @@ class VideoImport:
             expected = int(length) if length and length.isascii() and length.isdigit() else None
             if expected is not None and not 0 < expected <= self.max_bytes:
                 raise ValueError("视频超过导入大小上限或文件为空")
+            if expected is not None:
+                job["size"] = expected
             with path.open("wb", buffering=0) as file:
                 if expected:
                     await uploads.space.check_admission(path.parent, expected)

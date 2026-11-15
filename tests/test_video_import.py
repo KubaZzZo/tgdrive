@@ -23,6 +23,52 @@ async def video(url):
     yield Source(), url
 
 
+@pytest.mark.parametrize("length", ["12", None])
+def test_http_import_reports_progress_before_download_completes(
+    authenticated_client, monkeypatch, length
+):
+    client, app, _ = authenticated_client
+    partial = asyncio.Event()
+    finish = asyncio.Event()
+
+    class StreamingVideo(Source):
+        headers = {"content-type": "video/mp4"}
+        if length is not None:
+            headers["content-length"] = length
+
+        async def aiter_raw(self, _size):
+            yield b"test "
+            partial.set()
+            await finish.wait()
+            yield b"fixture"
+
+    @asynccontextmanager
+    async def stream(url):
+        yield StreamingVideo(), url
+
+    async def wait_for_partial():
+        await asyncio.wait_for(partial.wait(), timeout=2)
+
+    async def wait_for_completion():
+        finish.set()
+        await asyncio.wait_for(app.state.video_import.worker, timeout=2)
+
+    monkeypatch.setattr(video_import, "open_video", stream)
+    endpoint = "/api/video-import"
+    assert (
+        client.post(endpoint, json={"links": ["https://example.com/video.mp4"]}).status_code == 202
+    )
+    client.portal.call(wait_for_partial)
+    job = client.get(endpoint).json()["jobs"][0]
+    assert job["state"] == "downloading"
+    assert job["downloaded"] == 5
+    assert job.get("size") == (12 if length else None)
+
+    client.portal.call(wait_for_completion)
+    job = client.get(endpoint).json()["jobs"][0]
+    assert (job["state"], job["downloaded"], job["size"]) == ("done", 12, 12)
+
+
 def test_link_batch_keeps_next_batch_locked_until_cleanup(authenticated_client, monkeypatch):
     client, app, storage = authenticated_client
     monkeypatch.setattr(video_import, "open_video", video)
@@ -224,6 +270,7 @@ def test_ed2k_batch_uses_same_upload_and_cleanup(
     accepted = client.post(endpoint, json={"links": [link.replace("|", separator) + suffix]})
     assert accepted.status_code == 202
     assert accepted.json()["jobs"][0]["name"] == "fixture.mp4"
+    assert accepted.json()["jobs"][0]["size"] == 12
 
     async def settle():
         await service.worker
