@@ -165,7 +165,15 @@ export async function uploadChunk(
 export interface VideoImportStatus {
   active: boolean
   running: boolean
-  jobs: { id: string; state: string; name?: string; error?: string; downloaded: number; uploaded?: number }[]
+  jobs: {
+    id: string
+    state: string
+    name?: string
+    error?: string
+    downloaded: number
+    uploaded?: number
+    ed2k_sources?: number
+  }[]
 }
 
 export const api = {

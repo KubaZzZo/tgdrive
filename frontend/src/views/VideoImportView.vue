@@ -10,6 +10,8 @@ const busy = ref(false)
 const error = ref('')
 const refreshError = ref('')
 let timer: ReturnType<typeof setInterval> | undefined
+let refreshing = false
+let actionVersion = 0
 
 const labels: Record<string, string> = {
   queued: '等待下载',
@@ -20,19 +22,17 @@ const labels: Record<string, string> = {
   cancelled: '已取消并清理',
 }
 
-async function update(
-  action: () => Promise<VideoImportStatus>,
-  actionError = error,
-): Promise<boolean> {
+async function update(action: () => Promise<VideoImportStatus>): Promise<boolean> {
   if (busy.value) return false
   busy.value = true
+  actionVersion += 1
   try {
     status.value = await action()
-    actionError.value = ''
+    error.value = ''
     refreshError.value = ''
     return true
   } catch (cause) {
-    actionError.value = cause instanceof Error ? cause.message : '请求失败'
+    error.value = cause instanceof Error ? cause.message : '请求失败'
     return false
   } finally {
     busy.value = false
@@ -48,12 +48,26 @@ async function submit(): Promise<void> {
   if (await update(() => api.startVideoImport(urls))) links.value = ''
 }
 
-function refresh(): void {
-  void update(api.videoImport, refreshError)
+async function refresh(): Promise<void> {
+  if (refreshing || busy.value) return
+  refreshing = true
+  const version = actionVersion
+  try {
+    const latest = await api.videoImport()
+    if (version !== actionVersion) return
+    status.value = latest
+    refreshError.value = ''
+  } catch (cause) {
+    if (version === actionVersion) {
+      refreshError.value = cause instanceof Error ? cause.message : '读取导入状态失败'
+    }
+  } finally {
+    refreshing = false
+  }
 }
 
 onMounted(() => {
-  refresh()
+  void refresh()
   timer = setInterval(refresh, 2500)
 })
 onBeforeUnmount(() => clearInterval(timer))
@@ -73,7 +87,16 @@ onBeforeUnmount(() => clearInterval(timer))
     <ul v-if="status?.jobs.length">
       <li v-for="(job, index) in status.jobs" :key="job.id">
         <strong>{{ job.name || `视频 ${index + 1}` }}</strong>
-        <span>{{ labels[job.state] || job.state }} · 已下载 {{ formatBytes(job.downloaded) }}</span>
+        <span>
+          {{ job.state === 'downloading' && job.ed2k_sources === 0
+            ? '正在查找下载源'
+            : labels[job.state] || job.state }}
+          · 已下载{{ job.state === 'downloading' && job.ed2k_sources !== undefined && job.downloaded ? '约' : '' }}
+          {{ formatBytes(job.downloaded) }}
+          <template v-if="job.state === 'downloading' && job.ed2k_sources !== undefined">
+            · {{ job.ed2k_sources }} 个来源
+          </template>
+        </span>
         <span v-if="job.uploaded !== undefined"> · 已上传 {{ formatBytes(job.uploaded) }}</span>
         <p v-if="job.error" class="form-error">{{ job.error }}</p>
       </li>

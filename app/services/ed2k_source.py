@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import secrets
 import shutil
@@ -57,6 +58,50 @@ def _ports() -> tuple[int, int, int]:
         return tcp.getsockname()[1], udp.getsockname()[1], ec.getsockname()[1]
 
 
+async def _stop_process(process: asyncio.subprocess.Process) -> None:
+    if process.returncode is None:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+    await process.wait()
+
+
+async def _download_progress(
+    amulecmd: str, directory: Path, digest: str, size: int
+) -> tuple[int, int] | None:
+    process = await asyncio.create_subprocess_exec(
+        amulecmd,
+        "-c",
+        "show dl",
+        cwd=directory,
+        env={**os.environ, "LC_ALL": "C"},
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        async with asyncio.timeout(2):
+            stdout, _ = await process.communicate()
+    except TimeoutError:
+        return None
+    finally:
+        await _stop_process(process)
+    if process.returncode != 0:
+        return None
+    # aMule 2.3.3 prints the hash and filename, then the percentage and source counts.
+    match = re.search(
+        rf"^ > {digest} [^\n]+\n > [ \t]+\[([0-9]+\.[0-9]+)%\][ \t]+[0-9]+/[ \t]*([0-9]+)",
+        stdout.decode(errors="replace"),
+        re.IGNORECASE | re.MULTILINE,
+    )
+    if match is None:
+        return None
+    # The percentage is rounded. Only the verified file can reach the full byte count.
+    downloaded = min(size - 1, int(size * float(match[1]) / 100))
+    return downloaded, int(match[2])
+
+
 async def download_ed2k(
     url: str,
     path: Path,
@@ -64,7 +109,7 @@ async def download_ed2k(
     space: UploadSpace,
     max_bytes: int,
     cancelled: Callable[[], bool],
-    progress: Callable[[int], None],
+    progress: Callable[[int, int | None], None],
 ) -> tuple[str, str, int]:
     name, size, mime, link = parse_link(url)
     if size > max_bytes:
@@ -88,6 +133,14 @@ async def download_ed2k(
             if not copied:
                 raise ValueError("eD2k 下载需要管理员配置 aMule 节点或服务器列表")
             port, udp_port, ec_port = _ports()
+            ec_password = secrets.token_hex(16)
+            # aMule 2.3.3 resolves amulecmd's configuration relative to ./config.
+            command_config = directory / "config"
+            command_config.mkdir(mode=0o700)
+            (command_config / "remote.conf").write_text(
+                f"[EC]\nHost=127.0.0.1\nPort={ec_port}\nPassword={ec_password}\n",
+                encoding="utf-8",
+            )
             (directory / "amule.conf").write_text(
                 "[eMule]\n"
                 f"Port={port}\nUDPPort={udp_port}\n"
@@ -97,7 +150,7 @@ async def download_ed2k(
                 "Serverlist=0\nFilterLanIPs=1\nCheckDiskspace=1\n"
                 f"MinFreeDiskSpace={space.min_free_bytes // (1024**2)}\n"
                 "[ExternalConnect]\nAcceptExternalConnections=1\nECAddress=127.0.0.1\n"
-                f"ECPort={ec_port}\nECPassword={secrets.token_hex(16)}\n"
+                f"ECPort={ec_port}\nECPassword={ec_password}\n"
                 "[WebServer]\nEnabled=0\n",
                 encoding="utf-8",
             )
@@ -115,6 +168,8 @@ async def download_ed2k(
             except FileNotFoundError:
                 raise ValueError("服务器尚未安装 aMuled") from None
             completed = incoming / name
+            amulecmd = shutil.which("amulecmd")
+            digest = link.split("|")[4]
             try:
                 while not cancelled():
                     if (
@@ -123,19 +178,18 @@ async def download_ed2k(
                         and completed.stat().st_size == size
                     ):
                         completed.replace(path)
-                        progress(size)
+                        progress(size, None)
                         return name, mime, size
                     if process.returncode is not None:
                         raise ValueError("aMuled 已退出，请检查下载器配置")
+                    if amulecmd:
+                        current = await _download_progress(amulecmd, directory, digest, size)
+                        if current is not None:
+                            progress(*current)
                     await asyncio.sleep(2)
                 return name, mime, 0
             finally:
-                if process.returncode is None:
-                    try:
-                        process.kill()
-                    except ProcessLookupError:
-                        pass
-                await process.wait()
+                await _stop_process(process)
         finally:
             if directory.exists():
                 shutil.rmtree(directory)
