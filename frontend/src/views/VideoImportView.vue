@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { api, type VideoImportStatus } from '@/api/client'
 import { formatBytes } from '@/utils/format'
@@ -21,6 +21,18 @@ const labels: Record<string, string> = {
   done: '已入库并清理',
   cancelled: '已取消并清理',
 }
+
+const jobs = computed(() => status.value?.jobs.map(job => {
+  const uploading = job.state === 'uploading'
+  const transferred = uploading ? job.uploaded : job.downloaded
+  let percent: number | undefined
+  if (job.state === 'done') {
+    percent = 100
+  } else if (job.size && transferred !== undefined) {
+    percent = transferred >= job.size ? 100 : Math.min(99.9, Math.round(transferred / job.size * 1000) / 10)
+  }
+  return { ...job, uploading, percent }
+}) ?? [])
 
 async function update(action: () => Promise<VideoImportStatus>): Promise<boolean> {
   if (busy.value) return false
@@ -84,8 +96,8 @@ onBeforeUnmount(() => clearInterval(timer))
     </form>
     <p v-if="error || refreshError" class="form-error" role="alert">{{ error || refreshError }}</p>
     <p v-if="status?.active" role="status">本批清理完成后可开始下一批。</p>
-    <ul v-if="status?.jobs.length">
-      <li v-for="(job, index) in status.jobs" :key="job.id">
+    <ul v-if="jobs.length">
+      <li v-for="(job, index) in jobs" :key="job.id">
         <strong>{{ job.name || `视频 ${index + 1}` }}</strong>
         <span>
           {{ job.state === 'downloading' && job.ed2k_sources === 0
@@ -93,11 +105,25 @@ onBeforeUnmount(() => clearInterval(timer))
             : labels[job.state] || job.state }}
           · 已下载{{ job.state === 'downloading' && job.ed2k_sources !== undefined && job.downloaded ? '约' : '' }}
           {{ formatBytes(job.downloaded) }}
+          <template v-if="job.size !== undefined"> / {{ formatBytes(job.size) }}</template>
           <template v-if="job.state === 'downloading' && job.ed2k_sources !== undefined">
             · {{ job.ed2k_sources }} 个来源
           </template>
         </span>
-        <span v-if="job.uploaded !== undefined"> · 已上传 {{ formatBytes(job.uploaded) }}</span>
+        <span v-if="job.uploading && job.uploaded !== undefined">
+          已上传 {{ formatBytes(job.uploaded) }} / {{ formatBytes(job.size) }}
+        </span>
+        <div
+          v-if="job.state === 'downloading' || job.uploading || job.percent !== undefined && ['queued', 'done'].includes(job.state)"
+          class="job-progress"
+        >
+          <progress
+            :value.attr="job.percent"
+            max="100"
+            :aria-label="`${job.name || `视频 ${index + 1}`} ${job.uploading ? 'Telegram 上传进度' : job.state === 'done' ? '导入进度' : '下载进度'}`"
+          />
+          <span>{{ job.percent === undefined ? (job.uploading ? '等待上传进度' : '总大小未知') : `${job.percent}%` }}</span>
+        </div>
         <p v-if="job.error" class="form-error">{{ job.error }}</p>
       </li>
     </ul>
@@ -129,5 +155,7 @@ textarea {
 }
 ul { padding-left: 0; list-style: none; }
 li { padding: 12px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+.job-progress { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
+.job-progress progress { flex: 1; min-width: 0; height: 12px; accent-color: var(--accent); }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
 </style>
