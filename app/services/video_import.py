@@ -69,27 +69,26 @@ class VideoImport:
             raise RuntimeError("上一批视频的临时文件尚未清理")
         if not 1 <= len(links) <= 2:
             raise ValueError("每批最多导入两个视频")
-        urls = []
+        jobs = []
         for link in links:
+            job = {"id": uuid.uuid4().hex, "url": link, "state": "queued", "downloaded": 0}
             if link.lower().startswith("ed2k:"):
-                _, size, _, normalized = parse_link(link)
+                name, size, _, normalized = parse_link(link)
                 if self.ed2k_seeds is None:
                     raise ValueError("服务器尚未启用 eD2k 导入")
                 if size > self.max_bytes:
                     raise ValueError("视频超过导入大小上限")
-                urls.append(normalized)
+                job.update(name=name, url=normalized)
             else:
-                urls.append(str(validate_url(link)))
+                job["url"] = str(validate_url(link))
+            jobs.append(job)
         previous = self.batch
         batch_id = uuid.uuid4().hex
         self.batch = {
             "directory": str(self.directory / batch_id),
             "workspace": uploads.db.path,
             "cancel": False,
-            "jobs": [
-                {"id": uuid.uuid4().hex, "url": url, "state": "queued", "downloaded": 0}
-                for url in urls
-            ],
+            "jobs": jobs,
         }
         try:
             self._save()

@@ -8,6 +8,7 @@ const links = ref('')
 const status = ref<VideoImportStatus>()
 const busy = ref(false)
 const error = ref('')
+const refreshError = ref('')
 let timer: ReturnType<typeof setInterval> | undefined
 
 const labels: Record<string, string> = {
@@ -19,15 +20,19 @@ const labels: Record<string, string> = {
   cancelled: '已取消并清理',
 }
 
-async function update(action: () => Promise<VideoImportStatus>): Promise<boolean> {
+async function update(
+  action: () => Promise<VideoImportStatus>,
+  actionError = error,
+): Promise<boolean> {
   if (busy.value) return false
   busy.value = true
   try {
     status.value = await action()
-    error.value = ''
+    actionError.value = ''
+    refreshError.value = ''
     return true
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '请求失败'
+    actionError.value = cause instanceof Error ? cause.message : '请求失败'
     return false
   } finally {
     busy.value = false
@@ -43,9 +48,13 @@ async function submit(): Promise<void> {
   if (await update(() => api.startVideoImport(urls))) links.value = ''
 }
 
+function refresh(): void {
+  void update(api.videoImport, refreshError)
+}
+
 onMounted(() => {
-  void update(api.videoImport)
-  timer = setInterval(() => { void update(api.videoImport) }, 2500)
+  refresh()
+  timer = setInterval(refresh, 2500)
 })
 onBeforeUnmount(() => clearInterval(timer))
 </script>
@@ -59,7 +68,7 @@ onBeforeUnmount(() => clearInterval(timer))
       <textarea id="video-links" v-model="links" rows="3" maxlength="8194" :disabled="status?.active" required />
       <button class="primary" type="submit" :disabled="busy || !status || status.active">开始导入</button>
     </form>
-    <p v-if="error" class="form-error" role="alert">{{ error }}</p>
+    <p v-if="error || refreshError" class="form-error" role="alert">{{ error || refreshError }}</p>
     <p v-if="status?.active" role="status">本批清理完成后可开始下一批。</p>
     <ul v-if="status?.jobs.length">
       <li v-for="(job, index) in status.jobs" :key="job.id">

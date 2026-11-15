@@ -13,7 +13,12 @@ from app.infrastructure.db.common import clean_name
 from app.services.uploads import UploadSpace
 from app.services.video_source import VIDEO_TYPES
 
-FILE_LINK = re.compile(r"ed2k://\|file\|([^|]+)\|([0-9]{1,19})\|([a-f0-9]{32})\|/", re.I)
+FILE_LINK = re.compile(
+    r"ed2k://(?P<separator>\||%7c|\\\|)file(?P=separator)"
+    r"(?P<name>[^|]+?)(?P=separator)(?P<size>[0-9]{1,19})(?P=separator)"
+    r"(?P<hash>[a-f0-9]{32})(?P=separator)/",
+    re.IGNORECASE | re.ASCII,
+)
 SEED_FILES = ("server.met", "nodes.dat", "staticservers.dat")
 
 
@@ -21,14 +26,18 @@ def parse_link(url: str) -> tuple[str, int, str, str]:
     match = FILE_LINK.fullmatch(url.strip().removesuffix("\\"))
     if not match:
         raise ValueError("需要标准 eD2k 文件链接")
-    name = clean_name(unquote(match[1], errors="strict"))
-    if len(name.encode()) > 255 or any(ord(char) < 32 or char in '|:*?"<>\x7f' for char in name):
+    try:
+        name = clean_name(unquote(match["name"], errors="strict"))
+        name_length = len(name.encode())
+    except UnicodeError:
+        raise ValueError("eD2k 文件名编码无效") from None
+    if name_length > 255 or any(ord(char) < 32 or char in '|:*?"<>\x7f' for char in name):
         raise ValueError("eD2k 文件名含非法字符")
     mime = VIDEO_TYPES.get(Path(name).suffix.lower())
-    size = int(match[2])
+    size = int(match["size"])
     if mime is None or size <= 0:
         raise ValueError("eD2k 链接必须指向有效的视频文件")
-    normalized = f"ed2k://|file|{quote(name, safe='')}|{size}|{match[3].upper()}|/"
+    normalized = f"ed2k://|file|{quote(name, safe='')}|{size}|{match['hash'].upper()}|/"
     return name, size, mime, normalized
 
 
