@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { api, type VideoImportPreviewRow, type VideoImportStatus } from '@/api/client'
 import { formatBytes } from '@/utils/format'
+import { splitVideoImportLinks } from '@/utils/video-import-links'
 
 const links = ref('')
 const previewRows = ref<(VideoImportPreviewRow & { id: number; link: string })[]>([])
@@ -59,7 +60,7 @@ async function update(action: () => Promise<VideoImportStatus>): Promise<boolean
 
 async function preview(): Promise<void> {
   if (previewing.value) return
-  const urls = links.value.split(/\r?\n/).map(value => value.trim()).filter(Boolean)
+  const urls = splitVideoImportLinks(links.value)
   if (urls.length < 1 || urls.length > 100) {
     previewError.value = '请输入 1 至 100 条链接，每行一条'
     return
