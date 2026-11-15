@@ -35,6 +35,7 @@ class VideoImport:
         self.directory = (
             settings.video_import_dir or settings.data_dir / "video-imports"
         ).resolve()
+        self.inbox_directory = self.directory / "inbox"
         limits = [settings.video_import_max_mib * 1024**2]
         if settings.max_file_size:
             limits.append(settings.max_file_size)
@@ -122,8 +123,6 @@ class VideoImport:
         return rows
 
     def start(self, uploads: UploadService, links: list[str]) -> None:
-        if self.active or (self.worker and not self.worker.done()):
-            raise RuntimeError("上一批视频的临时文件尚未清理")
         if not 1 <= len(links) <= 2:
             raise ValueError("每批最多导入两个视频")
         jobs = []
@@ -136,6 +135,56 @@ class VideoImport:
             seen.add(key)
             job.update(id=uuid.uuid4().hex, state="queued", downloaded=0)
             jobs.append(job)
+        self._start_batch(uploads, jobs)
+
+    def _inbox_downloader(self) -> QBittorrent:
+        if self.qb is None:
+            raise ValueError("服务器尚未启用 qBittorrent")
+        return self.qb
+
+    async def inbox(self) -> dict:
+        if self.qb is None:
+            return {"enabled": False, "tasks": []}
+        tasks = await self.qb.inbox(self.inbox_directory)
+        importing = (
+            {job.get("torrent_hash") for job in self.batch["jobs"] if job["state"] not in TERMINAL}
+            if self.batch
+            else set()
+        )
+        for task in tasks:
+            task["importing"] = task["hash"] in importing
+        return {"enabled": True, "tasks": tasks}
+
+    async def start_inbox(self, uploads: UploadService, digest: str) -> None:
+        tasks = await self._inbox_downloader().inbox(self.inbox_directory)
+        task = next((task for task in tasks if task["hash"] == digest and task["ready"]), None)
+        if task is None:
+            raise ValueError("下载任务不存在或尚未完成")
+        self._start_batch(
+            uploads,
+            [
+                dict(
+                    id=uuid.uuid4().hex,
+                    state="queued",
+                    torrent_hash=digest,
+                    name=task["name"],
+                    downloaded=task["size"],
+                    size=task["size"],
+                )
+            ],
+        )
+
+    async def delete_inbox(self, digest: str) -> None:
+        if self.batch and any(
+            job.get("torrent_hash") == digest and job["state"] not in TERMINAL
+            for job in self.batch["jobs"]
+        ):
+            raise RuntimeError("任务正在导入，请先等待完成或取消导入")
+        await self._inbox_downloader().delete_inbox(self.inbox_directory, digest)
+
+    def _start_batch(self, uploads: UploadService, jobs: list[dict]) -> None:
+        if self.active or (self.worker and not self.worker.done()):
+            raise RuntimeError("上一批视频的临时文件尚未清理")
         previous = self.batch
         batch_id = uuid.uuid4().hex
         self.batch = {
@@ -220,7 +269,9 @@ class VideoImport:
                 return
             if not upload:
                 directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-                job.update(state="downloading", error=None, downloaded=0)
+                if "torrent_hash" not in job:
+                    job["downloaded"] = 0
+                job.update(state="downloading", error=None)
                 job.pop("ed2k_sources", None)
                 job.pop("torrent_seeds", None)
                 self._save()
@@ -268,6 +319,10 @@ class VideoImport:
             if self.qb is None:
                 raise ValueError("恢复 qBittorrent 配置后可重试清理")
             await self.qb.clean(path)
+        if state == "done" and "torrent_hash" in job:
+            await self._inbox_downloader().delete_inbox(
+                self.inbox_directory, job["torrent_hash"], missing_ok=True
+            )
         if work_dir(path).exists():
             shutil.rmtree(work_dir(path))
         remove_upload_files(path)
@@ -289,6 +344,10 @@ class VideoImport:
     async def _download(
         self, uploads: UploadService, path: Path, job: dict[str, Any], index: int
     ) -> tuple[str, str, int]:
+        if "torrent_hash" in job:
+            return await self._inbox_downloader().stage_inbox(
+                self.inbox_directory, job["torrent_hash"], path, self.max_bytes
+            )
         if job["url"].startswith("magnet:"):
             if self.qb is None:
                 raise ValueError("服务器尚未启用磁力下载")

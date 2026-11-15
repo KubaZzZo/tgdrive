@@ -185,8 +185,26 @@ export interface VideoImportPreviewRow {
   error?: string
 }
 
+export interface QBDownload {
+  hash: string
+  name: string
+  state: string
+  progress: number
+  size: number
+  downloaded: number
+  ready: boolean
+  importing: boolean
+}
+
 export const api = {
   videoImport: () => request<VideoImportStatus>('/api/video-import'),
+  qbDownloads: () => request<{ enabled: boolean; tasks: QBDownload[] }>('/api/video-import/downloads'),
+  importQBDownload: (hash: string) => request<VideoImportStatus>(
+    `/api/video-import/downloads/${encodeURIComponent(hash)}/import`, { method: 'POST' },
+  ),
+  deleteQBDownload: (hash: string) => request<void>(
+    `/api/video-import/downloads/${encodeURIComponent(hash)}`, { method: 'DELETE' },
+  ),
   previewVideoImport: (links: string[]) => request<{ rows: VideoImportPreviewRow[] }>('/api/video-import/preview', {
     method: 'POST', body: JSON.stringify({ links }),
   }),
