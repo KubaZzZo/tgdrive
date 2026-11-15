@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
 
 from app.services import ed2k_source, video_import
+from app.services.torrent_source import CATEGORY, QBittorrent, parse_magnet
 from app.services.uploads import UploadSpace
 from app.services.video_source import public_address, validate_url
 
@@ -21,6 +24,138 @@ class Source:
 @asynccontextmanager
 async def video(url):
     yield Source(), url
+
+
+def test_magnet_import_retries_cleanup_after_telegram_commit(authenticated_client, monkeypatch):
+    client, app, storage = authenticated_client
+    service = app.state.video_import
+    downloader = QBittorrent("http://qb.example", "admin", "fixture")
+    service.qb = downloader
+    digest = "0123456789abcdef0123456789abcdef01234567"
+    link = f"magnet:?xt=urn:btih:{digest}&dn=fixture.mp4&tr=udp%3A%2F%2Fexample.com"
+    assert parse_magnet(link) == (f"magnet:?xt=urn:btih:{digest}", "fixture.mp4")
+    owned = {}
+    deleted = []
+
+    def qbit(request):
+        action = request.url.path.rsplit("/", 1)[-1]
+        data = {key: value[0] for key, value in parse_qs(request.content.decode()).items()}
+        if action == "login":
+            return httpx.Response(204, headers={"set-cookie": "SID=test; Path=/"})
+        if action == "stop":
+            return httpx.Response(200, text="Ok.")
+        if action == "version":
+            return httpx.Response(200, text="v5.3.0")
+        if action == "categories":
+            return httpx.Response(200, json={CATEGORY: {}})
+        if action == "add":
+            assert data["stopCondition"] == "MetadataReceived"
+            assert data["urls"] == parse_magnet(link)[0]
+            owned.update(
+                tags=data["tags"],
+                category=CATEGORY,
+                hash=digest,
+                save_path=data["savepath"],
+                state="stoppedDL",
+                total_size=12,
+                amount_left=12,
+                progress=0,
+                completed=0,
+                num_seeds=1,
+            )
+            return httpx.Response(200, text="Ok.")
+        if action == "info":
+            manual = {"tags": "", "hash": "0" * 40, "category": "", "save_path": "/manual"}
+            return httpx.Response(200, json=[manual, owned] if owned else [manual])
+        if action == "files":
+            return httpx.Response(200, json=[{"name": "fixture.mp4", "size": 12, "index": 0}])
+        if action == "start":
+            (Path(owned["save_path"]) / "fixture.mp4").write_bytes(b"test fixture")
+            owned.update(state="uploading", amount_left=0, progress=1, completed=12)
+            return httpx.Response(200)
+        if action == "delete":
+            assert data == {"hashes": digest, "deleteFiles": "false"}
+            assert list(storage.files.values()) == [b"test fixture"]
+            assert (Path(owned["save_path"]) / "fixture.mp4").exists()
+            deleted.append(digest)
+            if len(deleted) == 1:
+                return httpx.Response(503)
+            owned.clear()
+            return httpx.Response(200)
+        pytest.fail(f"unexpected qBittorrent action {action}")
+
+    real_client = httpx.AsyncClient
+
+    def fake_client(*args, **kwargs):
+        return real_client(*args, **kwargs, transport=httpx.MockTransport(qbit))
+
+    monkeypatch.setattr(httpx, "AsyncClient", fake_client)
+    endpoint = "/api/video-import"
+
+    async def settle():
+        await asyncio.wait_for(service.worker, 8)
+
+    assert client.post(endpoint, json={"links": [link]}).status_code == 202
+    client.portal.call(settle)
+    assert client.get(endpoint).json()["jobs"][0]["state"] == "done"
+    assert not list(service.directory.iterdir())
+    assert len(deleted) == 2
+    assert list(storage.files.values()) == [b"test fixture"]
+
+
+def test_preview_marks_duplicate_and_unsupported_links_without_starting_download(
+    authenticated_client, monkeypatch, workdir
+):
+    client, app, storage = authenticated_client
+    service = app.state.video_import
+    service.ed2k_seeds = workdir
+    link = "ed2k://|file|first.mp4|12|A549B3E090C89D60D45FECD957EBCA27|/"
+    duplicate = link.replace("first.mp4", "renamed.mp4").replace("|", "%7C")
+    other_version = link.replace("A549B3E0", "A549B3E1")
+    endpoint = "/api/video-import"
+
+    def unexpected_download(*_args, **_kwargs):
+        pytest.fail("preview must not fetch a link")
+
+    monkeypatch.setattr(video_import, "open_video", unexpected_download)
+    monkeypatch.setattr(video_import, "download_ed2k", unexpected_download)
+    response = client.post(
+        endpoint + "/preview",
+        json={
+            "links": [
+                link,
+                duplicate,
+                other_version,
+                "magnet:?xt=urn:btih:example",
+                "https://example.com/video.mp4?token=private",
+                "invalid link",
+                "x" * 4097,
+            ]
+        },
+    )
+    assert response.status_code == 200
+    rows = response.json()["rows"]
+    assert len(rows) == 7
+    assert rows[0] == {"protocol": "ed2k", "name": "first.mp4", "size": 12}
+    assert rows[1] == {
+        "protocol": "ed2k",
+        "name": "renamed.mp4",
+        "size": 12,
+        "error": "与前面的链接重复",
+    }
+    assert rows[2] == rows[0]
+    assert rows[3] == {"protocol": "magnet", "error": "服务器尚未启用磁力下载"}
+    assert rows[4] == {"protocol": "http", "name": "example.com"}
+    assert rows[5]["protocol"] == rows[6]["protocol"] == "unknown"
+    assert all("error" in row for row in rows[5:])
+    assert "private" not in response.text
+
+    response = client.post(endpoint, json={"links": [link, duplicate]})
+    assert response.status_code == 422
+    assert response.json()["detail"] == "同一批不能导入重复的链接"
+    assert service.batch is None
+    assert service.worker is None
+    assert not storage.files
 
 
 @pytest.mark.parametrize("length", ["12", None])

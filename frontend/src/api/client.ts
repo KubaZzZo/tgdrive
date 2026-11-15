@@ -174,11 +174,22 @@ export interface VideoImportStatus {
     downloaded: number
     uploaded?: number
     ed2k_sources?: number
+    torrent_seeds?: number
   }[]
+}
+
+export interface VideoImportPreviewRow {
+  protocol: 'http' | 'ed2k' | 'magnet' | 'unknown'
+  name?: string
+  size?: number
+  error?: string
 }
 
 export const api = {
   videoImport: () => request<VideoImportStatus>('/api/video-import'),
+  previewVideoImport: (links: string[]) => request<{ rows: VideoImportPreviewRow[] }>('/api/video-import/preview', {
+    method: 'POST', body: JSON.stringify({ links }),
+  }),
   startVideoImport: (links: string[]) => request<VideoImportStatus>('/api/video-import', {
     method: 'POST', body: JSON.stringify({ links }),
   }),

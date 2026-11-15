@@ -10,6 +10,12 @@ class VideoImportBody(BaseModel):
     links: list[str] = Field(min_length=1, max_length=2)
 
 
+class VideoImportPreviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    links: list[str] = Field(min_length=1, max_length=100)
+
+
 router = APIRouter(
     prefix="/api/video-import", tags=["video import"], dependencies=[Depends(require_auth)]
 )
@@ -20,12 +26,15 @@ async def status(request: Request):
     return request.app.state.video_import.status(request.app.state.accounts.current.uploads)
 
 
+@router.post("/preview")
+async def preview(body: VideoImportPreviewBody, request: Request):
+    return {"rows": request.app.state.video_import.preview(body.links)}
+
+
 @router.post("", status_code=202)
 async def start(body: VideoImportBody, request: Request):
     manager = request.app.state.accounts
     service = request.app.state.video_import
-    if any(not link or len(link) > 4096 for link in body.links):
-        raise HTTPException(422, "每条链接须为 1 至 4096 个字符")
     async with manager.lock:
         runtime = manager.current
         if not runtime.storage.status()["connected"]:

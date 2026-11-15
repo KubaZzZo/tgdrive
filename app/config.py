@@ -122,6 +122,15 @@ class Settings:
     video_import_max_mib: int = field(
         default_factory=lambda: _env_int("VIDEO_IMPORT_MAX_MIB", 8192)
     )
+    video_import_qb_url: str = field(
+        default_factory=lambda: os.getenv("VIDEO_IMPORT_QB_URL", "").strip()
+    )
+    video_import_qb_username: str = field(
+        default_factory=lambda: os.getenv("VIDEO_IMPORT_QB_USERNAME", "admin").strip()
+    )
+    video_import_qb_password: str = field(
+        default_factory=lambda: os.getenv("VIDEO_IMPORT_QB_PASSWORD", ""), repr=False
+    )
     upload_temp_max_mib: int = field(default_factory=lambda: _env_int("UPLOAD_TEMP_MAX_MIB", 51200))
     upload_temp_min_free_mib: int = field(
         default_factory=lambda: _env_int("UPLOAD_TEMP_MIN_FREE_MIB", 512)
@@ -186,6 +195,10 @@ class Settings:
     def validate(self) -> None:
         if self.video_import_max_mib <= 0:
             raise RuntimeError("VIDEO_IMPORT_MAX_MIB 必须大于 0")
+        if self.video_import_qb_url and (
+            not self.video_import_qb_username or not self.video_import_qb_password
+        ):
+            raise RuntimeError("qBittorrent 导入需要配置 Web UI 用户名和密码")
         if self.video_faststart_timeout <= 0:
             raise RuntimeError("VIDEO_FASTSTART_TIMEOUT 必须大于 0")
         if self.media_cache_slice_mib not in {1, 2, 4} or self.media_cache_ttl_seconds <= 0:

@@ -179,3 +179,15 @@ SQLite schema 使用 `PRAGMA user_version` 管理；启动时会拒绝打开版�
 Bot 备用通道处理新帖和已收录帖子的更新。能够下载已收录且取得 Bot 文件标识的文件，大小上限为 20 MB。历史回扫和网页上传需要个人会话。不要让另一个服务同时轮询这个 Bot 或为它设置 webhook。
 
 SQLite schema v8 保存 Bot 文件标识，v9 增加 Bot 视频封面。升级前按第 6 节备份数据；旧程序拒绝打开更高版本的数据库。
+
+## 可选的 qBittorrent 磁力导入
+
+在 `.env` 设置 `QB_IMPORT_DIR`（宿主机绝对路径，由 UID 10001 写入）和 `VIDEO_IMPORT_QB_PASSWORD`。用下面的命令启动 qBittorrent：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.qbittorrent.yml up -d qbittorrent
+```
+
+通过 SSH 隧道访问 `127.0.0.1:18885`。首次启动的临时管理员密码在 qBittorrent 容器日志中。用它登录，将 Web UI 密码改成 `.env` 里的值，再用相同的两个 Compose 文件启动应用。
+
+TG Drive 提交的磁力任务使用 `tgdrive-import` 分类及共享目录中的独立任务目录。支持包含一个视频文件的磁力任务，通过 BitTorrent 网络发现对端。Telegram 入库成功后，应用删除对应的种子任务和 VPS 临时文件。手动任务使用 qBittorrent 自己的 `/downloads` 目录，可通过 Web UI 添加磁力或种子文件。
