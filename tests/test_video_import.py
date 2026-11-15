@@ -83,11 +83,41 @@ def test_ed2k_removes_work_files_when_daemon_fails(tmp_path, monkeypatch):
                 UploadSpace(min_free_mib=0),
                 100,
                 lambda: False,
-                lambda _: None,
+                lambda *_: None,
             )
         )
     assert not ed2k_source.work_dir(path).exists()
     assert not path.exists()
+
+
+def test_ed2k_reads_progress_for_the_requested_hash(tmp_path, monkeypatch):
+    digest = "A549B3E090C89D60D45FECD957EBCA27"
+
+    class QueueResponse:
+        returncode = 0
+
+        async def communicate(self):
+            return (
+                b" > 00000000000000000000000000000000 unrelated.mp4\n"
+                b" > \t [0.0%]    0/   0          - Waiting\n"
+                + f" > {digest.lower()} fixture.mp4\n".encode()
+                + b" > \t [12.3%]    2/   5 (01) - Downloading\n",
+                None,
+            )
+
+        async def wait(self):
+            return self.returncode
+
+    async def spawn(*args, **kwargs):
+        assert args[-2:] == ("-c", "show dl")
+        assert kwargs["cwd"] == tmp_path
+        return QueueResponse()
+
+    monkeypatch.setattr(ed2k_source.asyncio, "create_subprocess_exec", spawn)
+    assert asyncio.run(ed2k_source._download_progress("amulecmd", tmp_path, digest, 1000)) == (
+        123,
+        5,
+    )
 
 
 def test_failed_download_can_be_cancelled(authenticated_client, monkeypatch):
@@ -183,7 +213,7 @@ def test_ed2k_batch_uses_same_upload_and_cleanup(
         work_dir(path).mkdir()
         (work_dir(path) / "001.part.met").write_bytes(b"temporary metadata")
         path.write_bytes(b"test fixture")
-        progress(size)
+        progress(size, None)
         return name, mime, size
 
     monkeypatch.setattr(video_import, "download_ed2k", download)

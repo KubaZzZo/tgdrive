@@ -167,6 +167,7 @@ class VideoImport:
             if not upload:
                 directory.mkdir(parents=True, exist_ok=True, mode=0o700)
                 job.update(state="downloading", error=None, downloaded=0)
+                job.pop("ed2k_sources", None)
                 self._save()
                 async with asyncio.timeout(3600):
                     name, mime, size = await self._download(uploads, path, job, index)
@@ -222,6 +223,14 @@ class VideoImport:
         if job["url"].startswith("ed2k:"):
             if self.ed2k_seeds is None:
                 raise ValueError("服务器尚未启用 eD2k 导入")
+
+            def report_progress(downloaded: int, sources: int | None) -> None:
+                job["downloaded"] = downloaded
+                if sources is None:
+                    job.pop("ed2k_sources", None)
+                else:
+                    job["ed2k_sources"] = sources
+
             return await download_ed2k(
                 job["url"],
                 path,
@@ -229,7 +238,7 @@ class VideoImport:
                 uploads.space,
                 self.max_bytes,
                 lambda: self.cancelling,
-                lambda size: job.update(downloaded=size),
+                report_progress,
             )
         url = validate_url(job["url"])
         async with open_video(url) as (response, final_url):
