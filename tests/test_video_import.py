@@ -164,9 +164,11 @@ def test_interrupted_batch_resumes_on_restart(workdir, monkeypatch):
         assert not list(restarted.state.video_import.directory.iterdir())
 
 
-@pytest.mark.parametrize("suffix", ["", "\\"])
+@pytest.mark.parametrize(
+    ("separator", "suffix"), [("|", ""), ("|", "\\"), ("%7C", ""), (r"\|", "")]
+)
 def test_ed2k_batch_uses_same_upload_and_cleanup(
-    authenticated_client, monkeypatch, workdir, suffix
+    authenticated_client, monkeypatch, workdir, separator, suffix
 ):
     client, app, storage = authenticated_client
     service = app.state.video_import
@@ -189,7 +191,9 @@ def test_ed2k_batch_uses_same_upload_and_cleanup(
     assert (
         client.post(endpoint, json={"links": [link + "|sources,127.0.0.1:80|/"]}).status_code == 422
     )
-    assert client.post(endpoint, json={"links": [link + suffix]}).status_code == 202
+    accepted = client.post(endpoint, json={"links": [link.replace("|", separator) + suffix]})
+    assert accepted.status_code == 202
+    assert accepted.json()["jobs"][0]["name"] == "fixture.mp4"
 
     async def settle():
         await service.worker
@@ -198,3 +202,10 @@ def test_ed2k_batch_uses_same_upload_and_cleanup(
     assert client.get(endpoint).json()["jobs"][0]["state"] == "done"
     assert list(storage.files.values()) == [b"test fixture"]
     assert not list(service.directory.iterdir())
+
+
+def test_ed2k_recognizes_large_video():
+    link = "ed2k://|file|SNOS-141.mp4|6800928646|A549B3E090C89D60D45FECD957EBCA27|/"
+    assert ed2k_source.parse_link(link) == ("SNOS-141.mp4", 6800928646, "video/mp4", link)
+    with pytest.raises(ValueError, match="文件名编码无效"):
+        ed2k_source.parse_link(link.replace("SNOS-141", "%FF"))
