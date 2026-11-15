@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from app.services import ed2k_source, video_import
-from app.services.torrent_source import CATEGORY, QBittorrent, parse_magnet
+from app.services.torrent_source import CATEGORY, INBOX_CATEGORY, QBittorrent, parse_magnet
 from app.services.uploads import UploadSpace
 from app.services.video_source import public_address, validate_url
 
@@ -24,6 +24,82 @@ class Source:
 @asynccontextmanager
 async def video(url):
     yield Source(), url
+
+
+def test_qb_inbox_uploads_before_deleting_and_excludes_other_downloads(
+    authenticated_client, monkeypatch
+):
+    client, app, storage = authenticated_client
+    service = app.state.video_import
+    service.qb = QBittorrent("http://qb.example", "admin", "fixture")
+    inbox = service.inbox_directory
+    inbox.mkdir(parents=True)
+    video_path = inbox / "fixture.mp4"
+    video_path.write_bytes(b"test fixture")
+    digest = "1" * 40
+    unmanaged = "2" * 40
+    tasks = {
+        digest: {
+            "hash": digest,
+            "category": INBOX_CATEGORY,
+            "save_path": str(inbox),
+            "content_path": str(video_path),
+            "name": video_path.name,
+            "state": "stoppedUP",
+            "progress": 1,
+            "amount_left": 0,
+            "completed": 12,
+            "total_size": 12,
+        },
+        unmanaged: {
+            "hash": unmanaged,
+            "category": INBOX_CATEGORY,
+            "save_path": str(inbox.parent),
+            "content_path": str(inbox.parent / "unrelated.mp4"),
+        },
+    }
+
+    def qbit(request):
+        action = request.url.path.rsplit("/", 1)[-1]
+        if action == "login":
+            return httpx.Response(204, headers={"set-cookie": "SID=test; Path=/"})
+        if action == "info":
+            requested = request.url.params.get("hashes")
+            return httpx.Response(
+                200, json=[task for key, task in tasks.items() if requested in (None, key)]
+            )
+        if action == "files":
+            assert request.url.params["hash"] == digest
+            return httpx.Response(200, json=[{"name": video_path.name, "size": 12, "progress": 1}])
+        if action == "delete":
+            assert parse_qs(request.content.decode()) == {
+                "hashes": [digest],
+                "deleteFiles": ["true"],
+            }
+            assert list(storage.files.values()) == [b"test fixture"]
+            video_path.unlink()
+            del tasks[digest]
+            return httpx.Response(200)
+        pytest.fail(f"unexpected qBittorrent action {action}")
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda *args, **kwargs: real_client(*args, **kwargs, transport=httpx.MockTransport(qbit)),
+    )
+    endpoint = "/api/video-import/downloads"
+    assert [task["hash"] for task in client.get(endpoint).json()["tasks"]] == [digest]
+    assert client.delete(f"{endpoint}/{unmanaged}").status_code == 422
+    assert client.post(f"{endpoint}/{digest}/import").status_code == 202
+
+    async def settle():
+        await asyncio.wait_for(service.worker, 5)
+
+    client.portal.call(settle)
+    assert client.get("/api/video-import").json()["jobs"][0]["state"] == "done"
+    assert not video_path.exists()
+    assert list(tasks) == [unmanaged]
 
 
 def test_magnet_import_retries_cleanup_after_telegram_commit(authenticated_client, monkeypatch):

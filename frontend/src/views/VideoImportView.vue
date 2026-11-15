@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { api, type VideoImportPreviewRow, type VideoImportStatus } from '@/api/client'
+import { api, type QBDownload, type VideoImportPreviewRow, type VideoImportStatus } from '@/api/client'
 import { formatBytes } from '@/utils/format'
 import { splitVideoImportLinks } from '@/utils/video-import-links'
 
@@ -14,8 +14,13 @@ const status = ref<VideoImportStatus>()
 const busy = ref(false)
 const error = ref('')
 const refreshError = ref('')
+const qb = ref<{ enabled: boolean; tasks: QBDownload[] }>()
+const qbError = ref('')
+const deleting = ref('')
 let timer: ReturnType<typeof setInterval> | undefined
+let qbTimer: ReturnType<typeof setInterval> | undefined
 let refreshing = false
+let refreshingQB = false
 let actionVersion = 0
 
 const labels: Record<string, string> = {
@@ -114,11 +119,56 @@ async function refresh(): Promise<void> {
   }
 }
 
+async function refreshQB(): Promise<void> {
+  if (refreshingQB || busy.value) return
+  const version = actionVersion
+  refreshingQB = true
+  try {
+    const latest = await api.qbDownloads()
+    if (version !== actionVersion) return
+    qb.value = latest
+    qbError.value = ''
+  } catch (cause) {
+    if (version === actionVersion) {
+      qbError.value = cause instanceof Error ? cause.message : '读取下载列表失败'
+    }
+  } finally {
+    refreshingQB = false
+  }
+}
+
+async function uploadDownload(task: QBDownload): Promise<void> {
+  await update(() => api.importQBDownload(task.hash))
+  void refreshQB()
+}
+
+async function deleteDownload(task: QBDownload): Promise<void> {
+  if (busy.value || !window.confirm(`删除 qBittorrent 任务「${task.name}」和 VPS 上对应的下载文件？`)) return
+  busy.value = true
+  deleting.value = task.hash
+  actionVersion += 1
+  try {
+    await api.deleteQBDownload(task.hash)
+    if (qb.value) qb.value.tasks = qb.value.tasks.filter(item => item.hash !== task.hash)
+    qbError.value = ''
+  } catch (cause) {
+    qbError.value = cause instanceof Error ? cause.message : '删除下载失败'
+  } finally {
+    deleting.value = ''
+    busy.value = false
+  }
+}
+
 onMounted(() => {
   void refresh()
+  void refreshQB()
   timer = setInterval(refresh, 2500)
+  qbTimer = setInterval(refreshQB, 5000)
 })
-onBeforeUnmount(() => clearInterval(timer))
+onBeforeUnmount(() => {
+  clearInterval(timer)
+  clearInterval(qbTimer)
+})
 </script>
 
 <template>
@@ -195,6 +245,26 @@ onBeforeUnmount(() => clearInterval(timer))
       <button v-if="!status.running" class="ghost" :disabled="busy" @click="update(api.retryVideoImport)">重试未完成任务</button>
       <button class="ghost" :disabled="busy" @click="update(api.cancelVideoImport)">取消并清理</button>
     </div>
+    <section v-if="qb?.enabled || qbError" class="downloads" aria-labelledby="qb-downloads-title">
+      <h2 id="qb-downloads-title">qBittorrent 下载</h2>
+      <p class="muted">在 qBittorrent 或浏览器脚本中提交磁力时，分类填 <code>tgdrive-inbox</code>，保存目录填 <code>/video-imports/inbox</code>。</p>
+      <p v-if="qbError" class="form-error" role="alert">{{ qbError }}</p>
+      <p v-else-if="!qb?.tasks.length" class="muted">暂无下载任务。</p>
+      <ul v-if="qb?.tasks.length">
+        <li v-for="task in qb.tasks" :key="task.hash">
+          <strong>{{ task.name }}</strong>
+          <div class="job-progress">
+            <progress :value="task.progress" max="1" :aria-label="`${task.name} 下载进度`" />
+            <span>{{ formatBytes(task.downloaded) }} / {{ formatBytes(task.size) }}</span>
+          </div>
+          <span>{{ task.importing ? '正在导入' : task.ready ? '已下载' : ['error', 'missingFiles'].includes(task.state) ? '下载异常' : '等待下载完成' }}</span>
+          <div class="actions">
+            <button class="primary" type="button" :disabled="busy || !status || status.active || !task.ready || task.importing" @click="uploadDownload(task)">上传到当前 Telegram 频道</button>
+            <button class="ghost" type="button" :disabled="busy || task.importing" @click="deleteDownload(task)">{{ deleting === task.hash ? '正在删除…' : '删除下载文件' }}</button>
+          </div>
+        </li>
+      </ul>
+    </section>
   </section>
 </template>
 
@@ -226,4 +296,6 @@ li { padding: 12px 0; border-bottom: 1px solid var(--line); overflow-wrap: anywh
 .job-progress { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; }
 .job-progress progress { flex: 1; min-width: 0; height: 12px; accent-color: var(--accent); }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.downloads { margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--line); }
+.downloads h2 { margin-top: 0; font-size: 1.1rem; }
 </style>

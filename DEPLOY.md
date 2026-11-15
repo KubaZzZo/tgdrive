@@ -188,6 +188,10 @@ SQLite schema v8 保存 Bot 文件标识，v9 增加 Bot 视频封面。升级�
 docker compose -f docker-compose.yml -f docker-compose.qbittorrent.yml up -d qbittorrent
 ```
 
-通过 SSH 隧道访问 `127.0.0.1:18885`。首次启动的临时管理员密码在 qBittorrent 容器日志中。用它登录，将 Web UI 密码改成 `.env` 里的值，再用相同的两个 Compose 文件启动应用。
+通过下方的 SSH 隧道访问 Web UI。首次启动的临时管理员密码在 qBittorrent 容器日志中。用它登录，将 Web UI 密码改成 `.env` 里的值，再用相同的两个 Compose 文件启动应用。
 
 TG Drive 提交的磁力任务使用 `tgdrive-import` 分类及共享目录中的独立任务目录。支持包含一个视频文件的磁力任务，通过 BitTorrent 网络发现对端。Telegram 入库成功后，应用删除对应的种子任务和 VPS 临时文件。手动任务使用 qBittorrent 自己的 `/downloads` 目录，可通过 Web UI 添加磁力或种子文件。
+
+如需在 TG Drive 的「视频链接导入」页面管理从 qBittorrent Web UI 或浏览器脚本提交的任务，在共享目录中创建 `/video-imports/inbox`，并在 qBittorrent 中创建保存路径为该目录的 `tgdrive-inbox` 分类。提交时填写该分类和保存目录。下载完成后可以上传到当前 Telegram 频道并入库，或删除任务及其下载文件。
+
+对于容器内 Web UI 使用 `8080`、VPS 绑定 `127.0.0.1:18885` 的部署，使用 `ssh -N -L 127.0.0.1:8080:127.0.0.1:18885 user@vps` 后打开 `http://127.0.0.1:8080`，使客户端的 Host 端口符合 qBittorrent 的检查。也可使用 HTTPS 反向代理，保留登录和 CSRF 防护，向 qBittorrent 转发访问域名及协议，并仅信任反向代理的上游来源地址。

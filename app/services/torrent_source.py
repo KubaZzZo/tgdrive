@@ -16,6 +16,7 @@ from app.services.uploads import UploadSpace
 from app.services.video_source import VIDEO_TYPES
 
 CATEGORY = "tgdrive-import"
+INBOX_CATEGORY = "tgdrive-inbox"
 TORRENT_ID = re.compile(r"[a-f0-9]{40}|[a-f0-9]{64}")
 
 
@@ -94,6 +95,115 @@ class QBittorrent:
                 raise ValueError("qBittorrent 任务标记或下载目录不匹配")
             return task
         return None
+
+    @staticmethod
+    def _inbox_task(task: dict, directory: Path) -> bool:
+        if (
+            directory.is_symlink()
+            or task["category"] != INBOX_CATEGORY
+            or not TORRENT_ID.fullmatch(task["hash"])
+            or Path(task["save_path"]) != directory
+        ):
+            return False
+        download_path = task.get("download_path")
+        if download_path and Path(download_path) != directory:
+            return False
+        content = Path(task["content_path"])
+        return (
+            content != directory
+            and content.is_relative_to(directory)
+            and (".." not in content.parts and content.resolve() == content)
+        )
+
+    @staticmethod
+    def _complete(task: dict) -> bool:
+        return (
+            task["progress"] >= 1
+            and task["amount_left"] == 0
+            and task["state"]
+            not in {
+                "error",
+                "missingFiles",
+                "moving",
+                "checkingUP",
+                "checkingDL",
+                "checkingResumeData",
+            }
+        )
+
+    async def inbox(self, directory: Path) -> list[dict]:
+        async with self._session() as client:
+            tasks = await self._request(client, "info", params={"category": INBOX_CATEGORY})
+            return [
+                dict(
+                    hash=task["hash"],
+                    name=task["name"],
+                    state=task["state"],
+                    progress=task["progress"],
+                    size=task["total_size"],
+                    downloaded=task["completed"],
+                    ready=self._complete(task),
+                )
+                for task in tasks.json()
+                if self._inbox_task(task, directory)
+            ]
+
+    async def stage_inbox(
+        self, directory: Path, digest: str, path: Path, max_bytes: int
+    ) -> tuple[str, str, int]:
+        async with self._session() as client:
+            tasks = (await self._request(client, "info", params={"hashes": digest})).json()
+            if not tasks or tasks[0]["hash"] != digest or not self._inbox_task(tasks[0], directory):
+                raise ValueError("任务已移除或不在 TG Drive 下载目录")
+            task = tasks[0]
+            if not self._complete(task):
+                raise ValueError("请等待 qBittorrent 完成下载和校验")
+            files = (await self._request(client, "files", params={"hash": digest})).json()
+            videos = [row for row in files if Path(row["name"]).suffix.lower() in VIDEO_TYPES]
+            if len(videos) != 1:
+                raise ValueError("下载任务须包含一个视频文件")
+            file = videos[0]
+            source = directory / file["name"]
+            if (
+                not source.is_relative_to(directory)
+                or ".." in source.parts
+                or source.resolve() != source
+                or not source.is_file()
+                or source.stat().st_size != file["size"]
+                or file["progress"] < 1
+            ):
+                raise ValueError("下载文件路径无效或文件不完整")
+            if not 0 < file["size"] <= max_bytes:
+                raise ValueError("视频超过导入大小上限或文件为空")
+            path.unlink(missing_ok=True)
+            path.hardlink_to(source)
+            return clean_name(source.name), VIDEO_TYPES[source.suffix.lower()], file["size"]
+
+    async def delete_inbox(self, directory: Path, digest: str, *, missing_ok: bool = False) -> None:
+        async with self._session() as client:
+            tasks = (await self._request(client, "info")).json()
+            task = next((item for item in tasks if item["hash"] == digest), None)
+            if task is None and missing_ok:
+                return
+            if task is None or not self._inbox_task(task, directory):
+                raise ValueError("任务已移除或不在 TG Drive 下载目录")
+            if task["state"] == "moving":
+                raise ValueError("文件正在移动，请稍后再删除")
+            content = Path(task["content_path"])
+            files = (await self._request(client, "files", params={"hash": digest})).json()
+            for file in files:
+                path = directory / file["name"]
+                if not path.is_relative_to(content) or ".." in path.parts or path.resolve() != path:
+                    raise ValueError("下载文件不在对应的任务目录中，请在 qBittorrent 中检查")
+            for other in tasks:
+                if other is task or not other.get("content_path"):
+                    continue
+                other_content = Path(other["content_path"]).resolve()
+                if content.is_relative_to(other_content) or other_content.is_relative_to(content):
+                    raise ValueError("下载路径与其他任务重叠，请在 qBittorrent 中检查")
+            await self._request(client, "delete", data={"hashes": digest, "deleteFiles": "true"})
+            if (await self._request(client, "info", params={"hashes": digest})).json():
+                raise ValueError("qBittorrent 尚未移除任务，请重试")
 
     async def clean(self, path: Path) -> None:
         for delay in (0, 1, 3):
