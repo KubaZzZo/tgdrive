@@ -6,16 +6,25 @@ import shutil
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.config import Settings
 from app.infrastructure.db import Database
 from app.services.ed2k_source import download_ed2k, parse_link, work_dir
+from app.services.torrent_source import QBittorrent, parse_magnet
 from app.services.upload_temp import remove_upload_files
 from app.services.uploads import UploadService, UploadSpaceError
 from app.services.video_source import open_video, validate_url, video_metadata
 
 logger = logging.getLogger("tgdrive.video_import")
 TERMINAL = {"done", "cancelled"}
+PREVIEW_PROTOCOLS = {"http": "http", "https": "http", "ed2k": "ed2k", "magnet": "magnet"}
+
+
+def _link_key(url: str) -> str:
+    if url.startswith("magnet:"):
+        return url.split("&", 1)[0]
+    return url.split("|")[4] if url.startswith("ed2k:") else url
 
 
 class VideoImport:
@@ -31,6 +40,15 @@ class VideoImport:
             limits.append(settings.max_file_size)
         self.max_bytes = min(limits)
         self.ed2k_seeds = settings.video_import_ed2k_seeds
+        self.qb = (
+            QBittorrent(
+                settings.video_import_qb_url,
+                settings.video_import_qb_username,
+                settings.video_import_qb_password,
+            )
+            if settings.video_import_qb_url
+            else None
+        )
         self.chunk_size = settings.upload_chunk_size
         self.batch = db.get_video_import()
         self.worker: asyncio.Task[None] | None = None
@@ -64,23 +82,59 @@ class VideoImport:
             "jobs": jobs,
         }
 
+    def _prepare_link(self, link: str) -> dict[str, Any]:
+        if not link or len(link) > 4096:
+            raise ValueError("每条链接须为 1 至 4096 个字符")
+        if link.lower().startswith("magnet:"):
+            if self.qb is None:
+                raise ValueError("服务器尚未启用磁力下载")
+            normalized, name = parse_magnet(link)
+            return {"url": normalized, "name": name} if name else {"url": normalized}
+        if link.lower().startswith("ed2k:"):
+            name, size, _, normalized = parse_link(link)
+            if self.ed2k_seeds is None:
+                raise ValueError("服务器尚未启用 eD2k 导入")
+            if size > self.max_bytes:
+                raise ValueError("视频超过导入大小上限")
+            return {"url": normalized, "name": name, "size": size}
+        return {"url": str(validate_url(link))}
+
+    def preview(self, links: list[str]) -> list[dict[str, Any]]:
+        seen: set[str] = set()
+        rows = []
+        for link in links:
+            scheme = link[:8].partition(":")[0].lower()
+            row: dict[str, Any] = {"protocol": PREVIEW_PROTOCOLS.get(scheme, "unknown")}
+            try:
+                prepared = self._prepare_link(link)
+            except ValueError as exc:
+                row["error"] = str(exc)
+            else:
+                url = prepared.pop("url")
+                row.update(prepared)
+                if row["protocol"] == "http":
+                    row["name"] = urlsplit(url).hostname
+                key = _link_key(url)
+                if key in seen:
+                    row["error"] = "与前面的链接重复"
+                seen.add(key)
+            rows.append(row)
+        return rows
+
     def start(self, uploads: UploadService, links: list[str]) -> None:
         if self.active or (self.worker and not self.worker.done()):
             raise RuntimeError("上一批视频的临时文件尚未清理")
         if not 1 <= len(links) <= 2:
             raise ValueError("每批最多导入两个视频")
         jobs = []
+        seen: set[str] = set()
         for link in links:
-            job = {"id": uuid.uuid4().hex, "url": link, "state": "queued", "downloaded": 0}
-            if link.lower().startswith("ed2k:"):
-                name, size, _, normalized = parse_link(link)
-                if self.ed2k_seeds is None:
-                    raise ValueError("服务器尚未启用 eD2k 导入")
-                if size > self.max_bytes:
-                    raise ValueError("视频超过导入大小上限")
-                job.update(name=name, size=size, url=normalized)
-            else:
-                job["url"] = str(validate_url(link))
+            job = self._prepare_link(link)
+            key = _link_key(job["url"])
+            if key in seen:
+                raise ValueError("同一批不能导入重复的链接")
+            seen.add(key)
+            job.update(id=uuid.uuid4().hex, state="queued", downloaded=0)
             jobs.append(job)
         previous = self.batch
         batch_id = uuid.uuid4().hex
@@ -153,7 +207,7 @@ class VideoImport:
         try:
             upload = uploads.db.get_upload(job["id"])
             if self.batch["cancel"] or (upload and upload["state"] == "done"):
-                self._clean(
+                await self._clean(
                     directory,
                     path,
                     job,
@@ -168,11 +222,12 @@ class VideoImport:
                 directory.mkdir(parents=True, exist_ok=True, mode=0o700)
                 job.update(state="downloading", error=None, downloaded=0)
                 job.pop("ed2k_sources", None)
+                job.pop("torrent_seeds", None)
                 self._save()
                 async with asyncio.timeout(3600):
                     name, mime, size = await self._download(uploads, path, job, index)
                 if self.batch["cancel"]:
-                    self._clean(directory, path, job, "cancelled")
+                    await self._clean(directory, path, job, "cancelled")
                     return
                 job.update(name=name, size=size)
                 uploads.db.create_upload(
@@ -184,10 +239,20 @@ class VideoImport:
             result = uploads.db.get_upload(job["id"])
             if not result or result["state"] != "done":
                 raise ValueError("上传 Telegram 失败，可重试或取消")
-            self._clean(directory, path, job, "done")
+            await self._clean(directory, path, job, "done")
         except Exception as exc:
             # External URLs may include signed credentials. Never return or log HTTP errors verbatim.
             logger.warning("Video import %s failed (%s)", job["id"], type(exc).__name__)
+            if (
+                self.qb is not None
+                and job.get("url", "").startswith("magnet:")
+                and not uploads.db.get_upload(job["id"])
+            ):
+                try:
+                    await self.qb.clean(path)
+                    remove_upload_files(path)
+                except Exception:
+                    logger.warning("Could not clean failed torrent import %s", job["id"])
             job.update(
                 state="error",
                 error=(
@@ -198,7 +263,11 @@ class VideoImport:
             )
             self._save()
 
-    def _clean(self, directory: Path, path: Path, job: dict, state: str) -> None:
+    async def _clean(self, directory: Path, path: Path, job: dict, state: str) -> None:
+        if job.get("url", "").startswith("magnet:"):
+            if self.qb is None:
+                raise ValueError("恢复 qBittorrent 配置后可重试清理")
+            await self.qb.clean(path)
         if work_dir(path).exists():
             shutil.rmtree(work_dir(path))
         remove_upload_files(path)
@@ -220,6 +289,21 @@ class VideoImport:
     async def _download(
         self, uploads: UploadService, path: Path, job: dict[str, Any], index: int
     ) -> tuple[str, str, int]:
+        if job["url"].startswith("magnet:"):
+            if self.qb is None:
+                raise ValueError("服务器尚未启用磁力下载")
+
+            def report_torrent(downloaded: int, size: int, seeds: int) -> None:
+                job.update(downloaded=downloaded, size=size, torrent_seeds=seeds)
+
+            return await self.qb.download(
+                job["url"],
+                path,
+                uploads.space,
+                self.max_bytes,
+                lambda: self.cancelling,
+                report_torrent,
+            )
         if job["url"].startswith("ed2k:"):
             if self.ed2k_seeds is None:
                 raise ValueError("服务器尚未启用 eD2k 导入")
