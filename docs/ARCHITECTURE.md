@@ -1,6 +1,6 @@
 # 架构说明
 
-## 请求链路
+## Telegram 请求链路
 
 ```text
 浏览器 Vue SPA
@@ -9,6 +9,8 @@
   -> Telethon（MTProto）
   -> Telegram 私有频道（文件内容）
 ```
+
+Google Drive 的目录和媒体请求先经过 TG Drive 的会话鉴权，再通过只读 WebDAV 转发给 OpenList。
 
 ## 后端分层
 
