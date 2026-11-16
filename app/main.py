@@ -16,6 +16,7 @@ from app.api.routes import (
     auth,
     clients,
     files,
+    google_drive,
     images,
     items,
     picgo,
@@ -31,6 +32,7 @@ from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.core.security import LoginRateLimiter
 from app.infrastructure.db import Database
+from app.infrastructure.google_drive import GoogleDrive
 from app.infrastructure.storage import TelegramStorage
 from app.services.accounts import AccountManager, Runtime, WorkspaceMiddleware, account_settings
 from app.services.cdn import CDNMonitor
@@ -113,10 +115,14 @@ def create_app(
             else None
         )
         try:
+            if cfg.google_drive_enabled:
+                app.state.google_drive = GoogleDrive(cfg)
             app.state.media_cache.start()
             await cdn.start()
             yield
         finally:
+            if cfg.google_drive_enabled and hasattr(app.state, "google_drive"):
+                await app.state.google_drive.close()
             await app.state.media_cache.close()
             await cdn.stop()
             if traffic_worker is not None:
@@ -176,6 +182,7 @@ def create_app(
     app.include_router(clients.router)
     app.include_router(webdav.router)
     app.include_router(auth.router)
+    app.include_router(google_drive.router)
     app.include_router(items.router)
     app.include_router(uploads.router)
     app.include_router(video_import.router)
@@ -194,6 +201,7 @@ def create_app(
     @app.get("/", include_in_schema=False)
     @app.get("/login", include_in_schema=False)
     @app.get("/drive", include_in_schema=False)
+    @app.get("/google-drive", include_in_schema=False)
     @app.get("/people", include_in_schema=False)
     @app.get("/images", include_in_schema=False)
     @app.get("/traffic", include_in_schema=False)

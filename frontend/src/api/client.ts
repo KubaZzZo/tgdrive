@@ -1,5 +1,6 @@
 import type {
   DriveItem,
+  GoogleDriveItem,
   ClientCredential,
   ClientScope,
   HostedImage,
@@ -318,6 +319,15 @@ export const api = {
   meta: () => request<Meta>('/api/meta'),
   login: (password: string) => jsonRequest<{ ok: boolean }>('POST', '/api/login', { password }),
   logout: () => request<{ ok: boolean }>('/api/logout', { method: 'POST' }),
+
+  googleDriveItems: (path: string, signal: AbortSignal) => request<{ items: GoogleDriveItem[] }>(
+    `/api/google-drive/items?${new URLSearchParams({ path })}`, { signal },
+  ),
+  googleDriveContentUrl: (path: string, download = false) => {
+    const query = new URLSearchParams({ path })
+    if (download) query.set('download', '1')
+    return `/api/google-drive/content?${query}`
+  },
 
   listItems: (folderId: string | null, options: ItemQuery = {}, signal?: AbortSignal) => {
     const query = new URLSearchParams()

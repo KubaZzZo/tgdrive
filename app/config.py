@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -52,6 +53,15 @@ class Settings:
     people_enabled: bool = field(default_factory=lambda: _env_bool("PEOPLE_ENABLED", True))
     image_host_enabled: bool = field(default_factory=lambda: _env_bool("IMAGE_HOST_ENABLED", True))
     traffic_enabled: bool = field(default_factory=lambda: _env_bool("TRAFFIC_ENABLED", True))
+    google_drive_dav_url: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_DRIVE_DAV_URL", "").strip()
+    )
+    google_drive_dav_username: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_DRIVE_DAV_USERNAME", "").strip()
+    )
+    google_drive_dav_password: str = field(
+        default_factory=lambda: os.getenv("GOOGLE_DRIVE_DAV_PASSWORD", ""), repr=False
+    )
     axisnow_api_token: str = field(
         default_factory=lambda: os.getenv("AXISNOW_API_TOKEN", "").strip(), repr=False
     )
@@ -159,6 +169,10 @@ class Settings:
     )
 
     @property
+    def google_drive_enabled(self) -> bool:
+        return bool(self.google_drive_dav_url)
+
+    @property
     def is_production(self) -> bool:
         return self.app_env in {"prod", "production"}
 
@@ -197,6 +211,19 @@ class Settings:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def validate(self) -> None:
+        if self.google_drive_enabled:
+            url = urlsplit(self.google_drive_dav_url)
+            if (
+                url.scheme not in {"http", "https"}
+                or not url.hostname
+                or "@" in url.netloc
+                or url.query
+                or url.fragment
+                or not url.path.strip("/")
+            ):
+                raise RuntimeError("GOOGLE_DRIVE_DAV_URL 必须是完整的 WebDAV 目录地址")
+            if not self.google_drive_dav_username or not self.google_drive_dav_password:
+                raise RuntimeError("Google Drive 挂载需要配置只读 WebDAV 用户名和密码")
         if self.tg_diagnostic_chat_id and self.tg_diagnostic_chat_id >= -1_000_000_000_000:
             raise RuntimeError("TG_DIAGNOSTIC_CHAT_ID 必须是专用 Telegram 频道的 -100… 数字 ID")
         if self.video_import_max_mib <= 0:

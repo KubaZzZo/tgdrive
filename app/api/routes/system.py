@@ -42,6 +42,7 @@ async def meta(
             "people": settings.people_enabled,
             "images": settings.image_host_enabled,
             "traffic": settings.traffic_enabled,
+            "google_drive": settings.google_drive_enabled,
         },
         "app_name": settings.app_name,
         "version": request.app.version,

@@ -115,7 +115,7 @@ export interface StorageStatus {
 }
 
 export interface Meta {
-  features?: { people: boolean; images: boolean; traffic: boolean }
+  features?: { people: boolean; images: boolean; traffic: boolean; google_drive?: boolean }
   workspace_is_default?: boolean
   app_name: string
   version: string
@@ -207,4 +207,12 @@ export interface ClientCredential {
   label: string
   scope: ClientScope
   created_at: string
+}
+
+export interface GoogleDriveItem {
+  id: string
+  name: string
+  folder: boolean
+  size: number
+  mime: string | null
 }

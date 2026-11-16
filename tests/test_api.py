@@ -204,6 +204,7 @@ def test_optional_features_can_be_disabled_without_disabling_drive(workdir):
             "people": False,
             "images": False,
             "traffic": False,
+            "google_drive": False,
         }
         for path in (
             "/api/people",
