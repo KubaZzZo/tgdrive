@@ -43,6 +43,10 @@ const nativeFullscreen = ref(false)
 const fullscreenActive = computed(() => expanded.value || nativeFullscreen.value)
 const pipAvailable = ref(false)
 const pipActive = ref(false)
+const pipPending = ref(false)
+const listening = ref(false)
+const pipDisabled = computed(() => pipPending.value || fullscreenActive.value || listening.value || !videoWidth.value)
+const listenDisabled = computed(() => fullscreenActive.value || pipActive.value || pipPending.value)
 const settingsOpen = ref(false)
 const settingsButton = ref<HTMLButtonElement | null>(null)
 const settingsId = `media-settings-${props.itemId}`
@@ -125,6 +129,7 @@ function syncPresentation(): void {
     (video.webkitSetPresentationMode && video.webkitSupportsPresentationMode?.('picture-in-picture')),
   )
   pipActive.value = document.pictureInPictureElement === video || video.webkitPresentationMode === 'picture-in-picture'
+  if (pipActive.value) listening.value = false
   nativeFullscreen.value = document.fullscreenElement === container.value || Boolean(video.webkitDisplayingFullscreen)
   if (!nativeFullscreen.value && orientationLocked) {
     screen.orientation?.unlock?.()
@@ -195,7 +200,7 @@ function volumeChanged(): void {
 async function fullscreen(): Promise<void> {
   const video = videoElement()
   const element = container.value
-  if (!video || !element || pipActive.value) return
+  if (!video || !element || pipActive.value || pipPending.value || listening.value) return
   settingsOpen.value = false
   try {
     if (expanded.value) expanded.value = false
@@ -224,19 +229,32 @@ async function fullscreen(): Promise<void> {
     if (expanded.value && !element.contains(document.activeElement)) element.focus({ preventScroll: true })
   }
 }
+async function leavePictureInPicture(video: SafariVideo): Promise<void> {
+  if (document.pictureInPictureElement === video) await document.exitPictureInPicture()
+  else if (video.webkitPresentationMode === 'picture-in-picture') video.webkitSetPresentationMode?.('inline')
+}
 async function pictureInPicture(): Promise<void> {
   const video = videoElement()
-  if (!video || fullscreenActive.value || !video.videoWidth) return
+  if (!video || !pipAvailable.value || pipDisabled.value) return
+  const exiting = pipActive.value
+  const signal = controller.signal
+  pipPending.value = true
+  notice.value = ''
   try {
-    if (document.pictureInPictureElement === video) await document.exitPictureInPicture()
-    else if (video.webkitPresentationMode === 'picture-in-picture') video.webkitSetPresentationMode?.('inline')
+    if (exiting) await leavePictureInPicture(video)
     else if (document.pictureInPictureEnabled && video.requestPictureInPicture) await video.requestPictureInPicture()
     else video.webkitSetPresentationMode?.('picture-in-picture')
   } catch {
-    notice.value = '暂时无法进入画中画，请先开始播放。'
+    if (!signal.aborted) notice.value = exiting ? '暂时无法退出画中画。' : '暂时无法进入画中画，请先开始播放。'
   } finally {
+    if (signal.aborted) void leavePictureInPicture(video).catch(() => {})
+    pipPending.value = false
     syncPresentation()
   }
+}
+function toggleListening(): void {
+  if (listenDisabled.value) return
+  listening.value = !listening.value
 }
 function failed(): void {
   const code = player.value?.error?.code
@@ -263,13 +281,17 @@ function resetMedia(): void {
   active = false
   controller.abort()
   controller = new AbortController()
-  const media = player.value
-  if (media) {
-    media.pause()
-    media.removeAttribute('src')
-    media.load()
-  }
+  releaseMedia()
   paused.value = true
+}
+function releaseMedia(): void {
+  const media = player.value
+  if (!media) return
+  const video = videoElement()
+  if (video) void leavePictureInPicture(video).catch(() => {})
+  media.pause()
+  media.removeAttribute('src')
+  media.load()
 }
 function ready(): void {
   const media = player.value
@@ -354,11 +376,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', syncPresentation)
   if (orientationLocked) screen.orientation?.unlock?.()
   if (document.fullscreenElement === container.value) void document.exitFullscreen().catch(() => {})
-  if (player.value) {
-    player.value.pause()
-    player.value.removeAttribute('src')
-    player.value.load()
-  }
+  releaseMedia()
   releaseCovers?.()
 })
 </script>
@@ -377,11 +395,13 @@ onBeforeUnmount(() => {
     @keydown="onKey"
   >
     <div class="media-layout">
-      <div class="media-screen" :class="{ 'media-quarter-turn': quarterTurn }">
+      <div class="media-screen" :class="{ 'media-quarter-turn': quarterTurn && !listening }">
         <component
           :is="kind"
+          v-show="!listening"
           ref="player"
           :controls="kind === 'audio'"
+          :disablepictureinpicture="listening ? '' : undefined"
           :style="rotation ? { rotate: rotation + 'deg' } : undefined"
           playsinline
           :preload="kind === 'video' ? 'auto' : 'metadata'"
@@ -411,8 +431,12 @@ onBeforeUnmount(() => {
           @webkitendfullscreen="syncPresentation"
           @click="kind === 'video' && toggle()"
         />
+        <div v-if="listening" class="media-listening" role="status">
+          <AppIcon name="audio" :size="28" />
+          听视频模式
+        </div>
         <button
-          v-if="kind === 'video' && paused && !error"
+          v-if="kind === 'video' && !listening && paused && !error"
           class="media-stage-play"
           type="button"
           aria-label="开始播放"
@@ -468,7 +492,7 @@ onBeforeUnmount(() => {
               aria-label="画中画"
               :aria-pressed="pipActive"
               :title="pipActive ? '退出画中画' : '画中画'"
-              :disabled="fullscreenActive || !videoWidth"
+              :disabled="pipDisabled"
               @click="pictureInPicture"
             ><AppIcon name="pip" /></button>
             <button
@@ -476,7 +500,7 @@ onBeforeUnmount(() => {
               type="button"
               :aria-label="fullscreenActive ? '退出全屏' : '全屏'"
               :title="fullscreenActive ? '退出全屏' : '全屏'"
-              :disabled="pipActive"
+              :disabled="pipActive || pipPending || listening"
               @click="fullscreen"
             ><AppIcon :name="fullscreenActive ? 'fullscreen-exit' : 'fullscreen'" /></button>
             <button
@@ -503,6 +527,14 @@ onBeforeUnmount(() => {
           </button>
         </header>
         <div class="media-settings-body">
+          <div v-if="kind === 'video'" class="media-buttons">
+            <button type="button" :disabled="listenDisabled" @click="toggleListening">
+              <AppIcon :name="listening ? 'video' : 'audio'" :size="15" />{{ listening ? '恢复画面' : '听视频' }}
+            </button>
+            <button v-if="pipAvailable" class="media-compact-actions" type="button" aria-label="画中画" :aria-pressed="pipActive" :disabled="pipDisabled" @click="pictureInPicture">
+              <AppIcon name="pip" :size="15" />画中画
+            </button>
+          </div>
           <label class="media-setting">播放速度
             <select v-model="rate" aria-label="播放速度" @change="changeRate">
               <option v-for="speed in [0.5, 0.75, 1, 1.25, 1.5, 2]" :key="speed" :value="speed">{{ speed }}×</option>
@@ -533,9 +565,6 @@ onBeforeUnmount(() => {
           <div class="media-buttons media-setting-actions media-compact-actions">
             <button type="button" :disabled="downloadPending" @click="emit('download')">
               <AppIcon name="download" :size="15" />{{ downloadPending ? '正在检查…' : '下载文件' }}
-            </button>
-            <button v-if="pipAvailable" type="button" :aria-pressed="pipActive" :disabled="fullscreenActive || !videoWidth" @click="pictureInPicture">
-              <AppIcon name="pip" :size="15" />{{ pipActive ? '退出画中画' : '画中画' }}
             </button>
           </div>
         </div>
@@ -591,6 +620,13 @@ onBeforeUnmount(() => {
 }
 .media-screen audio {
   width: calc(100% - 36px);
+}
+.media-listening {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  color: #dbeafe;
+  font-size: 13px;
 }
 .media-stage-play {
   position: absolute;
@@ -737,7 +773,7 @@ onBeforeUnmount(() => {
   overflow: auto;
   overscroll-behavior: contain;
 }
-.media-compact-actions { display: none; }
+.media-settings .media-compact-actions { display: none; }
 .media-setting {
   display: grid;
   grid-template-columns: 1fr minmax(0, 118px);
@@ -823,7 +859,7 @@ onBeforeUnmount(() => {
   .media-toolbar { flex-wrap: nowrap; gap: 4px; }
   .media-toolbar .media-buttons { flex-wrap: nowrap; gap: 0; }
   .media-toolbar .media-secondary { display: none; }
-  .media-compact-actions { display: flex; }
+  .media-settings .media-compact-actions { display: flex; }
   .media-settings { width: calc(100% - 16px); }
 }
 </style>
