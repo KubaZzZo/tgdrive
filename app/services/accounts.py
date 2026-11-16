@@ -604,6 +604,8 @@ class WorkspaceMiddleware:
                         "/api/trash",
                         "/api/people",
                         "/api/clients",
+                        "/api/video-import",
+                        "/api/telegram/diagnostics",
                     )
                 )
                 and scope.get("session", {}).get("auth")

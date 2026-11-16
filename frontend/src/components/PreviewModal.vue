@@ -76,7 +76,7 @@ const src = computed(() => (props.item ? api.downloadUrl(props.item.id) : ''))
   width: 100%;
   height: 65dvh;
   border: 0;
-  background: white;
+  background: var(--panel);
 }
 .preview-fallback {
   padding: 32px;

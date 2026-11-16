@@ -529,10 +529,10 @@ onBeforeUnmount(() => {
 .media-player {
   position: relative;
   overflow: hidden;
-  border: 1px solid #29374d;
+  border: 1px solid var(--line);
   border-radius: 12px;
-  background: #101828;
-  color: #e2e8f0;
+  background: var(--panel);
+  color: var(--text);
   outline-offset: -3px;
 }
 .media-layout {
@@ -607,6 +607,7 @@ onBeforeUnmount(() => {
   gap: 12px;
   padding: 20px;
   background: #101828f5;
+  color: #e2e8f0;
   text-align: center;
   font-size: 13px;
   line-height: 1.6;
@@ -616,13 +617,13 @@ onBeforeUnmount(() => {
 .media-controls {
   position: relative;
   padding: 8px 14px 12px;
-  background: #101828;
+  background: var(--panel);
 }
 .media-timeline {
   display: flex;
   align-items: center;
   gap: 10px;
-  color: #c9d5e6;
+  color: var(--muted);
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
@@ -634,7 +635,7 @@ onBeforeUnmount(() => {
   border: 0;
   background: transparent;
   box-shadow: none;
-  accent-color: #7bb9ff;
+  accent-color: var(--accent);
 }
 .media-timeline input { flex: 1; }
 .media-timeline span:last-child { text-align: right; }
@@ -660,23 +661,23 @@ onBeforeUnmount(() => {
   border: 1px solid transparent;
   border-radius: 7px;
   padding: 0 6px;
-  color: #dbeafe;
+  color: var(--text);
   background: transparent;
   font-size: 11px;
   font-variant-numeric: tabular-nums;
 }
 .media-buttons button:hover:not(:disabled) {
-  background: #263650;
+  background: var(--panel-2);
 }
 .media-buttons .media-play,
 .media-buttons button[aria-pressed="true"],
 .media-buttons button[aria-expanded="true"] {
-  border-color: #3c587b;
-  background: #203955;
-  color: #d8ecff;
+  border-color: var(--line);
+  background: var(--accent-soft);
+  color: var(--accent);
 }
 .media-player :is(button, select, input):focus-visible {
-  outline: 2px solid #7bb9ff;
+  outline: 2px solid var(--accent);
   outline-offset: 1px;
 }
 .media-settings {
@@ -691,10 +692,10 @@ onBeforeUnmount(() => {
   overflow: auto;
   overscroll-behavior: contain;
   padding: 12px;
-  border: 1px solid #344258;
+  border: 1px solid var(--line);
   border-radius: 10px;
-  background: #142036;
-  box-shadow: 0 8px 24px #03071288;
+  background: var(--panel);
+  box-shadow: var(--shadow);
   font-size: 13px;
 }
 .media-settings-head {
@@ -703,7 +704,7 @@ onBeforeUnmount(() => {
   align-items: baseline;
   gap: 8px;
 }
-.media-settings-head span { color: #a5b5ca; }
+.media-settings-head span { color: var(--muted); }
 .media-setting {
   display: grid;
   grid-template-columns: 1fr minmax(0, 118px);
@@ -714,10 +715,10 @@ onBeforeUnmount(() => {
   min-height: 34px;
   min-width: 0;
   padding: 4px 8px;
-  border: 1px solid #344258;
+  border: 1px solid var(--line);
   border-radius: 6px;
-  background: #1e293b;
-  color: #dbeafe;
+  background: var(--panel-2);
+  color: var(--text);
   font-size: 12px;
 }
 .media-close-timer {
@@ -726,12 +727,12 @@ onBeforeUnmount(() => {
 }
 .media-close-countdown { font-variant-numeric: tabular-nums; }
 .media-setting-actions {
-  border-top: 1px solid #344258;
+  border-top: 1px solid var(--line);
   padding-top: 5px;
 }
 .media-notice {
   margin: 5px 0 0;
-  color: #a8cdf6;
+  color: var(--accent);
   font-size: 12px;
   line-height: 1.4;
   overflow-wrap: anywhere;

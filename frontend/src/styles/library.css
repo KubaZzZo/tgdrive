@@ -14,8 +14,8 @@
   padding: 0 13px;
   border: 1px solid var(--line);
   border-radius: 9px;
-  background: white;
-  color: #94a3b8;
+  background: var(--panel);
+  color: var(--muted);
 }
 .search-field:focus-within {
   border-color: #a7c4fb;
@@ -41,7 +41,7 @@
   padding: 35px 20px;
   border: 1px solid var(--line);
   border-radius: 11px;
-  background: white;
+  background: var(--panel);
 }
 .empty-art {
   display: grid;
@@ -49,8 +49,8 @@
   width: 76px;
   height: 76px;
   border-radius: 22px;
-  background: #f0f5ff;
-  color: #83a6e7;
+  background: var(--accent-soft);
+  color: var(--muted);
 }
 .empty h2 {
   margin: 18px 0 8px;
@@ -59,7 +59,7 @@
 }
 .empty p {
   margin: 0;
-  color: #8c9aaf;
+  color: var(--muted);
   font-size: 12px;
   max-width: 350px;
 }
@@ -92,7 +92,7 @@
   height: 45px;
   margin: 8px 0;
   border-radius: 7px;
-  background: linear-gradient(90deg, #f1f5f9 20%, #e8edf5 50%, #f1f5f9 80%);
+  background: linear-gradient(90deg, var(--panel-2) 20%, var(--line) 50%, var(--panel-2) 80%);
   background-size: 240% 100%;
   animation: shimmer 1.4s infinite linear;
 }

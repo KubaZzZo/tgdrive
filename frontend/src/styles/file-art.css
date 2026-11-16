@@ -38,6 +38,9 @@
   background: #f1effc;
   color: #8d82b6;
 }
+:root[data-theme="dark"] .file-art {
+  background: color-mix(in srgb, currentColor 17%, var(--panel));
+}
 .file-art.small {
   width: 38px;
   height: 42px;

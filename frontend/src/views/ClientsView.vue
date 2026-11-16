@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
 import type { ClientCredential, ClientScope } from '@/api/types'
+import RestoreIndex from '@/components/RestoreIndex.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useToastStore } from '@/stores/toast'
 
@@ -123,6 +124,7 @@ async function copySecret(): Promise<void> {
       <h2>频道索引备份</h2>
       <p class="muted">导出目录、文件分段索引、分享链接、图床和人物标签。请妥善保存 ZIP，里面包含现有的分享令牌。</p>
       <a v-if="channelId" :href="backupUrl" class="ghost backup-link">下载当前频道索引</a>
+      <RestoreIndex v-if="channelId" />
     </section>
   </main>
 </template>

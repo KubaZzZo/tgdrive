@@ -116,7 +116,7 @@ onBeforeUnmount(() => {
   max-height: 90dvh;
   display: flex;
   flex-direction: column;
-  background: white;
+  background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 16px;
   box-shadow: var(--shadow);

@@ -408,6 +408,7 @@ def share_is_valid(share: dict[str, Any]) -> bool:
 @router.get("/s/{token}", response_class=HTMLResponse)
 async def share_page(
     token: str,
+    request: Request,
     db: Database = Depends(get_db),
     settings: Settings = Depends(get_settings),
 ) -> str:
@@ -416,13 +417,19 @@ async def share_page(
         raise HTTPException(404, "分享链接不存在或已过期")
     name = html.escape(share["name"])
     size = f"{int(share['size']) / 1024 / 1024:.1f} MB"
+    theme = request.cookies.get("tgdrive_theme", "system")
+    if theme not in {"light", "dark", "system"}:
+        theme = "system"
+    dark = "color-scheme:dark;--bg:#08111f;--panel:#101d31;--line:#263852;--text:#e6eefb;--muted:#a1b5ce;--accent:#7dd3fc;--shadow:#0008"
     return f"""<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="zh-CN" data-theme="{theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{name} - {html.escape(settings.app_name)}</title>
 <style>
-:root{{color-scheme:dark}}*{{box-sizing:border-box}}body{{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:radial-gradient(800px 500px at 20% 0%,#0c4a6e55,transparent),#08111f;color:#e6eefb;display:grid;place-items:center;min-height:100vh;margin:0;padding:24px}}
-.card{{background:#101d31;padding:40px;border:1px solid #263852;border-radius:20px;max-width:520px;width:100%;box-shadow:0 24px 80px #0008}}
-.badge{{color:#38bdf8;font-size:12px;font-weight:800;letter-spacing:.12em}}h1{{font-size:22px;overflow-wrap:anywhere;margin:12px 0 8px}}p{{color:#8ea3c1}}a{{display:inline-block;margin-top:18px;background:linear-gradient(135deg,#38bdf8,#60a5fa);color:#082f49;padding:12px 22px;border-radius:10px;text-decoration:none;font-weight:800}}
+:root{{color-scheme:light;--bg:#f1f5fa;--panel:#fff;--line:#dbe5f0;--text:#1e293b;--muted:#536781;--accent:#1856b8;--shadow:#243b531a}}
+:root[data-theme=dark]{{{dark}}}@media(prefers-color-scheme:dark){{:root[data-theme=system]{{{dark}}}}}
+*{{box-sizing:border-box}}body{{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--text);display:grid;place-items:center;min-height:100vh;margin:0;padding:24px}}
+.card{{background:var(--panel);padding:40px;border:1px solid var(--line);border-radius:20px;max-width:520px;width:100%;box-shadow:0 24px 80px var(--shadow)}}
+.badge{{color:var(--accent);font-size:12px;font-weight:800;letter-spacing:.12em}}h1{{font-size:22px;overflow-wrap:anywhere;margin:12px 0 8px}}p{{color:var(--muted)}}a{{display:inline-block;margin-top:18px;background:linear-gradient(135deg,#38bdf8,#60a5fa);color:#082f49;padding:12px 22px;border-radius:10px;text-decoration:none;font-weight:800}}
 </style></head><body><div class="card"><div class="badge">TG DRIVE SHARE</div><h1>{name}</h1><p>{size}</p><a href="/s/{token}/download?download=1">下载文件</a></div></body></html>"""
 
 

@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from app.config import Settings
 from app.infrastructure.db import Database
 from app.services.ed2k_source import download_ed2k, parse_link, work_dir
+from app.services.progress_events import ProgressSignal
 from app.services.torrent_source import QBittorrent, parse_magnet
 from app.services.upload_temp import remove_upload_files
 from app.services.uploads import UploadService, UploadSpaceError
@@ -54,6 +55,7 @@ class VideoImport:
         self.chunk_size = settings.upload_chunk_size
         self.batch = db.get_video_import()
         self.worker: asyncio.Task[None] | None = None
+        self.progress_events = ProgressSignal()
 
     @property
     def active(self) -> bool:
@@ -68,12 +70,14 @@ class VideoImport:
     def _save(self) -> None:
         assert self.batch is not None
         self.db.save_video_import(self.batch)
+        self.progress_events.notify()
 
     def status(self, uploads: UploadService) -> dict:
+        batch = self.batch if self.batch and self.batch["workspace"] == uploads.db.path else None
         jobs = []
-        for job in self.batch["jobs"] if self.batch else []:
+        for job in batch["jobs"] if batch else []:
             info = {key: value for key, value in job.items() if key != "url"}
-            if self.batch["workspace"] == uploads.db.path and job["state"] == "uploading":
+            if job["state"] == "uploading":
                 upload = uploads.db.get_upload(job["id"])
                 if upload:
                     info.update(uploaded=upload["progress"], size=upload["size"])
@@ -81,6 +85,7 @@ class VideoImport:
         return {
             "active": self.active,
             "running": bool(self.worker and not self.worker.done()),
+            "batch_id": Path(batch["directory"]).name if batch else None,
             "jobs": jobs,
         }
 
@@ -207,6 +212,8 @@ class VideoImport:
         if self.worker and not self.worker.done():
             return
         self.worker = asyncio.create_task(self._run(uploads, retry), name="video-import")
+        self.progress_events.notify()
+        self.worker.add_done_callback(lambda _: self.progress_events.notify())
 
     async def stop(self) -> None:
         if self.worker and not self.worker.done():
@@ -214,7 +221,7 @@ class VideoImport:
             await asyncio.gather(self.worker, return_exceptions=True)
 
     def cancel(self, uploads: UploadService) -> None:
-        if not self.active or not self.batch:
+        if not self.active or not self.batch or self.batch["workspace"] != uploads.db.path:
             return
         if not self.cancelling:
             self.batch["cancel"] = True
@@ -365,6 +372,7 @@ class VideoImport:
 
             def report_torrent(downloaded: int, size: int, seeds: int) -> None:
                 job.update(downloaded=downloaded, size=size, torrent_seeds=seeds)
+                self.progress_events.notify()
 
             return await self.qb.download(
                 job["url"],
@@ -386,9 +394,11 @@ class VideoImport:
                     job.pop("ed2k_sources", None)
                 else:
                     job["ed2k_sources"] = sources
+                self.progress_events.notify()
 
             def report_network(status: dict[str, str]) -> None:
                 job["ed2k_network"] = status
+                self.progress_events.notify()
 
             return await download_ed2k(
                 job["url"],
@@ -423,6 +433,7 @@ class VideoImport:
                         raise ValueError("视频超过导入大小上限")
                     await uploads.space.write(path.parent, file, chunk)
                     job["downloaded"] = size
+                    self.progress_events.notify()
                 if (
                     self.batch
                     and not self.batch["cancel"]

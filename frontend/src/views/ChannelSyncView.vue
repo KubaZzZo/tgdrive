@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import TelegramDiagnostics from '@/components/TelegramDiagnostics.vue'
 import { useSyncStore } from '@/stores/sync'
 import { formatDate } from '@/utils/format'
 const sync = useSyncStore()
@@ -79,6 +80,7 @@ onMounted(() => { void sync.refresh() })
           重新扫描历史
         </button>
       </div>
+      <TelegramDiagnostics />
   </section>
 </template>
 
@@ -89,7 +91,7 @@ onMounted(() => { void sync.refresh() })
   padding: clamp(16px, 4vw, 32px);
   border: 1px solid var(--line);
   border-radius: 16px;
-  background: white;
+  background: var(--panel);
 }
 .panel-view h1 { margin: 0; }
 
@@ -105,7 +107,7 @@ onMounted(() => { void sync.refresh() })
   gap: 8px;
   padding: 18px;
   margin: 20px 0;
-  background: #f3f7ff;
+  background: var(--accent-soft);
   border-radius: 10px;
   font-size: 12px;
   color: var(--muted);

@@ -21,9 +21,9 @@ const sync = useSyncStore()
 .warning {
   margin: 16px 28px 0;
   padding: 12px 16px;
-  color: #92400e;
-  background: #fffbeb;
-  border: 1px solid #fde68a;
+  color: var(--warning);
+  background: var(--warning-soft);
+  border: 1px solid var(--warning-border);
   border-radius: 10px;
 }
 .warning strong {

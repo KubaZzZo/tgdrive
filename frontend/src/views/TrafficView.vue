@@ -67,7 +67,7 @@ function save(): void {
   padding: clamp(16px, 4vw, 32px);
   border: 1px solid var(--line);
   border-radius: 16px;
-  background: white;
+  background: var(--panel);
 }
 .panel-view h1 { margin: 0; }
 
@@ -79,12 +79,12 @@ function save(): void {
 .traffic-hero span { color: var(--muted); }
 .traffic-progress { width: 100%; height: 12px; accent-color: #287d63; }
 .traffic-progress.danger { accent-color: #c86625; }
-.traffic-note { padding: 12px; background: #fff6e6; color: #825414; border-radius: 8px; }
+.traffic-note { padding: 12px; background: var(--warning-soft); color: var(--warning); border-radius: 8px; }
 .traffic-totals { display: flex; flex-wrap: wrap; gap: 24px; }
 .traffic-totals strong { margin-left: 8px; }
 .traffic-history { display: flex; gap: 12px; align-items: center; font-size: 12px; }
 .traffic-history > span:last-child { min-width: 75px; text-align: right; }
-.traffic-bar { flex: 1; height: 9px; background: #edf0eb; border-radius: 4px; overflow: hidden; }
+.traffic-bar { flex: 1; height: 9px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
 .traffic-bar i { display: block; height: 100%; background: #669b87; }
 .traffic-settings { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .traffic-settings input { width: 130px; min-height: 40px; }

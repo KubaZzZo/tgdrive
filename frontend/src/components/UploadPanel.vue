@@ -93,7 +93,7 @@ function stateClass(state: string): string {
   padding: 15px;
   border: 1px solid var(--line);
   border-radius: 13px;
-  background: white;
+  background: var(--panel);
   box-shadow: 0 10px 50px #20324d24;
 }
 .upload-head {
@@ -142,7 +142,7 @@ function stateClass(state: string): string {
 }
 .bar {
   height: 5px;
-  background: #edf1f7;
+  background: var(--panel-2);
   border-radius: 5px;
   overflow: hidden;
 }
@@ -174,7 +174,7 @@ function stateClass(state: string): string {
 }
 .upload-size {
   font-size: 10px;
-  color: #94a3b8;
+  color: var(--muted);
   white-space: nowrap;
 }
 @media (max-width: 760px) {
