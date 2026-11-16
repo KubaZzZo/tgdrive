@@ -39,10 +39,6 @@ watch(() => auth.authenticated, async (authenticated) => {
   if (session !== current) return
   sync.start()
   if (auth.features.traffic) traffic.start()
-  const pending = await uploads.restore()
-  if (session === current && pending > 0) {
-    toast.push(`有 ${pending} 个未完成的上传，重新拖入同名文件即可续传`, 'info', 6000)
-  }
 })
 
 watch(() => uploads.completedCount, () => {

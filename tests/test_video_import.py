@@ -377,6 +377,64 @@ def test_ed2k_reads_progress_for_the_requested_hash(tmp_path, monkeypatch):
     )
 
 
+@pytest.mark.parametrize(
+    ("server", "kad", "expected"),
+    [
+        (
+            "Connected to test [192.0.2.1:5555] with LowID",
+            "Connected (firewalled)",
+            {"server": "low_id", "kad": "firewalled"},
+        ),
+        (
+            "Connected to test [192.0.2.1:5555] with HighID",
+            "Connected (ok)",
+            {"server": "high_id", "kad": "open"},
+        ),
+        ("Now connecting", "Not running", {"server": "connecting", "kad": "offline"}),
+        ("Not connected", "Not connected", {"server": "offline", "kad": "offline"}),
+    ],
+)
+def test_ed2k_reports_download_network_state(tmp_path, monkeypatch, server, kad, expected):
+    async def status(cli, directory, command):
+        assert command == "status"
+        return f" > eD2k: {server}\n > Kad: {kad}\n > Total sources:\t0\n"
+
+    monkeypatch.setattr(ed2k_source, "_amule_command", status)
+    assert asyncio.run(ed2k_source._network_status("amulecmd", tmp_path)) == expected
+
+
+def test_ed2k_fixed_port_keeps_second_job_queued(authenticated_client, monkeypatch, workdir):
+    client, app, _ = authenticated_client
+    service = app.state.video_import
+    service.ed2k_seeds = workdir
+    service.ed2k_port = 4662
+    links = [f"ed2k://|file|fixture{index}.mp4|12|{index:032x}|/" for index in (1, 2)]
+    order = []
+
+    async def download(url, path, seeds, space, max_bytes, cancelled, progress, **options):
+        assert options["fixed_port"] == 4662
+        name, size, mime, _ = ed2k_source.parse_link(url)
+        order.append(("start", name))
+        await asyncio.sleep(0)
+        order.append(("finish", name))
+        path.write_bytes(b"test fixture")
+        return name, mime, size
+
+    monkeypatch.setattr(video_import, "download_ed2k", download)
+    assert client.post("/api/video-import", json={"links": links}).status_code == 202
+
+    async def settle():
+        await service.worker
+
+    client.portal.call(settle)
+    assert order == [
+        ("start", "fixture1.mp4"),
+        ("finish", "fixture1.mp4"),
+        ("start", "fixture2.mp4"),
+        ("finish", "fixture2.mp4"),
+    ]
+
+
 def test_failed_download_can_be_cancelled(authenticated_client, monkeypatch):
     client, app, _ = authenticated_client
 
@@ -462,7 +520,7 @@ def test_ed2k_batch_uses_same_upload_and_cleanup(
     service.ed2k_seeds = workdir
     link = "ed2k://|file|fixture.mp4|12|A549B3E090C89D60D45FECD957EBCA27|/"
 
-    async def download(url, path, seeds, space, max_bytes, cancelled, progress):
+    async def download(url, path, seeds, space, max_bytes, cancelled, progress, **options):
         from app.services.ed2k_source import parse_link, work_dir
 
         assert url == link

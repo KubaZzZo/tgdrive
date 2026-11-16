@@ -119,6 +119,9 @@ class Settings:
             else None
         )
     )
+    video_import_ed2k_port: int = field(
+        default_factory=lambda: _env_int("VIDEO_IMPORT_ED2K_PORT", 0)
+    )
     video_import_max_mib: int = field(
         default_factory=lambda: _env_int("VIDEO_IMPORT_MAX_MIB", 8192)
     )
@@ -195,6 +198,8 @@ class Settings:
     def validate(self) -> None:
         if self.video_import_max_mib <= 0:
             raise RuntimeError("VIDEO_IMPORT_MAX_MIB 必须大于 0")
+        if self.video_import_ed2k_port != 0 and not 1024 <= self.video_import_ed2k_port <= 65525:
+            raise RuntimeError("VIDEO_IMPORT_ED2K_PORT 必须为 0 或 1024 至 65525")
         if self.video_import_qb_url and (
             not self.video_import_qb_username or not self.video_import_qb_password
         ):

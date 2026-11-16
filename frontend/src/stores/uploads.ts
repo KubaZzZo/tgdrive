@@ -65,7 +65,6 @@ function retryable(cause: unknown): boolean {
 export const useUploadStore = defineStore('uploads', () => {
   const jobs = ref<UploadJob[]>([])
   const completedCount = ref(0)
-  const restoredPending = ref(0)
   const running = new Map<string, Promise<void>>()
   const activeCount = computed(() => jobs.value.filter((j) => j.state === 'uploading' || j.state === 'processing').length)
   const hasJobs = computed(() => jobs.value.length > 0)
@@ -136,6 +135,19 @@ export const useUploadStore = defineStore('uploads', () => {
     }
   }
 
+  async function discardUpload(job: UploadJob): Promise<void> {
+    if (job.uploadId) {
+      try { await api.cancelUpload(job.uploadId) }
+      catch (cause) {
+        if (!(cause instanceof ApiError) || cause.status !== 404) throw cause
+      }
+    }
+    saveResume(fingerprint(job.parentId, job.file, job.imageHost), null)
+    job.uploadId = null
+    job.received = 0
+    job.progress = 0
+  }
+
   async function ensureUpload(job: UploadJob): Promise<Pick<UploadRecord, 'id' | 'received' | 'chunk_size' | 'state'>> {
     const key = fingerprint(job.parentId, job.file, job.imageHost)
     const known = job.uploadId ?? loadResumeMap()[key]
@@ -143,11 +155,13 @@ export const useUploadStore = defineStore('uploads', () => {
       try {
         const info = await withRetry(() => api.getUpload(known))
         if (Number(info.size) === job.file.size && info.name === job.file.name && info.parent_id === job.parentId && Boolean(info.image_host) === job.imageHost) {
-          job.uploadId = info.id
-          return info
+          if (info.state !== 'uploading' && !(info.state === 'error' && Number(info.received) < job.file.size)) {
+            job.uploadId = info.id
+            return info
+          }
+          if (job.uploadId) await discardUpload(job)
         }
       } catch (cause) {
-        // Keep the existing upload on network/auth errors; only 404 permits recreation.
         if (!(cause instanceof ApiError) || cause.status !== 404) throw cause
       }
       job.uploadId = null
@@ -165,14 +179,15 @@ export const useUploadStore = defineStore('uploads', () => {
     job.state = 'uploading'
     job.message = '连接服务器…'
     job.error = ''
+    let receiving = false
     try {
       const source = await ensureUpload(job)
+      receiving = source.state === 'uploading'
       if (stopped(job)) return
       let offset = Number(source.received)
       job.received = offset
       job.progress = Math.min(80, offset / job.file.size * 80)
       if (!['processing', 'done'].includes(source.state)) {
-        let attempt = 0
         let conflicts = 0
         let lastTime = performance.now()
         let lastOffset = offset
@@ -197,7 +212,6 @@ export const useUploadStore = defineStore('uploads', () => {
             }
             offset = next
             job.received = offset
-            attempt = 0
             const now = performance.now()
             if (now - lastTime >= 600) {
               job.speed = Math.max(0, (offset - lastOffset) / ((now - lastTime) / 1000))
@@ -210,10 +224,8 @@ export const useUploadStore = defineStore('uploads', () => {
               (job.speed ? ` · ${formatBytes(job.speed)}/s` : '') + (job.eta ? ` · 剩 ${formatEta(job.eta)}` : '')
           } catch (cause) {
             if (stopped(job)) return
-            const error = controller.signal.aborted ? new ApiError('上传请求超时', 0) : cause
-            if (!retryable(error) || attempt >= 4) throw error
-            job.message = `连接异常，${2 ** attempt} 秒后重试…`
-            await wait(1000 * 2 ** attempt++)
+            if (controller.signal.aborted) throw new Error('上传请求超时，请重新上传')
+            throw cause
           } finally {
             window.clearTimeout(timeout)
             job.controller = null
@@ -221,6 +233,7 @@ export const useUploadStore = defineStore('uploads', () => {
         }
       }
       if (stopped(job)) return
+      receiving = false
       job.state = 'processing'
       job.message = '等待 Telegram 保存…'
       job.progress = 80
@@ -253,13 +266,21 @@ export const useUploadStore = defineStore('uploads', () => {
     } finally {
       job.speed = null
       job.eta = null
+      if (receiving && !job.canceled) {
+        try { await discardUpload(job) }
+        catch {
+          // The server expires abandoned uploads even when this browser cannot reach it.
+          job.received = 0
+          job.progress = 0
+        }
+      }
     }
   }
 
   function pause(job: UploadJob): void {
     if (job.state !== 'queued' && job.state !== 'uploading') return
     job.state = 'paused'
-    job.message = '已暂停，可继续上传'
+    job.message = '已暂停，继续时将从头上传'
     job.controller?.abort()
   }
 
@@ -283,19 +304,13 @@ export const useUploadStore = defineStore('uploads', () => {
     job.message = '正在取消…'
     job.controller?.abort()
     await running.get(job.key)
-    if (job.uploadId) {
-      try { await api.cancelUpload(job.uploadId) }
-      catch (cause) {
-        if (!(cause instanceof ApiError) || cause.status !== 404) {
-          job.state = 'error'
-          job.canceled = false
-          job.message = cause instanceof Error ? cause.message : '取消失败，请重试'
-          return
-        }
-      }
+    try { await discardUpload(job) }
+    catch (cause) {
+      job.state = 'error'
+      job.canceled = false
+      job.message = cause instanceof Error ? cause.message : '取消失败，请重试'
+      return
     }
-    saveResume(fingerprint(job.parentId, job.file, job.imageHost), null)
-    job.uploadId = null
     job.state = 'canceled'
     job.message = '已取消'
   }
@@ -306,16 +321,8 @@ export const useUploadStore = defineStore('uploads', () => {
   function clearFinished(): void {
     jobs.value = jobs.value.filter((j) => j.state !== 'done' && (j.state !== 'canceled' || j.uploadId !== null))
   }
-  async function restore(): Promise<number> {
-    try {
-      const data = await api.listUploads()
-      restoredPending.value = data.uploads.filter((u) => Number(u.received) > 0).length
-      return restoredPending.value
-    } catch { return 0 }
-  }
-
-  return { jobs, completedCount, restoredPending, activeCount, hasJobs, totalProgress,
-    enqueue, enqueueFiles, pause, resume, pauseAll, resumeAll, retryAll, cancel, retry: resume, clearFinished, restore }
+  return { jobs, completedCount, activeCount, hasJobs, totalProgress,
+    enqueue, enqueueFiles, pause, resume, pauseAll, resumeAll, retryAll, cancel, retry: resume, clearFinished }
 })
 
 export { fingerprint as uploadFingerprint }

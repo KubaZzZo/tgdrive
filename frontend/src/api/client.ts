@@ -174,6 +174,10 @@ export interface VideoImportStatus {
     downloaded: number
     uploaded?: number
     ed2k_sources?: number
+    ed2k_network?: {
+      server?: 'offline' | 'connecting' | 'low_id' | 'high_id'
+      kad?: 'offline' | 'firewalled' | 'open'
+    }
     torrent_seeds?: number
   }[]
 }

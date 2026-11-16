@@ -517,6 +517,8 @@ class AccountManager:
                 ChannelSyncService(db, candidate, self.settings),
             )
             await old.sync.shutdown()
+            if db is not old.db:
+                new.uploads.cleanup_receiving(all_pending=True)
             new.uploads.recover_interrupted()
             await asyncio.wait_for(new.sync.start(), 30)
             await old.cleanup.stop()
@@ -551,6 +553,8 @@ class AccountManager:
     async def _dispose(self, runtime: Runtime) -> None:
         await runtime.cleanup.stop()
         await runtime.uploads.shutdown()
+        if runtime.db is not self.current.db:
+            runtime.uploads.cleanup_receiving(all_pending=True)
         await runtime.storage.stop()
         self.retired.discard(runtime)
 
@@ -560,6 +564,7 @@ class AccountManager:
         await self.current.sync.shutdown()
         await self.current.cleanup.stop()
         await self.current.uploads.shutdown()
+        self.current.uploads.cleanup_receiving(all_pending=True)
         await self.current.storage.stop()
         if self.tasks:
             await asyncio.gather(*list(self.tasks), return_exceptions=True)

@@ -76,6 +76,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         cleanup_faststart_outputs(cfg.temp_dir)
+        upload_service.cleanup_receiving(all_pending=True)
         interrupted = upload_service.recover_interrupted()
         if interrupted:
             logger.warning("Marked %s interrupted upload(s) as retryable errors", interrupted)

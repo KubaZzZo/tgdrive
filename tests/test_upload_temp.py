@@ -26,14 +26,47 @@ def test_startup_removes_crashed_and_orphan_outputs_but_preserves_retry_file(wor
     orphan.write_bytes(b"no database row")
     unrelated = settings.temp_dir / "keep.part"
     unrelated.write_bytes(b"unrelated")
+    partial = settings.temp_dir / "upload_partial.part"
+    partial.write_bytes(b"partial")
+    pending = app.state.db.create_upload(None, "partial.bin", 20, None, str(partial), 8)
     record = app.state.db.create_upload(None, "video.mp4", 8, "video/mp4", str(source), 8)
     app.state.db.update_upload(record["id"], state="processing", received=8)
     with TestClient(app):
         assert source.read_bytes() == b"original"
         assert unrelated.read_bytes() == b"unrelated"
         assert not orphan.exists() and not faststart_path(source).exists()
+        assert not partial.exists() and app.state.db.get_upload(pending["id"]) is None
         recovered = app.state.db.get_upload(record["id"])
         assert recovered["state"] == "error" and recovered["received"] == 8
+
+
+def test_receiving_cleanup_skips_active_writers_and_telegram_tasks(workdir):
+    async def run():
+        db = Database(workdir / "receiving.sqlite3")
+        service = UploadService(db, FakeTelegramStorage(), stale_hours=0)
+        uploads = {}
+        for state in ("abandoned", "writing", "processing", "recent"):
+            path = workdir / f"upload_{state}.part"
+            path.write_bytes(b"bytes")
+            upload = db.create_upload(None, f"{state}.bin", 16, None, str(path), 8)
+            uploads[state] = (upload["id"], path)
+        db.update_upload(uploads["processing"][0], state="processing")
+        for state in ("abandoned", "writing", "processing"):
+            with db.conn:
+                db.conn.execute(
+                    "UPDATE uploads SET updated_at=? WHERE id=?",
+                    ((datetime.now(UTC) - timedelta(minutes=3)).isoformat(), uploads[state][0]),
+                )
+        try:
+            async with service.lock(uploads["writing"][0]):
+                service.cleanup_receiving()
+                for state, (upload_id, path) in uploads.items():
+                    assert path.exists() == (state != "abandoned")
+                    assert (db.get_upload(upload_id) is not None) == (state != "abandoned")
+        finally:
+            db.close()
+
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("asynchronous", [False, True])

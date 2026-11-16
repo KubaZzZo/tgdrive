@@ -1,0 +1,11 @@
+services:
+  app:
+    environment:
+      VIDEO_IMPORT_ED2K_SEEDS: /ed2k-seeds
+      VIDEO_IMPORT_ED2K_PORT: "4662"
+    ports:
+      - "4662:4662/tcp"
+      - "4665:4665/udp"
+      - "4672:4672/udp"
+    volumes:
+      - ${ED2K_SEEDS_DIR:?Set ED2K_SEEDS_DIR in .env}:/ed2k-seeds:ro

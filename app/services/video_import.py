@@ -41,6 +41,7 @@ class VideoImport:
             limits.append(settings.max_file_size)
         self.max_bytes = min(limits)
         self.ed2k_seeds = settings.video_import_ed2k_seeds
+        self.ed2k_port = settings.video_import_ed2k_port
         self.qb = (
             QBittorrent(
                 settings.video_import_qb_url,
@@ -228,9 +229,18 @@ class VideoImport:
     async def _run(self, uploads: UploadService, retry: bool) -> None:
         assert self.batch is not None
         directory = Path(self.batch["directory"])
+        ed2k_slot = asyncio.Lock()
+
+        async def process(job: dict, index: int) -> None:
+            if self.ed2k_port and job.get("url", "").startswith("ed2k:"):
+                async with ed2k_slot:
+                    await self._process(uploads, directory, job, index, retry)
+            else:
+                await self._process(uploads, directory, job, index, retry)
+
         await asyncio.gather(
             *(
-                self._process(uploads, directory, job, index, retry)
+                process(job, index)
                 for index, job in enumerate(self.batch["jobs"], 1)
                 if job["state"] not in TERMINAL
             )
@@ -273,6 +283,7 @@ class VideoImport:
                     job["downloaded"] = 0
                 job.update(state="downloading", error=None)
                 job.pop("ed2k_sources", None)
+                job.pop("ed2k_network", None)
                 job.pop("torrent_seeds", None)
                 self._save()
                 async with asyncio.timeout(3600):
@@ -376,6 +387,9 @@ class VideoImport:
                 else:
                     job["ed2k_sources"] = sources
 
+            def report_network(status: dict[str, str]) -> None:
+                job["ed2k_network"] = status
+
             return await download_ed2k(
                 job["url"],
                 path,
@@ -384,6 +398,8 @@ class VideoImport:
                 self.max_bytes,
                 lambda: self.cancelling,
                 report_progress,
+                fixed_port=self.ed2k_port,
+                network_status=report_network,
             )
         job.pop("size", None)
         url = validate_url(job["url"])

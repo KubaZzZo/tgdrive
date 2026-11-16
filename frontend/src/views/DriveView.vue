@@ -609,7 +609,6 @@ watch(() => route.fullPath, () => {
           <strong>拖入文件，剩下的交给自动分类</strong>
           <p>
             {{ drive.folderId ? '文件将保存到当前文件夹' : '文件将保存到我的文件' }}
-            · 支持分片续传
           </p>
         </div>
         <span class="drop-caption">电脑拖放 / 手机选择文件</span>

@@ -77,7 +77,7 @@ curl -sI -b /tmp/tg.cookie -H 'Range: bytes=0-1023' \
 浏览器侧验收：
 
 1. 上传至少 500 MB 视频，确认完成。
-2. 刷新页面后重新拖入同名文件，确认从断点继续。
+2. 上传多个分片后断网或关闭页面，确认 VPS 上该任务的临时文件被清理。若服务端未收到断开通知，最后一个分片完成约 2 分钟后清理。重新拖入同名文件，确认从 0 开始。
 3. 播放视频并拖动进度条，确认 3 秒内出画面。
 4. 创建分享链接并在无登录窗口打开。
 5. 删除文件，确认 Telegram 频道里的消息也被清理。
@@ -195,3 +195,16 @@ TG Drive 提交的磁力任务使用 `tgdrive-import` 分类及共享目录中�
 如需在 TG Drive 的「视频链接导入」页面管理从 qBittorrent Web UI 或浏览器脚本提交的任务，在共享目录中创建 `/video-imports/inbox`，并在 qBittorrent 中创建保存路径为该目录的 `tgdrive-inbox` 分类。提交时填写该分类和保存目录。下载完成后可以上传到当前 Telegram 频道并入库，或删除任务及其下载文件。
 
 对于容器内 Web UI 使用 `8080`、VPS 绑定 `127.0.0.1:18885` 的部署，使用 `ssh -N -L 127.0.0.1:8080:127.0.0.1:18885 user@vps` 后打开 `http://127.0.0.1:8080`，使客户端的 Host 端口符合 qBittorrent 的检查。也可使用 HTTPS 反向代理，保留登录和 CSRF 防护，向 qBittorrent 转发访问域名及协议，并仅信任反向代理的上游来源地址。
+## 可选的 eD2k 公网入站
+
+在 `.env` 设置 `ED2K_SEEDS_DIR` 为宿主机上可信的 aMule 引导目录绝对路径，其中应含
+`server.met` 或 `nodes.dat`，且容器用户可读。在云防火墙及宿主机网络规则中允许
+`4662/tcp`、`4665/udp`、`4672/udp`，然后应用 Compose 覆盖文件：
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.ed2k.yml up -d --build
+```
+
+如同时使用 qBittorrent，保留原命令中的 `-f docker-compose.qbittorrent.yml`。
+固定端口时，同批 eD2k 任务依次运行。导入页显示 eD2k 和 Kad 的连接状态及当前文件的来源数。
+如果自定义 `VIDEO_IMPORT_ED2K_PORT`，容器内外应使用相同的 TCP 端口，两个 UDP 端口分别为 TCP +3 和 +10。

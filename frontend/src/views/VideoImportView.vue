@@ -33,6 +33,8 @@ const labels: Record<string, string> = {
 }
 
 const protocols = { http: 'HTTP(S)', ed2k: 'eD2k', magnet: '磁力', unknown: '未知类型' }
+const ed2kServerLabels = { offline: '未连接', connecting: '连接中', low_id: 'LowID', high_id: 'HighID' }
+const kadLabels = { offline: '未连接', firewalled: '入站受限', open: '已连接' }
 
 const jobs = computed(() => status.value?.jobs.map(job => {
   const uploading = job.state === 'uploading'
@@ -211,9 +213,13 @@ onBeforeUnmount(() => {
       <li v-for="(job, index) in jobs" :key="job.id">
         <strong>{{ job.name || `视频 ${index + 1}` }}</strong>
         <span>
-          {{ job.state === 'downloading' && job.ed2k_sources === 0
-            ? '正在查找下载源'
-            : labels[job.state] || job.state }}
+          {{ job.state === 'downloading' && job.ed2k_network
+            && ['offline', 'connecting'].includes(job.ed2k_network.server || '')
+            && job.ed2k_network.kad === 'offline'
+            ? '正在连接 eD2k / Kad 网络'
+            : job.state === 'downloading' && job.ed2k_sources === 0
+              ? '正在查找下载源'
+              : labels[job.state] || job.state }}
           · 已下载{{ job.state === 'downloading' && job.ed2k_sources !== undefined && job.downloaded ? '约' : '' }}
           {{ formatBytes(job.downloaded) }}
           <template v-if="job.size !== undefined"> / {{ formatBytes(job.size) }}</template>
@@ -224,6 +230,11 @@ onBeforeUnmount(() => {
             · {{ job.torrent_seeds }} 个做种者
           </template>
         </span>
+        <small v-if="job.state === 'downloading' && job.ed2k_network
+          && (job.ed2k_network.server || job.ed2k_network.kad)">
+          eD2k {{ job.ed2k_network.server ? ed2kServerLabels[job.ed2k_network.server] : '状态未知' }}
+          · Kad {{ job.ed2k_network.kad ? kadLabels[job.ed2k_network.kad] : '状态未知' }}
+        </small>
         <span v-if="job.uploading && job.uploaded !== undefined">
           已上传 {{ formatBytes(job.uploaded) }} / {{ formatBytes(job.size) }}
         </span>

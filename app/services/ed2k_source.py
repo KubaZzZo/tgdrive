@@ -46,14 +46,17 @@ def work_dir(path: Path) -> Path:
     return path.with_suffix(".amule")
 
 
-def _ports() -> tuple[int, int, int]:
+def _ports(port: int) -> tuple[int, int, int]:
     with (
         socket.socket() as tcp,
         socket.socket(type=socket.SOCK_DGRAM) as udp,
         socket.socket() as ec,
     ):
-        tcp.bind(("", 0))
-        udp.bind(("", 0))
+        try:
+            tcp.bind(("", port))
+            udp.bind(("", port + 10 if port else 0))
+        except OSError as exc:
+            raise ValueError("无法绑定 aMule 下载端口，请检查端口是否被占用") from exc
         ec.bind(("127.0.0.1", 0))
         return tcp.getsockname()[1], udp.getsockname()[1], ec.getsockname()[1]
 
@@ -67,13 +70,11 @@ async def _stop_process(process: asyncio.subprocess.Process) -> None:
     await process.wait()
 
 
-async def _download_progress(
-    amulecmd: str, directory: Path, digest: str, size: int
-) -> tuple[int, int] | None:
+async def _amule_command(amulecmd: str, directory: Path, command: str) -> str:
     process = await asyncio.create_subprocess_exec(
         amulecmd,
         "-c",
-        "show dl",
+        command,
         cwd=directory,
         env={**os.environ, "LC_ALL": "C"},
         stdin=asyncio.subprocess.DEVNULL,
@@ -84,15 +85,49 @@ async def _download_progress(
         async with asyncio.timeout(2):
             stdout, _ = await process.communicate()
     except TimeoutError:
-        return None
+        return ""
     finally:
         await _stop_process(process)
-    if process.returncode != 0:
-        return None
+    return stdout.decode(errors="replace") if process.returncode == 0 else ""
+
+
+async def _network_status(amulecmd: str, directory: Path) -> dict[str, str]:
+    output = await _amule_command(amulecmd, directory, "status")
+    server = re.search(
+        r"^ > eD2k: (?:Connected to [^\n]+ with (LowID|HighID)|(Now connecting|Not connected))$",
+        output,
+        re.M,
+    )
+    kad = re.search(
+        r"^ > Kad: (Connected \(ok\)|Connected \(firewalled\)|Not connected|Not running)$",
+        output,
+        re.M,
+    )
+    status = {}
+    if server:
+        status["server"] = {
+            "LowID": "low_id",
+            "HighID": "high_id",
+            "Now connecting": "connecting",
+            "Not connected": "offline",
+        }[server[1] or server[2]]
+    if kad:
+        status["kad"] = {
+            "Connected (ok)": "open",
+            "Connected (firewalled)": "firewalled",
+            "Not connected": "offline",
+            "Not running": "offline",
+        }[kad[1]]
+    return status
+
+
+async def _download_progress(
+    amulecmd: str, directory: Path, digest: str, size: int
+) -> tuple[int, int] | None:
     # aMule 2.3.3 prints the hash and filename, then the percentage and source counts.
     match = re.search(
         rf"^ > {digest} [^\n]+\n > [ \t]+\[([0-9]+\.[0-9]+)%\][ \t]+[0-9]+/[ \t]*([0-9]+)",
-        stdout.decode(errors="replace"),
+        await _amule_command(amulecmd, directory, "show dl"),
         re.IGNORECASE | re.MULTILINE,
     )
     if match is None:
@@ -110,6 +145,9 @@ async def download_ed2k(
     max_bytes: int,
     cancelled: Callable[[], bool],
     progress: Callable[[int, int | None], None],
+    *,
+    fixed_port: int = 0,
+    network_status: Callable[[dict[str, str]], None] | None = None,
 ) -> tuple[str, str, int]:
     name, size, mime, link = parse_link(url)
     if size > max_bytes:
@@ -132,7 +170,7 @@ async def download_ed2k(
                     copied = True
             if not copied:
                 raise ValueError("eD2k 下载需要管理员配置 aMule 节点或服务器列表")
-            port, udp_port, ec_port = _ports()
+            port, udp_port, ec_port = _ports(fixed_port)
             ec_password = secrets.token_hex(16)
             # aMule 2.3.3 resolves amulecmd's configuration relative to ./config.
             command_config = directory / "config"
@@ -170,6 +208,8 @@ async def download_ed2k(
             completed = incoming / name
             amulecmd = shutil.which("amulecmd")
             digest = link.split("|")[4]
+            loop = asyncio.get_running_loop()
+            next_status_check = 0.0
             try:
                 while not cancelled():
                     if (
@@ -183,6 +223,9 @@ async def download_ed2k(
                     if process.returncode is not None:
                         raise ValueError("aMuled 已退出，请检查下载器配置")
                     if amulecmd:
+                        if network_status is not None and loop.time() >= next_status_check:
+                            network_status(await _network_status(amulecmd, directory))
+                            next_status_check = loop.time() + 10
                         current = await _download_progress(amulecmd, directory, digest, size)
                         if current is not None:
                             progress(*current)
