@@ -67,7 +67,7 @@ class UploadsRepository(SQLiteSession):
     def list_uploads(
         self, states: tuple[str, ...] = ("uploading", "error"), *, include_imports: bool = False
     ) -> list[dict[str, Any]]:
-        """未完成的上传任务，供前端刷新后断点续传。"""
+        """List uploads in the requested states."""
         if not states:
             return []
         placeholders = ",".join("?" for _ in states)
@@ -91,6 +91,15 @@ class UploadsRepository(SQLiteSession):
         with self._lock:
             rows = self.conn.execute(
                 "SELECT * FROM uploads WHERE link_import=0 AND state IN ('uploading','error') AND updated_at < ?",
+                (before,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_receiving_uploads(self, before: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM uploads WHERE link_import=0 AND updated_at < ? "
+                "AND (state='uploading' OR (state='error' AND received < size))",
                 (before,),
             ).fetchall()
         return [dict(row) for row in rows]

@@ -21,6 +21,7 @@ from app.services.upload_temp import faststart_path, remove_upload_files
 from app.services.video_prepare import prepared_video
 
 logger = logging.getLogger("tgdrive.uploads")
+RECEIVING_IDLE_SECONDS = 120
 
 
 class UploadSpaceError(Exception):
@@ -166,8 +167,28 @@ class UploadService:
             yield
 
     def start(self) -> None:
-        if self.stale_hours > 0 and self._maintenance is None:
+        if self._maintenance is None:
             self._maintenance = asyncio.create_task(self._maintain(), name="upload-cleanup")
+
+    def discard_upload(self, upload: dict[str, Any]) -> None:
+        remove_upload_files(Path(upload["temp_path"]))
+        self.db.delete_upload(upload["id"])
+
+    def discard_receiving(self, upload: dict[str, Any]) -> None:
+        try:
+            self.discard_upload(upload)
+        except OSError:
+            logger.exception("Could not remove interrupted upload %s", upload["id"])
+
+    def cleanup_receiving(self, *, all_pending: bool = False) -> None:
+        cutoff = datetime.now(UTC)
+        if not all_pending:
+            cutoff -= timedelta(seconds=RECEIVING_IDLE_SECONDS)
+        for upload in self.db.list_receiving_uploads(cutoff.isoformat()):
+            lock = self.locks.get(upload["id"])
+            if lock is None or not lock.locked():
+                # No awaits between checking the lock and removing the file.
+                self.discard_receiving(upload)
 
     def recover_interrupted(self) -> int:
         # Called before this workspace's tasks start; keep originals for retry.
@@ -181,25 +202,30 @@ class UploadService:
         return self.db.recover_interrupted_uploads()
 
     async def _maintain(self) -> None:
+        next_stale_cleanup = time.monotonic() + 300
         while True:
-            await asyncio.sleep(300)
+            await asyncio.sleep(15)
             try:
-                await self.cleanup_stale_async()
+                self.cleanup_receiving()
+                if self.stale_hours > 0 and time.monotonic() >= next_stale_cleanup:
+                    next_stale_cleanup = time.monotonic() + 300
+                    await self.cleanup_stale_async()
             except Exception:
                 logger.exception("Upload cleanup failed")
 
     async def cleanup_stale_async(self) -> None:
         cutoff = (datetime.now(UTC) - timedelta(hours=self.stale_hours)).isoformat()
         for upload in self.db.list_stale_uploads(cutoff):
-            async with self.lock(upload["id"]):
-                current = self.db.get_upload(upload["id"])
-                if (
-                    current
-                    and current["state"] in {"uploading", "error"}
-                    and current["updated_at"] < cutoff
-                ):
-                    remove_upload_files(Path(current["temp_path"]))
-                    self.db.delete_upload(current["id"])
+            lock = self.locks.get(upload["id"])
+            if lock is None or not lock.locked():
+                async with self.lock(upload["id"]):
+                    current = self.db.get_upload(upload["id"])
+                    if (
+                        current
+                        and current["state"] in {"uploading", "error"}
+                        and current["updated_at"] < cutoff
+                    ):
+                        self.discard_upload(current)
 
     async def _run(self, upload_id: str) -> None:
         try:
@@ -321,8 +347,7 @@ class UploadService:
         cutoff = (datetime.now(UTC) - timedelta(hours=self.stale_hours)).isoformat()
         removed = 0
         for upload in self.db.list_stale_uploads(cutoff):
-            remove_upload_files(Path(upload["temp_path"]))
-            self.db.delete_upload(upload["id"])
+            self.discard_upload(upload)
             removed += 1
         if removed:
             logger.info("Removed %s stale upload(s)", removed)

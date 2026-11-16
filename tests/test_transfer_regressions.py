@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from conftest import FakeTelegramStorage, make_settings
 from fastapi import HTTPException
+from starlette.requests import ClientDisconnect
 from telethon import TelegramClient
 from telethon.sessions import MemorySession
 from telethon.tl.types import InputDocumentFileLocation
@@ -140,7 +141,7 @@ def test_concurrent_chunks_do_not_overwrite_or_regress(workdir, reconnected):
     asyncio.run(run())
 
 
-def test_chunk_rolls_back_when_disk_reserve_is_reached(workdir, monkeypatch):
+def test_chunk_discards_upload_when_disk_reserve_is_reached(workdir, monkeypatch):
     async def run():
         path = workdir / "upload_disk.part"
         path.write_bytes(b"old")
@@ -165,15 +166,15 @@ def test_chunk_rolls_back_when_disk_reserve_is_reached(workdir, monkeypatch):
             with pytest.raises(HTTPException) as failure:
                 await upload_chunk(record["id"], Request(), db, service)
             assert failure.value.status_code == 507
-            assert path.read_bytes() == b"old"
-            assert db.get_upload(record["id"])["received"] == 3
+            assert not path.exists()
+            assert db.get_upload(record["id"]) is None
         finally:
             db.close()
 
     asyncio.run(run())
 
 
-def test_repeated_cancellation_waits_for_disk_write_before_rollback(workdir, monkeypatch):
+def test_repeated_cancellation_waits_for_disk_write_before_removal(workdir, monkeypatch):
     async def run():
         path = workdir / "upload_cancel.part"
         path.write_bytes(b"old")
@@ -210,11 +211,39 @@ def test_repeated_cancellation_waits_for_disk_write_before_rollback(workdir, mon
             release.set()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            assert path.read_bytes() == b"old"
-            assert db.get_upload(record["id"])["received"] == 3
+            assert not path.exists()
+            assert db.get_upload(record["id"]) is None
         finally:
             release.set()
             await asyncio.gather(task, return_exceptions=True)
+            db.close()
+
+    asyncio.run(run())
+
+
+def test_client_disconnect_discards_previously_committed_chunks(workdir):
+    async def run():
+        db = Database(workdir / "disconnect.sqlite3")
+        service = UploadService(db, FakeTelegramStorage())
+        path = workdir / "upload_disconnected.part"
+        path.write_bytes(b"old")
+        record = db.create_upload(None, "a.bin", 8, None, str(path), 8)
+        db.update_upload(record["id"], received=3)
+
+        class Request:
+            headers = {"upload-offset": "3", "content-length": "5"}
+
+            async def stream(self):
+                yield b"new"
+                raise ClientDisconnect
+
+        try:
+            with pytest.raises(HTTPException) as failure:
+                await upload_chunk(record["id"], Request(), db, service)
+            assert failure.value.status_code == 400
+            assert not path.exists()
+            assert db.get_upload(record["id"]) is None
+        finally:
             db.close()
 
     asyncio.run(run())

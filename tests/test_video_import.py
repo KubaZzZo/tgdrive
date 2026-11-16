@@ -408,10 +408,7 @@ def test_ed2k_fixed_port_keeps_second_job_queued(authenticated_client, monkeypat
     service = app.state.video_import
     service.ed2k_seeds = workdir
     service.ed2k_port = 4662
-    links = [
-        f"ed2k://|file|fixture{index}.mp4|12|{index:032x}|/"
-        for index in (1, 2)
-    ]
+    links = [f"ed2k://|file|fixture{index}.mp4|12|{index:032x}|/" for index in (1, 2)]
     order = []
 
     async def download(url, path, seeds, space, max_bytes, cancelled, progress, **options):

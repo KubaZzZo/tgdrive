@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import errno
 import secrets
 from pathlib import Path
@@ -7,6 +8,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
+from starlette.requests import ClientDisconnect
 
 from app.api.deps import get_db, get_settings, get_upload_service, require_storage
 from app.api.schemas.uploads import UploadCreateBody
@@ -15,7 +17,6 @@ from app.core.security import require_auth
 from app.infrastructure.db import Database
 from app.infrastructure.storage import TelegramStorage
 from app.services.image_host import MAX_IMAGE_SIZE
-from app.services.upload_temp import remove_upload_files
 from app.services.uploads import UploadService, UploadSpaceError
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"], dependencies=[Depends(require_auth)])
@@ -45,7 +46,6 @@ async def create_upload(
     if settings.max_file_size and body.size > settings.max_file_size:
         raise HTTPException(413, "文件超过配置的最大大小")
     temp_path = settings.temp_dir / f"upload_{secrets.token_hex(16)}.part"
-    created = False
     try:
         await uploads.space.check_admission(settings.temp_dir, body.size)
         if uploads._closed:
@@ -56,8 +56,6 @@ async def create_upload(
                 raise HTTPException(404, "目标文件夹不存在")
             if parent["kind"] != "folder":
                 raise HTTPException(400, "目标不是文件夹")
-        temp_path.touch(exist_ok=False)
-        created = True
         upload = db.create_upload(
             parent_id=body.parent_id,
             name=body.name,
@@ -67,9 +65,12 @@ async def create_upload(
             chunk_size=settings.upload_chunk_size,
             image_host=body.image_host,
         )
+        try:
+            temp_path.touch(exist_ok=False)
+        except OSError:
+            db.delete_upload(upload["id"])
+            raise
     except Exception as exc:
-        if created:
-            temp_path.unlink(missing_ok=True)
         if isinstance(exc, ValueError):
             raise HTTPException(400, str(exc)) from None
         if isinstance(exc, UploadSpaceError):
@@ -89,7 +90,7 @@ async def create_upload(
 async def list_uploads(
     db: Database = Depends(get_db), uploads: UploadService = Depends(get_upload_service)
 ) -> dict[str, Any]:
-    """未完成的上传任务，用于刷新页面后断点续传。"""
+    """列出未完成的上传任务。"""
     return {
         "uploads": [
             public_upload(item)
@@ -169,32 +170,38 @@ async def upload_chunk(
         try:
             with path.open("r+b", buffering=0) as fh:
                 if fh.seek(0, 2) < offset:
-                    raise HTTPException(409, "临时文件不完整，请取消任务后重新上传")
+                    raise HTTPException(409, "临时文件不完整，请重新上传")
                 fh.truncate(offset)
                 fh.seek(offset)
-                try:
-                    async for chunk in request.stream():
-                        if not chunk:
-                            continue
-                        if written + len(chunk) > chunk_limit:
-                            raise HTTPException(413, "分片超过约定大小")
-                        await uploads.space.write(path.parent, fh, chunk)
-                        written += len(chunk)
-                    if written == 0:
-                        raise HTTPException(400, "空分片")
-                    if content_length is not None and written != declared:
-                        raise HTTPException(400, "分片长度与 Content-Length 不匹配")
-                    new_offset = offset + written
-                    db.update_upload(upload_id, received=new_offset, state="uploading", error=None)
-                except BaseException:
-                    fh.truncate(offset)
-                    raise
-        except FileNotFoundError:
-            raise HTTPException(409, "临时文件不存在，请取消任务后重新上传") from None
-        except UploadSpaceError as exc:
-            raise HTTPException(507, str(exc)) from None
-        except OSError as exc:
-            if is_disk_full(exc):
+                stream = request.stream()
+                while True:
+                    async with asyncio.timeout(60):
+                        chunk = await anext(stream, None)
+                    if chunk is None:
+                        break
+                    if not chunk:
+                        continue
+                    if written + len(chunk) > chunk_limit:
+                        raise HTTPException(413, "分片超过约定大小")
+                    await uploads.space.write(path.parent, fh, chunk)
+                    written += len(chunk)
+                if written == 0:
+                    raise HTTPException(400, "空分片")
+                if content_length is not None and written != declared:
+                    raise HTTPException(400, "分片长度与 Content-Length 不匹配")
+                new_offset = offset + written
+                db.update_upload(upload_id, received=new_offset, state="uploading", error=None)
+        except BaseException as exc:
+            uploads.discard_receiving(upload)
+            if isinstance(exc, ClientDisconnect):
+                raise HTTPException(400, "上传连接已断开，请重新上传") from None
+            if isinstance(exc, TimeoutError):
+                raise HTTPException(408, "上传超时，请重新上传") from None
+            if isinstance(exc, FileNotFoundError):
+                raise HTTPException(404, "临时文件不存在，请重新上传") from None
+            if isinstance(exc, UploadSpaceError):
+                raise HTTPException(507, str(exc)) from None
+            if isinstance(exc, OSError) and is_disk_full(exc):
                 raise HTTPException(507, "上传磁盘空间不足，请释放空间后重试") from None
             raise
         return {"offset": new_offset, "received": new_offset, "size": upload["size"]}
@@ -212,8 +219,8 @@ async def cancel_upload(
             raise HTTPException(404, "上传任务不存在")
         if upload["state"] == "processing":
             raise HTTPException(409, "正在写入 Telegram，无法取消")
-        remove_upload_files(Path(upload["temp_path"]))
-        db.delete_upload(upload_id)
+        if upload["state"] != "done":
+            uploads.discard_upload(upload)
         return {"ok": True}
 
 
