@@ -11,7 +11,19 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from app.api.routes import accounts, auth, files, images, items, system, uploads, video_import
+from app.api.routes import (
+    accounts,
+    auth,
+    clients,
+    files,
+    images,
+    items,
+    picgo,
+    system,
+    uploads,
+    video_import,
+    webdav,
+)
 from app.config import ROOT_DIR, Settings
 from app.config import settings as default_settings
 from app.core.errors import install_exception_handlers
@@ -138,6 +150,8 @@ def create_app(
     app.state.uploads = upload_service
     app.state.channel_sync = channel_sync
     app.state.login_limiter = LoginRateLimiter(cfg.login_max_attempts, cfg.login_window_seconds)
+    app.state.picgo_slots = asyncio.Semaphore(2)
+    app.state.index_backup_lock = asyncio.Lock()
     account_manager = AccountManager(
         app, cfg, control, Runtime(database, telegram, upload_service, channel_sync)
     )
@@ -159,11 +173,14 @@ def create_app(
 
     app.include_router(system.router)
     app.include_router(accounts.router)
+    app.include_router(clients.router)
+    app.include_router(webdav.router)
     app.include_router(auth.router)
     app.include_router(items.router)
     app.include_router(uploads.router)
     app.include_router(video_import.router)
     if cfg.image_host_enabled:
+        app.include_router(picgo.router)
         app.include_router(images.router)
         app.include_router(images.public_router)
     app.include_router(files.auth_router)
@@ -182,6 +199,7 @@ def create_app(
     @app.get("/traffic", include_in_schema=False)
     @app.get("/sync", include_in_schema=False)
     @app.get("/video-import", include_in_schema=False)
+    @app.get("/clients", include_in_schema=False)
     async def index() -> Response:
         if cfg.index_file.is_file():
             return FileResponse(cfg.index_file, headers={"Cache-Control": "no-cache"})

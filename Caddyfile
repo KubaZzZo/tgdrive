@@ -30,7 +30,7 @@
 
 	# encode 默认按响应 MIME 筛选；媒体路径额外排除以保留 Range 语义。
 	@compressible {
-		not path /api/files/* /s/* /i/*
+		not path /api/files/* /s/* /i/* /webdav /webdav/*
 	}
 	encode @compressible zstd gzip
 
@@ -40,7 +40,7 @@
 
 	# 分享撤销/过期必须回源检查。defer 覆盖上游的 public 缓存头。
 	@private {
-		path /api /api/* /s /s/* /i/*
+		path /api /api/* /s /s/* /i/* /webdav /webdav/*
 		not path_regexp ^/api/files/[^/]+/thumbnail$
 	}
 	header @private {
@@ -64,8 +64,9 @@
 		-Server
 	}
 
-	# 分享路径包含访问令牌。
-	log_skip /s/*
+	# 分享路径和 WebDAV 路径含有私有信息。
+	@privateLog path /s/* /i/* /webdav/*
+	log_skip @privateLog
 
 	log {
 		output stdout

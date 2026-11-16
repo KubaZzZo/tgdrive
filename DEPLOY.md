@@ -94,6 +94,8 @@ docker compose logs -f --tail=200 app
 
 ## 6. 备份
 
+可从网页「客户端与备份」下载[当前频道的索引快照](docs/clients.md#频道索引备份)。完整灾备需要备份数据卷与 `.env`，并加密保存 Telegram 会话。
+
 ```bash
 # SQLite 必须使用 .backup，不能直接拷贝运行中的库
 docker compose exec -T app \
@@ -111,6 +113,19 @@ docker compose start app
 ```
 
 ## 7. 升级
+
+版本标签触发 GitHub Actions 发布 Linux amd64 镜像。发布任务的摘要列出标签和镜像摘要。使用仓库自带的 Compose 时，可以只更新应用服务。
+
+```bash
+# 从仓库部署目录运行。版本可换成发布任务列出的镜像摘要。
+export TGDRIVE_IMAGE=ghcr.io/kubazzzo/tgdrive:v2.7.0
+docker compose pull app
+docker compose up -d --no-deps --no-build --pull never app
+```
+
+如果包需要鉴权，先登录 GHCR。回滚时指定旧镜像的标签或摘要。若旧版不支持当前数据库版本，先按完整备份流程恢复对应的数据卷，例如数据库从 17 升至 18 后回滚到 2.6.2。
+
+从源码构建的部署仍可使用以下流程。
 
 ```bash
 cd /opt/tgdrive

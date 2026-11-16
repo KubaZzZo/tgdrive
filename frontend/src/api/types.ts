@@ -199,3 +199,12 @@ export interface SyncStatus {
   error: string | null
   interval: number
 }
+
+export type ClientScope = 'webdav' | 'picgo'
+
+export interface ClientCredential {
+  id: string
+  label: string
+  scope: ClientScope
+  created_at: string
+}

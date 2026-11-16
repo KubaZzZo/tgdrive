@@ -7,6 +7,7 @@ from app.infrastructure.db.repositories.accounts import AccountsRepository
 from app.infrastructure.db.repositories.cdn import CDNRepository
 from app.infrastructure.db.repositories.channel import ChannelRepository
 from app.infrastructure.db.repositories.cleanup import CleanupRepository
+from app.infrastructure.db.repositories.credentials import CredentialsRepository
 from app.infrastructure.db.repositories.images import ImagesRepository
 from app.infrastructure.db.repositories.shares import SharesRepository
 from app.infrastructure.db.repositories.traffic import TrafficRepository
@@ -21,6 +22,7 @@ class Database(
     ImagesRepository,
     CDNRepository,
     AccountsRepository,
+    CredentialsRepository,
     TrafficRepository,
     UploadsRepository,
     SharesRepository,

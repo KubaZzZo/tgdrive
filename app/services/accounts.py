@@ -603,6 +603,7 @@ class WorkspaceMiddleware:
                         "/api/shares",
                         "/api/trash",
                         "/api/people",
+                        "/api/clients",
                     )
                 )
                 and scope.get("session", {}).get("auth")
