@@ -227,3 +227,18 @@ docker compose -f docker-compose.yml -f docker-compose.ed2k.yml up -d --build
 如同时使用 qBittorrent，保留原命令中的 `-f docker-compose.qbittorrent.yml`。
 固定端口时，同批 eD2k 任务依次运行。导入页显示 eD2k 和 Kad 的连接状态及当前文件的来源数。
 如果自定义 `VIDEO_IMPORT_ED2K_PORT`，容器内外应使用相同的 TCP 端口，两个 UDP 端口分别为 TCP +3 和 +10。
+
+## Google Drive 只读挂载
+
+1. 在能够连接 Google Drive 的服务器上运行 [OpenList](https://doc.oplist.org/guide/installation/docker)。Docker 部署时，确保 TG Drive 的 app 容器能访问 OpenList。
+2. 在 OpenList 添加 [Google Drive 存储](https://doc.oplist.org/guide/drivers/google_drive)，完成 Google OAuth 授权，将播放目录设为挂载根目录。示例挂载路径为 `/google-drive`。
+3. 在 OpenList 建立专用用户，把用户的基础路径限制为该挂载目录，只授予 WebDAV 读取权限。把 Google Drive 存储的 WebDAV 策略设为本地代理。
+4. 在 TG Drive 的 `.env` 中填写下面三项，然后重新创建 app 容器或重启应用。OpenList 的 WebDAV URL 以这个专用用户登录后看到的根目录为准。如果用户基础路径就是 `/google-drive`，URL 应指向 `/dav/`。
+
+```dotenv
+GOOGLE_DRIVE_DAV_URL=http://openlist:5244/dav/
+GOOGLE_DRIVE_DAV_USERNAME=tgdrive-google
+GOOGLE_DRIVE_DAV_PASSWORD=replace-with-openlist-password
+```
+
+登录 TG Drive 后，从顶部导航打开 Google Drive，可以浏览、预览或下载。播放经 OpenList 和 TG Drive 中转，使用部署服务器的下载与上传带宽。生产部署请使用容器内网或 HTTPS 连接 OpenList。留空 `GOOGLE_DRIVE_DAV_URL` 可以关闭入口。

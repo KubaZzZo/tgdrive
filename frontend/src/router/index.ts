@@ -21,6 +21,7 @@ export const router = createRouter({
     { path: '/', redirect: landing },
     { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue') },
     { path: '/drive', name: 'drive', component: () => import('@/views/DriveView.vue') },
+    { path: '/google-drive', name: 'google-drive', component: () => import('@/views/GoogleDriveView.vue') },
     { path: '/people', name: 'people', component: () => import('@/views/DriveView.vue') },
     { path: '/images', name: 'images', component: () => import('@/views/ImageHostView.vue') },
     { path: '/traffic', name: 'traffic', component: () => import('@/views/TrafficView.vue') },
@@ -34,7 +35,7 @@ export const router = createRouter({
 export function loginDestination(redirect: unknown): string {
   if (typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//')) {
     const resolved = router.resolve(redirect)
-    if (['drive', 'people', 'images', 'traffic', 'sync', 'video-import', 'clients'].includes(String(resolved.name))) {
+    if (['drive', 'people', 'images', 'traffic', 'sync', 'video-import', 'clients', 'google-drive'].includes(String(resolved.name))) {
       return resolved.fullPath
     }
   }
@@ -46,7 +47,10 @@ router.beforeEach(async (to) => {
   if (!auth.ready) await auth.bootstrap()
   if (to.name === 'people' && !auth.features.people ||
     to.name === 'images' && !auth.features.images ||
-    to.name === 'traffic' && !auth.features.traffic) return { name: 'drive', replace: true }
+    to.name === 'traffic' && !auth.features.traffic ||
+    to.name === 'google-drive' && auth.authenticated && !auth.features.google_drive) {
+    return { name: 'drive', replace: true }
+  }
   if (to.name === 'login') {
     if (auth.authenticated) return loginDestination(to.query.redirect)
   } else if (!auth.authenticated) {
