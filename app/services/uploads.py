@@ -227,25 +227,34 @@ class UploadService:
                     ):
                         self.discard_upload(current)
 
-    async def _run(self, upload_id: str) -> None:
+    async def _run(self, upload_id: str, *, discard_on_error: bool = False) -> None:
         try:
             async with self._slots:
                 await self._process(upload_id)
         except asyncio.CancelledError:
             self.db.update_upload(upload_id, state="error", error="服务关闭，上传已中断，请重试")
             raise
+        finally:
+            if discard_on_error:
+                upload = self.db.get_upload(upload_id)
+                if upload and upload["state"] != "done":
+                    self.discard_receiving(upload)
 
     async def run_import(self, upload_id: str) -> None:
         self.db.update_upload(upload_id, state="processing", error=None, progress=0)
         await self._run(upload_id)
 
-    def schedule(self, upload_id: str) -> bool:
+    def schedule(
+        self, upload_id: str, *, discard_on_error: bool = False
+    ) -> asyncio.Task[None] | None:
         if self._closed or upload_id in self._tasks:
-            return False
-        task = asyncio.create_task(self._run(upload_id), name=f"upload:{upload_id}")
+            return None
+        task = asyncio.create_task(
+            self._run(upload_id, discard_on_error=discard_on_error), name=f"upload:{upload_id}"
+        )
         self._tasks[upload_id] = task
         task.add_done_callback(lambda _: self._tasks.pop(upload_id, None))
-        return True
+        return task
 
     async def _process(self, upload_id: str) -> None:
         upload = self.db.get_upload(upload_id)

@@ -56,6 +56,7 @@ async function logout(): Promise<void> {
       <RouterLink :to="{ name: 'sync' }" class="ghost sync-button">
         <AppIcon name="refresh" :size="16" :class="{ spinning: sync.busy && sync.status?.state !== 'rate_limited' }" />{{ syncLabel }}
       </RouterLink>
+      <RouterLink :to="{ name: 'clients' }" class="ghost">客户端与备份</RouterLink>
       <button class="ghost telegram-button" :class="{ 'telegram-offline': !telegramConnected }" @click="telegramOpen = true">
         <span class="telegram-status-dot" :class="{ online: telegramConnected }" />
         <span class="telegram-label-desktop">Telegram 账号</span><span class="telegram-label-mobile">账号</span>

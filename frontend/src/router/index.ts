@@ -26,6 +26,7 @@ export const router = createRouter({
     { path: '/traffic', name: 'traffic', component: () => import('@/views/TrafficView.vue') },
     { path: '/video-import', name: 'video-import', component: () => import('@/views/VideoImportView.vue') },
     { path: '/sync', name: 'sync', component: () => import('@/views/ChannelSyncView.vue') },
+    { path: '/clients', name: 'clients', component: () => import('@/views/ClientsView.vue') },
     { path: '/:pathMatch(.*)*', redirect: '/drive' },
   ],
 })
@@ -33,7 +34,7 @@ export const router = createRouter({
 export function loginDestination(redirect: unknown): string {
   if (typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//')) {
     const resolved = router.resolve(redirect)
-    if (['drive', 'people', 'images', 'traffic', 'sync', 'video-import'].includes(String(resolved.name))) {
+    if (['drive', 'people', 'images', 'traffic', 'sync', 'video-import', 'clients'].includes(String(resolved.name))) {
       return resolved.fullPath
     }
   }

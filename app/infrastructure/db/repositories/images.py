@@ -28,6 +28,14 @@ class ImagesRepository(FilesRepository):
                 self.conn.execute("SELECT * FROM image_hosts WHERE token=?", (token,)).fetchone()
             )
 
+    def hosted_image_for_item(self, item_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            return row_dict(
+                self.conn.execute(
+                    "SELECT * FROM image_hosts WHERE item_id=?", (item_id,)
+                ).fetchone()
+            )
+
     def list_hosted_images(self, query: str, limit: int, offset: int) -> tuple[list[dict], int]:
         with self._lock:
             where = """ FROM image_hosts h JOIN items i ON i.id=h.item_id

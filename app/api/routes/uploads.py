@@ -39,6 +39,18 @@ async def create_upload(
     storage: TelegramStorage = Depends(require_storage),
     uploads: UploadService = Depends(get_upload_service),
 ) -> dict[str, Any]:
+    upload = await create_upload_record(body, db, settings, uploads)
+    return {
+        "id": upload["id"],
+        "offset": 0,
+        "chunk_size": upload["chunk_size"],
+        "size": upload["size"],
+    }
+
+
+async def create_upload_record(
+    body: UploadCreateBody, db: Database, settings: Settings, uploads: UploadService
+) -> dict[str, Any]:
     if body.image_host and not uploads.image_host_enabled:
         raise HTTPException(404, "图床功能已关闭")
     if body.image_host and body.size > MAX_IMAGE_SIZE:
@@ -78,12 +90,7 @@ async def create_upload(
         if isinstance(exc, OSError) and is_disk_full(exc):
             raise HTTPException(507, "上传磁盘空间不足，请释放空间后重试") from None
         raise
-    return {
-        "id": upload["id"],
-        "offset": 0,
-        "chunk_size": upload["chunk_size"],
-        "size": upload["size"],
-    }
+    return upload
 
 
 @router.get("")

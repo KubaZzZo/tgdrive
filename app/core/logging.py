@@ -17,6 +17,10 @@ def current_request_id() -> str:
 def request_log_path(path: str) -> str:
     if path.startswith("/s/"):
         return "/s/[token]/download" if path.endswith("/download") else "/s/[token]"
+    if path.startswith("/i/"):
+        return "/i/[token]"
+    if path.startswith("/webdav/"):
+        return "/webdav/[resource]"
     return path
 
 

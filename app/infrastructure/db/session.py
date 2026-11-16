@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from contextlib import closing
 from pathlib import Path
 
 from app.infrastructure.db.migrations import migrate
@@ -39,6 +40,15 @@ class SQLiteSession:
             return True
         except sqlite3.Error:
             return False
+
+    def backup_to(self, target: sqlite3.Connection) -> None:
+        if self.path == ":memory:":
+            with self._lock:
+                self.conn.backup(target)
+            return
+        uri = Path(self.path).resolve().as_uri() + "?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=30)) as reader:
+            reader.backup(target)
 
     def close(self) -> None:
         with self._lock:

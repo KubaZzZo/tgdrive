@@ -5,7 +5,7 @@ import sqlite3
 from app.infrastructure.db.common import utcnow
 from app.services.categories import classify_file, effective_mime
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -289,6 +289,20 @@ def _upgrade_to_17(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA user_version=17")
 
 
+def _upgrade_to_18(conn: sqlite3.Connection) -> None:
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("""CREATE TABLE IF NOT EXISTS client_credentials (
+            id TEXT PRIMARY KEY,
+            chat_id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            scope TEXT NOT NULL CHECK(scope IN ('picgo','webdav')),
+            digest TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        )""")
+        conn.execute("PRAGMA user_version=18")
+
+
 _MIGRATIONS = (
     (1, _upgrade_to_1),
     (2, _upgrade_to_2),
@@ -305,6 +319,7 @@ _MIGRATIONS = (
     (15, _upgrade_to_15),
     (16, _upgrade_to_16),
     (17, _upgrade_to_17),
+    (18, _upgrade_to_18),
 )
 
 

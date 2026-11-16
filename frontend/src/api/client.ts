@@ -1,5 +1,7 @@
 import type {
   DriveItem,
+  ClientCredential,
+  ClientScope,
   HostedImage,
   ItemListResponse,
   ItemQuery,
@@ -201,6 +203,12 @@ export interface QBDownload {
 }
 
 export const api = {
+  clientCredentials: () => request<{ channel_id: string; credentials: ClientCredential[] }>('/api/clients/credentials'),
+  addClientCredential: (scope: ClientScope, label: string) =>
+    jsonRequest<ClientCredential & { secret: string }>('POST', '/api/clients/credentials', { scope, label }),
+  revokeClientCredential: (id: string) => request<{ ok: boolean }>(
+    `/api/clients/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' },
+  ),
   videoImport: () => request<VideoImportStatus>('/api/video-import'),
   qbDownloads: () => request<{ enabled: boolean; tasks: QBDownload[] }>('/api/video-import/downloads'),
   importQBDownload: (hash: string) => request<VideoImportStatus>(

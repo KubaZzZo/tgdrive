@@ -7,7 +7,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: tgdrive:latest
+    image: ${TGDRIVE_IMAGE:-tgdrive:latest}
     container_name: tgdrive-app
     restart: unless-stopped
     env_file: [.env]

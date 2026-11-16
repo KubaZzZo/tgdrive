@@ -32,7 +32,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
             if request.url.path.startswith("/api/"):
                 response.headers.setdefault("Cache-Control", "no-store")
-            if path.startswith(("/i/", "/s/")):
+            if path == "/webdav" or path.startswith(("/i/", "/s/", "/webdav/")):
                 response.headers["Cache-Control"] = "private, no-store"
                 response.headers["Cloudflare-CDN-Cache-Control"] = "no-store"
             response.headers.setdefault(
