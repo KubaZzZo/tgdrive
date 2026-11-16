@@ -306,14 +306,16 @@ function retry(): void {
   save()
   start()
 }
+function closeSettings(): void {
+  settingsOpen.value = false
+  settingsButton.value?.focus()
+}
 function onKey(event: KeyboardEvent): void {
   if (event.key === 'Escape' && (settingsOpen.value || fullscreenActive.value)) {
     event.preventDefault()
     event.stopPropagation()
-    if (settingsOpen.value) {
-      settingsOpen.value = false
-      settingsButton.value?.focus()
-    } else void fullscreen()
+    if (settingsOpen.value) closeSettings()
+    else void fullscreen()
     return
   }
   if ((event.target as HTMLElement).matches('input, select, button, a')) return
@@ -456,11 +458,12 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <div class="media-buttons" role="group" aria-label="播放器操作">
-            <button type="button" aria-label="下载文件" :title="downloadPending ? '正在检查下载…' : '下载文件'" :disabled="downloadPending" @click="emit('download')">
+            <button class="media-secondary" type="button" aria-label="下载文件" :title="downloadPending ? '正在检查下载…' : '下载文件'" :disabled="downloadPending" @click="emit('download')">
               <AppIcon name="download" />
             </button>
             <button
               v-if="pipAvailable"
+              class="media-secondary"
               type="button"
               aria-label="画中画"
               :aria-pressed="pipActive"
@@ -487,8 +490,19 @@ onBeforeUnmount(() => {
             ><AppIcon name="settings" /></button>
           </div>
         </div>
-        <div v-if="settingsOpen" :id="settingsId" class="media-settings" role="group" aria-label="播放设置">
-          <div class="media-settings-head"><strong>播放设置</strong><span>{{ formatBytes(size) }}</span></div>
+        <p v-if="closeSeconds" class="media-notice media-close-countdown" role="timer">将在 {{ mediaTime(closeSeconds) }} 后关闭</p>
+        <p v-if="notice" class="media-notice" role="status">{{ notice }}</p>
+        <p v-if="downloadStatus" class="media-notice" role="status">{{ downloadStatus }}</p>
+      </div>
+      <div v-if="settingsOpen" :id="settingsId" class="media-settings" role="group" aria-label="播放设置">
+        <header class="media-settings-head">
+          <strong>播放设置</strong>
+          <span>{{ formatBytes(size) }}</span>
+          <button class="icon-btn media-settings-close" type="button" aria-label="关闭播放设置" @click="closeSettings">
+            <AppIcon name="close" :size="18" />
+          </button>
+        </header>
+        <div class="media-settings-body">
           <label class="media-setting">播放速度
             <select v-model="rate" aria-label="播放速度" @change="changeRate">
               <option v-for="speed in [0.5, 0.75, 1, 1.25, 1.5, 2]" :key="speed" :value="speed">{{ speed }}×</option>
@@ -516,10 +530,15 @@ onBeforeUnmount(() => {
             <button v-if="duration" type="button" @click="restart">从头播放</button>
             <button v-if="kind === 'video'" type="button" @click="rotation = (rotation + 90) % 360">旋转视频 {{ rotation }}°</button>
           </div>
+          <div class="media-buttons media-setting-actions media-compact-actions">
+            <button type="button" :disabled="downloadPending" @click="emit('download')">
+              <AppIcon name="download" :size="15" />{{ downloadPending ? '正在检查…' : '下载文件' }}
+            </button>
+            <button v-if="pipAvailable" type="button" :aria-pressed="pipActive" :disabled="fullscreenActive || !videoWidth" @click="pictureInPicture">
+              <AppIcon name="pip" :size="15" />{{ pipActive ? '退出画中画' : '画中画' }}
+            </button>
+          </div>
         </div>
-        <p v-if="closeSeconds" class="media-notice media-close-countdown" role="timer">将在 {{ mediaTime(closeSeconds) }} 后关闭</p>
-        <p v-if="notice" class="media-notice" role="status">{{ notice }}</p>
-        <p v-if="downloadStatus" class="media-notice" role="status">{{ downloadStatus }}</p>
       </div>
     </div>
   </div>
@@ -536,10 +555,13 @@ onBeforeUnmount(() => {
   outline-offset: -3px;
 }
 .media-layout {
-  display: flex;
-  flex-direction: column;
+  position: relative;
+  display: grid;
+  grid-template: minmax(0, 1fr) auto / minmax(0, 1fr);
+  container: media-layout / inline-size;
 }
 .media-screen {
+  grid-area: 1 / 1;
   position: relative;
   display: grid;
   place-items: center;
@@ -615,7 +637,7 @@ onBeforeUnmount(() => {
 .media-error p { margin: 0; }
 .media-error .ghost { color: var(--text); }
 .media-controls {
-  position: relative;
+  grid-area: 2 / 1;
   padding: 8px 14px 12px;
   background: var(--panel);
 }
@@ -681,17 +703,16 @@ onBeforeUnmount(() => {
   outline-offset: 1px;
 }
 .media-settings {
+  grid-area: 1 / 1 / 2 / 2;
   position: absolute;
   z-index: 2;
   inset-inline-end: 8px;
-  bottom: 100%;
-  display: grid;
-  gap: 8px;
-  width: min(280px, calc(100% - 16px));
-  max-height: min(40dvh, 270px);
-  overflow: auto;
-  overscroll-behavior: contain;
-  padding: 12px;
+  inset-block-end: 8px;
+  display: flex;
+  flex-direction: column;
+  width: min(300px, calc(100% - 16px));
+  max-height: min(340px, calc(100% - 16px));
+  overflow: hidden;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--panel);
@@ -700,11 +721,23 @@ onBeforeUnmount(() => {
 }
 .media-settings-head {
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
+  flex: none;
+  padding: 4px 6px 4px 12px;
+  border-bottom: 1px solid var(--line);
 }
-.media-settings-head span { color: var(--muted); }
+.media-settings-head span { margin-inline-start: auto; color: var(--muted); }
+.media-settings-close { width: 32px; height: 32px; }
+.media-settings-body {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.media-compact-actions { display: none; }
 .media-setting {
   display: grid;
   grid-template-columns: 1fr minmax(0, 118px);
@@ -749,9 +782,7 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
 }
-.media-fullscreen .media-settings { max-height: min(45cqh, 270px); }
 .media-player:is(:fullscreen, .media-expanded) .media-screen {
-  flex: 1;
   height: auto;
   min-height: 0;
 }
@@ -762,7 +793,6 @@ onBeforeUnmount(() => {
   max-height: none;
 }
 .media-fullscreen .media-controls {
-  flex: none;
   padding-right: max(14px, env(safe-area-inset-right));
   padding-bottom: max(8px, env(safe-area-inset-bottom));
   padding-left: max(14px, env(safe-area-inset-left));
@@ -778,7 +808,8 @@ onBeforeUnmount(() => {
   }
 }
 @media (pointer: coarse) {
-  .media-buttons button {
+  .media-buttons button,
+  .media-settings-close {
     min-width: 44px;
     min-height: 44px;
   }
@@ -786,6 +817,13 @@ onBeforeUnmount(() => {
 @media (max-width: 760px) {
   .media-screen video { max-height: 48dvh; }
   .media-quarter-turn { height: 48dvh; }
-  .media-controls { padding-inline: 10px; }
+  .media-controls { padding-inline: 8px; }
+}
+@container media-layout (max-width: 420px) {
+  .media-toolbar { flex-wrap: nowrap; gap: 4px; }
+  .media-toolbar .media-buttons { flex-wrap: nowrap; gap: 0; }
+  .media-toolbar .media-secondary { display: none; }
+  .media-compact-actions { display: flex; }
+  .media-settings { width: calc(100% - 16px); }
 }
 </style>

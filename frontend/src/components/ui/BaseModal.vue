@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, useId, watch } from 'vue'
 
-const props = withDefaults(defineProps<{ open: boolean; title: string; wide?: boolean }>(), {
+const props = withDefaults(defineProps<{ open: boolean; title: string; wide?: boolean; media?: boolean }>(), {
   wide: false,
 })
 const emit = defineEmits<{ close: [] }>()
@@ -80,6 +80,7 @@ onBeforeUnmount(() => {
       <div
         v-if="open"
         class="modal"
+        :class="{ 'modal-media': media }"
         role="dialog"
         aria-modal="true"
         :aria-labelledby="titleId"
@@ -187,6 +188,30 @@ onBeforeUnmount(() => {
     width: 44px;
     height: 44px;
   }
+  .modal-media {
+    grid-template-rows: minmax(0, 1fr);
+    padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+      max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+  }
+  .modal-media .modal-card { max-height: 100%; }
+  .modal-media .modal-head {
+    flex-shrink: 0;
+    gap: 8px;
+    padding: 8px 12px;
+  }
+  .modal-media .modal-head h2 {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    font-size: 14px;
+    line-height: 1.35;
+  }
+  .modal-media .modal-body {
+    padding: 8px;
+    overscroll-behavior: contain;
+  }
 }
 .modal {
   grid-template-columns: minmax(0, 1fr);
@@ -198,8 +223,8 @@ onBeforeUnmount(() => {
 .modal-head h2 {
   min-width: 0;
 }
-.modal:has(:global(.media-expanded)) { padding: 0; }
-.modal-card:has(:global(.media-expanded)) {
+.modal:has(.media-expanded) { padding: 0; }
+.modal-card:has(.media-expanded) {
   width: 100%;
   height: 100%;
   max-height: none;
@@ -207,8 +232,8 @@ onBeforeUnmount(() => {
   border: 0;
   border-radius: 0;
 }
-.modal-card:has(:global(.media-expanded)) > :is(.modal-head, .modal-footer) { display: none; }
-.modal-card:has(:global(.media-expanded)) > .modal-body {
+.modal-card:has(.media-expanded) > :is(.modal-head, .modal-footer) { display: none; }
+.modal-card:has(.media-expanded) > .modal-body {
   flex: 1;
   min-height: 0;
   overflow: hidden;
