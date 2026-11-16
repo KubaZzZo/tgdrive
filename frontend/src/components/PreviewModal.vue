@@ -23,7 +23,7 @@ const src = computed(() => (props.item ? api.downloadUrl(props.item.id) : ''))
 </script>
 
 <template>
-  <BaseModal v-if="item" :open="open" :title="item.name" wide @close="emit('close')">
+  <BaseModal v-if="item" :open="open" :title="item.name" wide :media="kind === 'video' || kind === 'audio'" @close="emit('close')">
     <MediaPlayer
       v-if="open && (kind === 'video' || kind === 'audio')"
       :key="item.id"
