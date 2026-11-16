@@ -39,21 +39,21 @@ const toast = useToastStore()
   border: 1px solid var(--line);
   border-radius: 9px;
   padding: 12px 20px;
-  background: white;
+  background: var(--panel);
   color: var(--text);
   font-size: 12px;
   box-shadow: var(--shadow);
   max-width: min(560px, calc(100vw - 32px));
 }
 .toast-error {
-  background: #fff1f2;
-  color: #be123c;
-  border-color: #fecdd3;
+  background: var(--danger-soft);
+  color: var(--danger-text);
+  border-color: var(--danger-border);
 }
 .toast-success {
-  background: #ecfdf5;
-  color: #047857;
-  border-color: #a7f3d0;
+  background: var(--ok-soft);
+  color: var(--ok);
+  border-color: var(--ok-border);
 }
 .toast-enter-active,
 .toast-leave-active {

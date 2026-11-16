@@ -2,7 +2,9 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Path, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.api.events import event_response
 from app.core.security import require_auth
+from app.services.progress_events import progress_messages
 from app.services.torrent_source import TORRENT_ID
 
 
@@ -25,7 +27,31 @@ router = APIRouter(
 
 @router.get("")
 async def status(request: Request):
-    return request.app.state.video_import.status(request.app.state.accounts.current.uploads)
+    return request.app.state.video_import.status(request.state.telegram_runtime.uploads)
+
+
+@router.get("/{batch_id}/events")
+async def events(batch_id: str, request: Request):
+    manager = request.app.state.accounts
+    runtime = request.state.telegram_runtime
+    service = request.app.state.video_import
+
+    def snapshot() -> dict | None:
+        if manager.current is not runtime:
+            return None
+        status = service.status(runtime.uploads)
+        return status if status["batch_id"] == batch_id else None
+
+    if snapshot() is None:
+        raise HTTPException(404, "导入批次不存在")
+    return event_response(
+        progress_messages(
+            snapshot,
+            lambda state: not state["running"],
+            service.progress_events,
+            runtime.uploads.progress_events,
+        )
+    )
 
 
 @router.get("/downloads")

@@ -53,7 +53,7 @@ async function submit(): Promise<void> {
   padding: 40px;
   border: 1px solid var(--line);
   border-radius: 20px;
-  background: white;
+  background: var(--panel);
   box-shadow: var(--shadow);
   text-align: center;
 }

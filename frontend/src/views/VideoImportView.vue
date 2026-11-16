@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { api, type QBDownload, type VideoImportPreviewRow, type VideoImportStatus } from '@/api/client'
+import { api, taskEvents, type QBDownload, type VideoImportPreviewRow, type VideoImportStatus } from '@/api/client'
 import { formatBytes } from '@/utils/format'
 import { splitVideoImportLinks } from '@/utils/video-import-links'
 
@@ -22,6 +22,35 @@ let qbTimer: ReturnType<typeof setInterval> | undefined
 let refreshing = false
 let refreshingQB = false
 let actionVersion = 0
+let stopEvents: (() => void) | null = null
+let nextStreamAt = 0
+let mounted = false
+
+function closeEvents(): void {
+  stopEvents?.()
+  stopEvents = null
+}
+
+function showStatus(latest: VideoImportStatus): void {
+  if (!mounted) return
+  if (status.value?.batch_id !== latest.batch_id || !latest.running) closeEvents()
+  status.value = latest
+  refreshError.value = ''
+  if (stopEvents || !latest.batch_id || !latest.running || Date.now() < nextStreamAt) return
+  const version = actionVersion
+  stopEvents = taskEvents<VideoImportStatus>(
+    `/api/video-import/${encodeURIComponent(latest.batch_id)}/events`,
+    (snapshot) => {
+      if (version === actionVersion && snapshot.batch_id === latest.batch_id) showStatus(snapshot)
+    },
+    () => {
+      if (version !== actionVersion || !mounted) return
+      closeEvents()
+      nextStreamAt = Date.now() + 5000
+      void refresh()
+    },
+  )
+}
 
 const labels: Record<string, string> = {
   queued: '等待下载',
@@ -52,8 +81,10 @@ async function update(action: () => Promise<VideoImportStatus>): Promise<boolean
   if (busy.value) return false
   busy.value = true
   actionVersion += 1
+  closeEvents()
+  nextStreamAt = 0
   try {
-    status.value = await action()
+    showStatus(await action())
     error.value = ''
     refreshError.value = ''
     return true
@@ -104,14 +135,13 @@ async function submit(): Promise<void> {
 }
 
 async function refresh(): Promise<void> {
-  if (refreshing || busy.value) return
+  if (refreshing || busy.value || stopEvents) return
   refreshing = true
   const version = actionVersion
   try {
     const latest = await api.videoImport()
     if (version !== actionVersion) return
-    status.value = latest
-    refreshError.value = ''
+    showStatus(latest)
   } catch (cause) {
     if (version === actionVersion) {
       refreshError.value = cause instanceof Error ? cause.message : '读取导入状态失败'
@@ -149,6 +179,7 @@ async function deleteDownload(task: QBDownload): Promise<void> {
   busy.value = true
   deleting.value = task.hash
   actionVersion += 1
+  closeEvents()
   try {
     await api.deleteQBDownload(task.hash)
     if (qb.value) qb.value.tasks = qb.value.tasks.filter(item => item.hash !== task.hash)
@@ -162,12 +193,15 @@ async function deleteDownload(task: QBDownload): Promise<void> {
 }
 
 onMounted(() => {
+  mounted = true
   void refresh()
   void refreshQB()
   timer = setInterval(refresh, 2500)
   qbTimer = setInterval(refreshQB, 5000)
 })
 onBeforeUnmount(() => {
+  mounted = false
+  closeEvents()
   clearInterval(timer)
   clearInterval(qbTimer)
 })
@@ -286,7 +320,7 @@ onBeforeUnmount(() => {
   padding: 24px;
   border: 1px solid var(--line);
   border-radius: 16px;
-  background: white;
+  background: var(--panel);
 }
 form, li { display: grid; gap: 8px; }
 form { justify-items: start; }

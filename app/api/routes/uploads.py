@@ -11,12 +11,14 @@ from fastapi.responses import JSONResponse
 from starlette.requests import ClientDisconnect
 
 from app.api.deps import get_db, get_settings, get_upload_service, require_storage
+from app.api.events import event_response
 from app.api.schemas.uploads import UploadCreateBody
 from app.config import Settings
 from app.core.security import require_auth
 from app.infrastructure.db import Database
 from app.infrastructure.storage import TelegramStorage
 from app.services.image_host import MAX_IMAGE_SIZE
+from app.services.progress_events import progress_messages
 from app.services.uploads import UploadService, UploadSpaceError
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"], dependencies=[Depends(require_auth)])
@@ -121,6 +123,37 @@ async def get_upload(
     ):
         raise HTTPException(404, "上传任务不存在")
     return public_upload(upload)
+
+
+@router.get("/{upload_id}/events")
+async def upload_events(
+    upload_id: str,
+    request: Request,
+    db: Database = Depends(get_db),
+    uploads: UploadService = Depends(get_upload_service),
+):
+    runtime = request.state.telegram_runtime
+    manager = request.app.state.accounts
+
+    def snapshot() -> dict | None:
+        if manager.current is not runtime:
+            return None
+        record = db.get_upload(upload_id)
+        if (
+            not record
+            or record["link_import"]
+            or (record["image_host"] and not uploads.image_host_enabled)
+        ):
+            return None
+        return public_upload(record)
+
+    if snapshot() is None:
+        raise HTTPException(404, "上传任务不存在")
+    return event_response(
+        progress_messages(
+            snapshot, lambda state: state["state"] in {"done", "error"}, uploads.progress_events
+        )
+    )
 
 
 @router.patch("/{upload_id}", response_model=None)

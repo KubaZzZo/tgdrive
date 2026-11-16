@@ -17,6 +17,7 @@ from anyio import CancelScope
 from app.infrastructure.db import Database
 from app.infrastructure.storage import TelegramStorage
 from app.services.image_host import MAX_IMAGE_SIZE, image_mime
+from app.services.progress_events import ProgressSignal
 from app.services.upload_temp import faststart_path, remove_upload_files
 from app.services.video_prepare import prepared_video
 
@@ -151,6 +152,7 @@ class UploadService:
         self.stale_hours = stale_hours
         self.space = space if space is not None else UploadSpace()
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self.progress_events = ProgressSignal()
         self._closed = False
         self.locks = locks if locks is not None else WeakValueDictionary[str, asyncio.Lock]()
         self._slots = asyncio.Semaphore(concurrency)
@@ -239,6 +241,7 @@ class UploadService:
                 upload = self.db.get_upload(upload_id)
                 if upload and upload["state"] != "done":
                     self.discard_receiving(upload)
+            self.progress_events.notify()
 
     async def run_import(self, upload_id: str) -> None:
         self.db.update_upload(upload_id, state="processing", error=None, progress=0)
@@ -275,6 +278,7 @@ class UploadService:
                 last_update = now
                 value = min(int(upload["size"]), sent * int(upload["size"]) // max(total, 1))
                 self.db.update_upload(upload_id, progress=value)
+                self.progress_events.notify()
 
         parts: list[dict[str, Any]] = []
         committed = False

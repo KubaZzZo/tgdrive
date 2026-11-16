@@ -31,6 +31,30 @@ type JsonBody = Record<string, unknown>
 let workspaceId: string | null = null
 export function setWorkspaceId(value: string | null): void { workspaceId = value }
 
+export function taskEvents<T>(
+  path: string, onSnapshot: (snapshot: T) => void, onDisconnect: () => void,
+): (() => void) | null {
+  if (typeof EventSource === 'undefined') return null
+  const query = workspaceId ? `?workspace_id=${encodeURIComponent(workspaceId)}` : ''
+  const source = new EventSource(path + query)
+  const close = () => {
+    source.onmessage = null
+    source.onerror = null
+    source.close()
+  }
+  source.onmessage = (event) => {
+    let snapshot: T
+    try { snapshot = JSON.parse(event.data) as T }
+    catch { close(); onDisconnect(); return }
+    onSnapshot(snapshot)
+  }
+  source.onerror = () => {
+    close()
+    onDisconnect()
+  }
+  return close
+}
+
 export function reloadAfterWorkspaceChange(): void {
   if ((window.location.pathname === '/drive' && (window.location.search || window.location.hash))
     || window.location.hash.startsWith('#drive?')) {
@@ -165,6 +189,7 @@ export async function uploadChunk(
 }
 
 export interface VideoImportStatus {
+  batch_id: string | null
   active: boolean
   running: boolean
   jobs: {
@@ -182,6 +207,33 @@ export interface VideoImportStatus {
     }
     torrent_seeds?: number
   }[]
+}
+
+export interface TelegramDiagnostics {
+  channel_id: string | null
+  session: DiagnosticConnection & { mode: 'user' | 'bot' | null }
+  bot: DiagnosticConnection
+  sync: { state: string; error: string | null; last_success: string | null; bot_state: string | null; bot_error: string | null }
+  test_channel_id: string | null
+}
+
+export interface IndexRestorePreview {
+  channel_id: string
+  backup: { app_version: string; source_schema_version: number; created_at?: string }
+  preview_id: string
+  added: Record<string, number>
+  unchanged_items: number
+  conflict_count: number
+  conflicts: { name: string; reason: string }[]
+  skipped_trash: number
+  skipped_links: number
+}
+
+interface DiagnosticConnection {
+  state: string
+  can_post: boolean | null
+  can_delete: boolean | null
+  error?: string
 }
 
 export interface VideoImportPreviewRow {
@@ -203,6 +255,20 @@ export interface QBDownload {
 }
 
 export const api = {
+  restoreIndex: (file: File, includeLinks: boolean, previewId?: string) =>
+    request<IndexRestorePreview>(
+      `/api/clients/index-restore/${previewId ? 'confirm' : 'preview'}?include_links=${includeLinks}`,
+      {
+        method: 'POST',
+        body: file,
+        headers: { 'Content-Type': 'application/zip', ...(previewId ? { 'X-Restore-Preview': previewId } : {}) },
+        signal: AbortSignal.timeout(120_000),
+      },
+    ),
+  telegramDiagnostics: () => request<TelegramDiagnostics>('/api/telegram/diagnostics'),
+  testTelegramMessage: (channelId: string) => jsonRequest<{ channel_id: string }>(
+    'POST', '/api/telegram/diagnostics/test-message', { chat_id: channelId },
+  ),
   clientCredentials: () => request<{ channel_id: string; credentials: ClientCredential[] }>('/api/clients/credentials'),
   addClientCredential: (scope: ClientScope, label: string) =>
     jsonRequest<ClientCredential & { secret: string }>('POST', '/api/clients/credentials', { scope, label }),

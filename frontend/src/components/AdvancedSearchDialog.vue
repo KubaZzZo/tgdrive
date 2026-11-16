@@ -73,7 +73,7 @@ function apply(): void {
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: white;
+  background: var(--panel);
   color: inherit;
   font: inherit;
 }

@@ -93,6 +93,7 @@ class Settings:
     tg_bot_fallback_token: str = field(
         default_factory=lambda: os.getenv("TG_BOT_FALLBACK_TOKEN", "").strip(), repr=False
     )
+    tg_diagnostic_chat_id: int = field(default_factory=lambda: _env_int("TG_DIAGNOSTIC_CHAT_ID", 0))
     tg_session: Path = field(default_factory=lambda: _env_path("TG_SESSION", "data/tgdrive"))
     tg_chat_id: str = field(default_factory=lambda: os.getenv("TG_CHAT_ID", "").strip())
     tg_proxy: str = field(default_factory=lambda: os.getenv("TG_PROXY", "").strip())
@@ -196,6 +197,8 @@ class Settings:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def validate(self) -> None:
+        if self.tg_diagnostic_chat_id and self.tg_diagnostic_chat_id >= -1_000_000_000_000:
+            raise RuntimeError("TG_DIAGNOSTIC_CHAT_ID 必须是专用 Telegram 频道的 -100… 数字 ID")
         if self.video_import_max_mib <= 0:
             raise RuntimeError("VIDEO_IMPORT_MAX_MIB 必须大于 0")
         if self.video_import_ed2k_port != 0 and not 1024 <= self.video_import_ed2k_port <= 65525:

@@ -179,16 +179,16 @@ onBeforeUnmount(() => { generation++; clearTimeout(timer); window.removeEventLis
 .image-heading p { margin: 4px 0; }
 .eyebrow { font-size: 11px; font-weight: 700; letter-spacing: .12em; color: var(--accent); }
 .muted { color: var(--muted); }
-.image-drop { display: flex; width: 100%; align-items: center; justify-content: center; flex-direction: column; gap: 10px; padding: 32px 16px; border: 1px dashed #a3b9dc; border-radius: 14px; background: #f1f6ff; color: var(--text); }
-.image-drop:hover,.image-drop.dragging { border-color: var(--accent); background: #e6efff; }
-.drop-mark { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: white; color: var(--accent); font-size: 26px; }
+.image-drop { display: flex; width: 100%; align-items: center; justify-content: center; flex-direction: column; gap: 10px; padding: 32px 16px; border: 1px dashed #a3b9dc; border-radius: 14px; background: var(--accent-soft); color: var(--text); }
+.image-drop:hover,.image-drop.dragging { border-color: var(--accent); background: var(--accent-soft); }
+.drop-mark { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: var(--panel); color: var(--accent); font-size: 26px; }
 .image-drop > span:last-child { color: var(--muted); font-size: 12px; }
 .publish-notice { font-size: 12px; color: var(--muted); margin: 12px 0 28px; }
 .image-toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-bottom: 20px; }
-.image-toolbar input { margin-left: auto; width: min(300px,100%); min-width: 180px; border: 1px solid var(--line); padding: 9px 12px; border-radius: 8px; background: white; }
+.image-toolbar input { margin-left: auto; width: min(300px,100%); min-width: 180px; border: 1px solid var(--line); padding: 9px 12px; border-radius: 8px; background: var(--panel); }
 .image-tabs { display: flex; gap: 4px; }
 .image-tabs button { background: transparent; border: 0; padding: 9px 14px; border-radius: 8px; color: var(--muted); }
-.image-tabs button[aria-pressed=true] { background: #e8efff; color: var(--accent); font-weight: 700; }
+.image-tabs button[aria-pressed=true] { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 .image-empty { text-align: center; padding: 64px 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
 .image-empty h2 { font-size: 18px; font-weight: 600; }
 .image-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(225px,1fr)); gap: 20px; }

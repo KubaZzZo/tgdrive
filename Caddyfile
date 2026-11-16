@@ -30,7 +30,7 @@
 
 	# encode 默认按响应 MIME 筛选；媒体路径额外排除以保留 Range 语义。
 	@compressible {
-		not path /api/files/* /s/* /i/* /webdav /webdav/*
+		not path /api/files/* /api/uploads/*/events /api/video-import/*/events /s/* /i/* /webdav /webdav/*
 	}
 	encode @compressible zstd gzip
 

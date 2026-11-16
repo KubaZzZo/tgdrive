@@ -46,14 +46,14 @@ function choose(action: FileAction, event: Event): void {
   height: 34px;
   border-radius: 6px;
   list-style: none;
-  color: #94a3b8;
+  color: var(--muted);
 }
 .file-menu summary::-webkit-details-marker {
   display: none;
 }
 .file-menu summary:hover,
 .file-menu[open] summary {
-  background: #ecf2ff;
+  background: var(--accent-soft);
   color: var(--accent);
 }
 .file-menu[open] {
@@ -68,7 +68,7 @@ function choose(action: FileAction, event: Event): void {
   border: 1px solid var(--line);
   border-radius: 9px;
   box-shadow: var(--shadow);
-  background: white;
+  background: var(--panel);
 }
 .file-menu-options button {
   display: block;

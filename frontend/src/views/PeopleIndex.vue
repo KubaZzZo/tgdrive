@@ -149,7 +149,7 @@ watch(
   padding: 14px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: white;
+  background: var(--panel);
   color: var(--text);
   text-decoration: none;
 }

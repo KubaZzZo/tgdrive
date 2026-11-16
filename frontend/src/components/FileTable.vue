@@ -113,7 +113,7 @@ function open(item: DriveItem): void {
   accent-color: var(--accent);
 }
 .table-wrap {
-  background: white;
+  background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 11px;
 }
@@ -124,11 +124,11 @@ function open(item: DriveItem): void {
 }
 .files-table th {
   text-align: left;
-  color: #8a98ad;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 400;
   padding: 14px 18px;
-  background: #fcfdff;
+  background: var(--panel-2);
   border-bottom: 1px solid var(--line);
 }
 .files-table th:first-child {
@@ -146,14 +146,14 @@ function open(item: DriveItem): void {
 }
 .files-table td {
   padding: 12px 18px;
-  border-bottom: 1px solid #f0f2f6;
+  border-bottom: 1px solid var(--line);
   font-size: 12px;
 }
 .files-table tr:last-child td {
   border-bottom: 0;
 }
 .files-table tbody tr:hover {
-  background: #fafcff;
+  background: var(--panel-2);
 }
 .name-cell {
   display: flex;
@@ -183,7 +183,7 @@ function open(item: DriveItem): void {
 .meta-type,
 .meta-size,
 .meta-time {
-  color: #7c8a9e;
+  color: var(--muted);
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -202,7 +202,7 @@ function open(item: DriveItem): void {
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 11px;
-  background: white;
+  background: var(--panel);
   padding: 12px 15px 16px;
 }
 .file-card:hover {
@@ -215,7 +215,7 @@ function open(item: DriveItem): void {
 }
 .type-label {
   font-size: 10px;
-  color: #94a3b8;
+  color: var(--muted);
 }
 .file-card-open {
   display: flex;
@@ -244,7 +244,7 @@ function open(item: DriveItem): void {
   margin: 7px 0 0;
   text-align: center;
   font-size: 10px;
-  color: #94a3b8;
+  color: var(--muted);
 }
 @media (max-width: 1100px) {
   .files-table th:nth-child(4),
@@ -286,7 +286,7 @@ function open(item: DriveItem): void {
   .mobile-meta {
     display: block;
     font-size: 10px;
-    color: #94a3b8;
+    color: var(--muted);
   }
   .file-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -311,8 +311,8 @@ function open(item: DriveItem): void {
 .source-badge {
   display: inline-block;
   margin-left: 6px;
-  color: #637eaa;
-  background: #eef3fb;
+  color: var(--muted);
+  background: var(--accent-soft);
   padding: 1px 5px;
   border-radius: 4px;
   font-size: 10px;

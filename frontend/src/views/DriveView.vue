@@ -712,7 +712,7 @@ watch(() => route.fullPath, () => {
 
 <style scoped>
 .active .nav-count {
-  color: #5282e7;
+  color: var(--accent);
 }
 h1 {
   margin: 0;
@@ -741,12 +741,12 @@ label.file-btn:focus-within {
   align-self: start;
   min-height: calc(100dvh - 76px);
   padding: 30px 16px;
-  background: white;
+  background: var(--panel);
   border-right: 1px solid var(--line);
 }
 .nav-heading {
   margin: 0 14px 15px;
-  color: #94a3b8;
+  color: var(--muted);
   font-size: 11px;
   letter-spacing: 0.08em;
 }
@@ -766,23 +766,23 @@ label.file-btn:focus-within {
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: #5b6b82;
+  color: var(--muted);
   text-align: left;
 }
 .primary-nav button:hover,
 .category-nav button:hover {
-  background: #f6f8fc;
+  background: var(--panel-2);
 }
 .primary-nav button.active,
 .category-nav button.active {
-  color: #245edb;
-  background: #ecf2ff;
+  color: var(--accent);
+  background: var(--accent-soft);
   font-weight: 650;
 }
 .nav-count {
   margin-left: auto;
   font-size: 11px;
-  color: #94a3b8;
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 .nav-section-label {
@@ -790,13 +790,13 @@ label.file-btn:focus-within {
   justify-content: space-between;
   align-items: center;
   margin: 30px 14px 12px;
-  color: #94a3b8;
+  color: var(--muted);
   font-size: 11px;
 }
 .auto-tag {
-  color: #718098;
+  color: var(--muted);
   font-size: 10px;
-  background: #f1f5f9;
+  background: var(--panel-2);
   border-radius: 4px;
   padding: 1px 5px;
 }
@@ -809,7 +809,7 @@ label.file-btn:focus-within {
 }
 .sidebar-storage > .app-icon {
   margin-right: 8px;
-  color: #8b9ab0;
+  color: var(--muted);
 }
 .sidebar-storage strong {
   display: block;
@@ -869,7 +869,7 @@ label.file-btn:focus-within {
 }
 .eyebrow {
   margin: 0 0 7px;
-  color: #8c9aaf;
+  color: var(--muted);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.13em;
@@ -908,7 +908,7 @@ label.file-btn:focus-within {
   padding: 19px 16px 38px;
   border: 1px solid var(--line);
   border-radius: 12px;
-  background: white;
+  background: var(--panel);
   text-align: left;
   transition:
   border-color 0.15s,
@@ -932,7 +932,7 @@ label.file-btn:focus-within {
 }
 .category-card-label small {
   font-size: 10px;
-  color: #8d99ac;
+  color: var(--muted);
   font-weight: 400;
 }
 .category-card-size {
@@ -940,7 +940,7 @@ label.file-btn:focus-within {
   bottom: 13px;
   right: 16px;
   font-size: 10px;
-  color: #93a0b3;
+  color: var(--muted);
 }
 .display-controls {
   display: flex;
@@ -954,7 +954,7 @@ label.file-btn:focus-within {
   min-height: 42px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: white;
+  background: var(--panel);
   color: var(--muted);
   font-size: 12px;
 }
@@ -969,7 +969,7 @@ label.file-btn:focus-within {
   padding: 12px 16px;
   border: 1px solid var(--line);
   border-radius: 10px;
-  background: white;
+  background: var(--panel);
   overflow-wrap: anywhere;
 }
 .batch-result ul {
@@ -986,7 +986,7 @@ label.file-btn:focus-within {
   padding: 3px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: white;
+  background: var(--panel);
 }
 .view-switch button {
   display: grid;
@@ -995,11 +995,11 @@ label.file-btn:focus-within {
   border: 0;
   border-radius: 5px;
   background: transparent;
-  color: #94a3b8;
+  color: var(--muted);
 }
 .view-switch button[aria-pressed="true"] {
   color: var(--accent);
-  background: #edf3ff;
+  background: var(--accent-soft);
 }
 .location-row {
   display: flex;
@@ -1014,7 +1014,7 @@ label.file-btn:focus-within {
   align-items: center;
   gap: 7px;
   flex-wrap: wrap;
-  color: #a0aec0;
+  color: var(--muted);
   min-width: 0;
 }
 .crumb {
@@ -1022,7 +1022,7 @@ label.file-btn:focus-within {
   padding: 0;
   background: transparent;
   font-size: 12px;
-  color: #64748b;
+  color: var(--muted);
   max-width: 240px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1039,7 +1039,7 @@ label.file-btn:focus-within {
 }
 .item-count {
   font-size: 11px;
-  color: #93a0b3;
+  color: var(--muted);
   white-space: nowrap;
 }
 .drop-zone {
@@ -1050,27 +1050,27 @@ label.file-btn:focus-within {
   padding: 20px;
   border: 1px dashed #cdd8ea;
   border-radius: 11px;
-  color: #7297d2;
-  background: #f3f7ff;
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 .drop-zone strong {
   font-size: 12px;
   font-weight: 500;
-  color: #7186a8;
+  color: var(--muted);
 }
 .drop-zone p {
   margin: 4px 0 0;
   font-size: 11px;
-  color: #94a3b8;
+  color: var(--muted);
 }
 .drop-zone.dragover {
   border-color: var(--accent);
-  background: #eaf1ff;
+  background: var(--accent-soft);
 }
 .drop-caption {
   margin-left: auto;
   font-size: 10px;
-  color: #94a3b8;
+  color: var(--muted);
   white-space: nowrap;
 }
 .classification-help p {
@@ -1175,7 +1175,7 @@ label.file-btn:focus-within {
     padding: 9px 4px;
     font-size: 11px;
     border: 1px solid var(--line);
-    background: white;
+    background: var(--panel);
   }
   .category-nav .nav-count {
     display: none;

@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, markRaw, ref } from 'vue'
 
-import { api, ApiError, uploadChunk } from '@/api/client'
+import { api, ApiError, taskEvents, uploadChunk } from '@/api/client'
 import type { UploadRecord } from '@/api/types'
 import { formatBytes, formatEta } from '@/utils/format'
 import { useAuthStore } from './auth'
@@ -238,9 +238,30 @@ export const useUploadStore = defineStore('uploads', () => {
       job.message = '等待 Telegram 保存…'
       job.progress = 80
       if (!['processing', 'done'].includes(source.state)) await withRetry(() => api.completeUpload(source.id))
-      // Resume observing an existing Telegram task, including one completed while offline.
+      function showProgress(record: UploadRecord): void {
+        job.progress = 80 + Math.max(0, Math.min(1, Number(record.progress) / job.file.size)) * 20
+        job.message = `Telegram 保存中 ${formatBytes(record.progress)} / ${formatBytes(job.file.size)}`
+      }
+      let nextStreamAt = 0
       for (let polls = 0; ; polls += 1) {
-        const record = await withRetry(() => api.getUpload(source.id))
+        let pushed: UploadRecord | null = null
+        if (Date.now() >= nextStreamAt) {
+          pushed = await new Promise<UploadRecord | null>((resolve) => {
+            const close = taskEvents<UploadRecord>(
+              `/api/uploads/${encodeURIComponent(source.id)}/events`,
+              (record) => {
+                if (record.state === 'done' || record.state === 'error') {
+                  close?.()
+                  resolve(record)
+                } else showProgress(record)
+              },
+              () => resolve(null),
+            )
+            if (!close) resolve(null)
+          })
+          nextStreamAt = Date.now() + 12_000
+        }
+        const record = pushed ?? await withRetry(() => api.getUpload(source.id))
         if (record.state === 'done') {
           job.state = 'done'
           job.received = job.file.size
@@ -252,8 +273,7 @@ export const useUploadStore = defineStore('uploads', () => {
           return
         }
         if (record.state === 'error') throw new Error(record.error || 'Telegram 保存失败')
-        job.progress = 80 + Math.max(0, Math.min(1, Number(record.progress) / job.file.size)) * 20
-        job.message = `Telegram 保存中 ${formatBytes(record.progress)} / ${formatBytes(job.file.size)}`
+        showProgress(record)
         // Long transfers poll less often to reduce metadata traffic.
         await wait(Math.min(5000, 1200 + polls * 200))
       }

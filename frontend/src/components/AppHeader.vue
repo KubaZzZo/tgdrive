@@ -7,6 +7,7 @@ import AppIcon from '@/components/ui/AppIcon.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useTrafficStore } from '@/stores/traffic'
 import { useSyncStore } from '@/stores/sync'
+import { setTheme, theme, type Theme } from '@/stores/theme'
 
 const TelegramAccountPanel = defineAsyncComponent(() => import('@/components/TelegramAccountPanel.vue'))
 const auth = useAuthStore()
@@ -57,6 +58,12 @@ async function logout(): Promise<void> {
         <AppIcon name="refresh" :size="16" :class="{ spinning: sync.busy && sync.status?.state !== 'rate_limited' }" />{{ syncLabel }}
       </RouterLink>
       <RouterLink :to="{ name: 'clients' }" class="ghost">客户端与备份</RouterLink>
+      <select class="theme-picker" aria-label="显示主题" :value="theme"
+        @change="setTheme(($event.target as HTMLSelectElement).value as Theme)">
+        <option value="system">跟随系统</option>
+        <option value="light">亮色</option>
+        <option value="dark">暗色</option>
+      </select>
       <button class="ghost telegram-button" :class="{ 'telegram-offline': !telegramConnected }" @click="telegramOpen = true">
         <span class="telegram-status-dot" :class="{ online: telegramConnected }" />
         <span class="telegram-label-desktop">Telegram 账号</span><span class="telegram-label-mobile">账号</span>
@@ -77,7 +84,7 @@ async function logout(): Promise<void> {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: white;
+  background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
 .brand {
@@ -99,6 +106,15 @@ async function logout(): Promise<void> {
   min-height: 34px;
   padding: 6px 12px;
 }
+.theme-picker {
+  min-height: 34px;
+  padding: 4px 6px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 12px;
+}
 .sync-button {
   gap: 7px;
 }
@@ -110,7 +126,7 @@ async function logout(): Promise<void> {
     transform: rotate(360deg);
   }
 }
-.top-actions .traffic-alert { color: #a85b16; background: #fff5e7; }
+.top-actions .traffic-alert { color: var(--warning); background: var(--warning-soft); }
 @media (max-width: 600px) {
   .topbar .brand > span:last-child { display: none; }
   .top-actions .traffic-button { font-size: 11px; padding-inline: 7px; }
@@ -125,7 +141,7 @@ async function logout(): Promise<void> {
 
 .module-nav { display: flex; gap: 4px; margin-right: auto; margin-left: 24px; }
 .module-nav a { border-radius: 8px; padding: 8px 14px; color: var(--muted); white-space: nowrap; text-decoration: none; }
-.module-nav a[aria-current] { background: #eff6ff; color: var(--accent); font-weight: 700; }
+.module-nav a[aria-current] { background: var(--accent-soft); color: var(--accent); font-weight: 700; }
 @media (max-width: 760px) {
   .topbar { flex-wrap: wrap; height: auto; padding: 10px 18px; gap: 8px; }
   .brand { font-size: 17px; gap: 9px; }

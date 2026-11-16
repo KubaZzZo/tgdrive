@@ -82,6 +82,10 @@ curl -sI -b /tmp/tg.cookie -H 'Range: bytes=0-1023' \
 4. 创建分享链接并在无登录窗口打开。
 5. 删除文件，确认 Telegram 频道里的消息也被清理。
 
+### Telegram 诊断
+
+在「频道同步」可运行 Telegram 一键诊断。默认查询连接和权限；如果需要主动测试发送，给备用 Bot 配置独立测试频道，并把数字 ID 写入 `TG_DIAGNOSTIC_CHAT_ID`。网页会在明确确认后发送测试消息。
+
 ## 5. 日志
 
 容器默认开启 `LOG_JSON=true`，每行一个 JSON 对象：
