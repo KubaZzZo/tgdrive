@@ -155,7 +155,9 @@ def create_app(
     )
     app.state.uploads = upload_service
     app.state.channel_sync = channel_sync
-    app.state.login_limiter = LoginRateLimiter(cfg.login_max_attempts, cfg.login_window_seconds)
+    app.state.login_limiter = LoginRateLimiter(
+        cfg.login_max_attempts, cfg.login_window_seconds, control
+    )
     app.state.picgo_slots = asyncio.Semaphore(2)
     app.state.index_backup_lock = asyncio.Lock()
     account_manager = AccountManager(

@@ -1,48 +1,37 @@
 from __future__ import annotations
 
 import hmac
-from collections import defaultdict, deque
-from threading import Lock
-from time import monotonic
+from math import ceil
+from time import time
+from typing import TYPE_CHECKING
 
 from fastapi import HTTPException, Request, status
 
+if TYPE_CHECKING:
+    from app.infrastructure.db import Database
+
 
 class LoginRateLimiter:
-    """Small in-process sliding-window limiter for the single-user login form."""
+    """Sliding-window limiter persisted in the installation's control database."""
 
-    def __init__(self, max_attempts: int, window_seconds: int):
+    def __init__(self, max_attempts: int, window_seconds: int, db: Database):
         self.max_attempts = max_attempts
         self.window_seconds = window_seconds
-        self._failures: dict[str, deque[float]] = defaultdict(deque)
-        self._lock = Lock()
-
-    def _prune(self, key: str, now: float) -> deque[float]:
-        attempts = self._failures[key]
-        cutoff = now - self.window_seconds
-        while attempts and attempts[0] <= cutoff:
-            attempts.popleft()
-        if not attempts:
-            self._failures.pop(key, None)
-        return attempts
+        self.db = db
 
     def retry_after(self, key: str) -> int:
-        with self._lock:
-            now = monotonic()
-            attempts = self._prune(key, now)
-            if len(attempts) < self.max_attempts:
-                return 0
-            return max(1, int(self.window_seconds - (now - attempts[0])) + 1)
+        now = time()
+        count, first = self.db.login_failure_window(key, now - self.window_seconds)
+        if count < self.max_attempts or first is None:
+            return 0
+        return max(1, ceil(self.window_seconds - (now - first)))
 
     def record_failure(self, key: str) -> None:
-        with self._lock:
-            now = monotonic()
-            self._prune(key, now)
-            self._failures[key].append(now)
+        now = time()
+        self.db.record_login_failure(key, now, now - self.window_seconds)
 
     def reset(self, key: str) -> None:
-        with self._lock:
-            self._failures.pop(key, None)
+        self.db.reset_login_failures(key)
 
 
 def check_password(password: str, expected: str) -> bool:

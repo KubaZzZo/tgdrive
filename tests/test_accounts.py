@@ -411,6 +411,37 @@ def test_stale_browser_workspace_and_native_download_are_rejected(authenticated_
     assert client.get("/api/items").json()["items"] == []
 
 
+def test_client_credentials_are_rechecked_after_channel_switch_on_same_connection(
+    workdir, fake_telegram
+):
+    app = create_app(make_settings(workdir), storage=Storage(-100111))
+    with TestClient(app) as client:
+        client.post("/api/login", json={"password": app.state.settings.app_password})
+        dav = client.post(
+            "/api/clients/credentials", json={"scope": "webdav", "label": "DAV"}
+        ).json()
+        picgo = client.post(
+            "/api/clients/credentials", json={"scope": "picgo", "label": "PicGo"}
+        ).json()
+        client.cookies.clear()
+        auth = ("tgdrive", dav["secret"])
+        assert client.request("OPTIONS", "/webdav/", auth=auth).status_code == 200
+        limiter = app.state.login_limiter
+        limiter.record_failure("blocked-client")
+        client.portal.call(app.state.accounts._activate, Storage(-100222), profile(-100222))
+        assert client.request("OPTIONS", "/webdav/", auth=auth).status_code == 401
+        assert (
+            client.post(
+                "/api/picgo/upload", headers={"Authorization": f"Bearer {picgo['secret']}"}
+            ).status_code
+            == 401
+        )
+        assert limiter.db is app.state.accounts.control
+        assert limiter.db is not app.state.db
+        count, _ = limiter.db.login_failure_window("blocked-client", 0)
+        assert count == 1
+
+
 def test_cancelled_login_disconnects_and_removes_only_pending_session(workdir, fake_telegram):
     async def run():
         app = create_app(make_settings(workdir), storage=Storage(-100111))

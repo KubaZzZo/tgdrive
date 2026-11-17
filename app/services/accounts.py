@@ -586,6 +586,7 @@ class WorkspaceMiddleware:
         runtime.leases += 1
         scope.setdefault("state", {})["telegram_runtime"] = runtime
         try:
+            path = scope["path"]
             headers = dict(scope.get("headers", []))
             query = parse_qs(scope.get("query_string", b"").decode("latin-1"))
             expected = (
@@ -593,8 +594,9 @@ class WorkspaceMiddleware:
                 or query.get("workspace_id", [""])[0]
             )
             if (
-                scope["path"].startswith(
-                    (
+                any(
+                    path == prefix or path.startswith(prefix + "/")
+                    for prefix in (
                         "/api/items",
                         "/api/files",
                         "/api/uploads",
@@ -604,11 +606,18 @@ class WorkspaceMiddleware:
                         "/api/trash",
                         "/api/people",
                         "/api/clients",
+                        "/api/picgo",
+                        "/webdav",
+                        "/api/google-drive",
                         "/api/video-import",
                         "/api/telegram/diagnostics",
                     )
                 )
-                and scope.get("session", {}).get("auth")
+                and (
+                    scope.get("session", {}).get("auth")
+                    or path == "/webdav"
+                    or path.startswith(("/webdav/", "/api/picgo/"))
+                )
                 and expected
                 and expected != str(runtime.storage.chat or "")
             ):

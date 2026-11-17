@@ -23,7 +23,8 @@ from app.services.image_host import IMAGE_MIMES
 MAX_ARCHIVE = 64 * 1024**2
 MAX_INDEX = 192 * 1024**2
 MAX_ROWS = 100_000
-INDEX_SCHEMA_VERSION = 18
+# Version 19 only adds installation-wide login counters; index tables are unchanged.
+INDEX_SCHEMA_VERSIONS = {18, 19}
 ITEM_ID = re.compile(r"[0-9a-f]{32}")
 TOKEN = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
@@ -115,7 +116,8 @@ def read_index_archive(archive: Path, directory: Path, chat_id: str) -> tuple[di
                 not isinstance(manifest, dict)
                 or manifest.get("format") != "tgdrive-channel-index"
                 or manifest.get("format_version") != 1
-                or manifest.get("source_schema_version") != INDEX_SCHEMA_VERSION
+                or type(manifest.get("source_schema_version")) is not int
+                or manifest.get("source_schema_version") not in INDEX_SCHEMA_VERSIONS
                 or not isinstance(manifest.get("app_version"), str)
             ):
                 raise ValueError("不支持的频道索引备份版本")
@@ -133,7 +135,10 @@ def read_index_archive(archive: Path, directory: Path, chat_id: str) -> tuple[di
             reader.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 1_000_000)
             deadline = monotonic() + 8
             reader.set_progress_handler(lambda: int(monotonic() >= deadline), 1000)
-            if reader.execute("PRAGMA user_version").fetchone()[0] != INDEX_SCHEMA_VERSION:
+            if (
+                reader.execute("PRAGMA user_version").fetchone()[0]
+                != manifest["source_schema_version"]
+            ):
                 raise ValueError("备份 SQLite 版本不匹配")
             real_tables = {
                 row["name"]
