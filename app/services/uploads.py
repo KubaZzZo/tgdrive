@@ -100,7 +100,12 @@ class UploadSpace:
                         except Exception:
                             break
                     if not write.cancelled():
-                        write.exception()
+                        error = write.exception()
+                        if error is not None:
+                            logger.warning(
+                                "Disk write failed while canceling upload",
+                                exc_info=(type(error), error, error.__traceback__),
+                            )
                 raise
 
 
@@ -127,7 +132,12 @@ async def upload_sha256(path: Path) -> str:
                 except Exception:
                     break
             if not worker.cancelled():
-                worker.exception()
+                error = worker.exception()
+                if error is not None:
+                    logger.warning(
+                        "File hashing failed while canceling upload",
+                        exc_info=(type(error), error, error.__traceback__),
+                    )
         raise
 
 

@@ -181,7 +181,7 @@ class TelegramStorage:
                 try:
                     await self.client.disconnect()
                 except Exception:
-                    pass
+                    logger.warning("Could not disconnect failed Telegram client", exc_info=True)
                 self.client = None
 
     def invalidate_session(self) -> None:

@@ -98,7 +98,9 @@ class AccountManager:
             try:
                 self.identity = await asyncio.wait_for(storage.me(), 20)
             except Exception:
-                pass
+                logger.warning(
+                    "Could not fetch Telegram account identity at startup", exc_info=True
+                )
         if storage.chat is not None and not self.control.telegram_profiles():
             identity = self.identity or {}
             self.control.save_telegram_profile(
@@ -308,12 +310,14 @@ class AccountManager:
                 try:
                     authorized = await asyncio.wait_for(job["client"].is_user_authorized(), 5)
                 except Exception:
-                    pass
+                    logger.warning(
+                        "Could not check authorization of unused Telegram session", exc_info=True
+                    )
             if authorized:
                 try:
                     await asyncio.wait_for(job["client"].log_out(), 10)
                 except Exception:
-                    pass  # Best effort revoke of an unused newly-authorized session.
+                    logger.warning("Could not revoke unused Telegram session", exc_info=True)
             await asyncio.wait_for(job["client"].disconnect(), 10)
         finally:
             for suffix in (".session", ".session-journal", ".session-wal", ".session-shm"):
@@ -358,6 +362,7 @@ class AccountManager:
                                 }
                             )
             except Exception:
+                logger.warning("Could not list Telegram channels", exc_info=True)
                 raise HTTPException(502, "读取频道失败，请检查连接后重试") from None
             return result
 
@@ -385,6 +390,7 @@ class AccountManager:
             except HTTPException:
                 raise
             except Exception:
+                logger.warning("Could not validate Telegram channel for activation", exc_info=True)
                 raise HTTPException(502, "无法验证频道，请检查频道 ID 和账号权限") from None
             account = job["account"]
             target_chat_id = str(utils.get_peer_id(entity))
