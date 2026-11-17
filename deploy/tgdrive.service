@@ -14,7 +14,7 @@ WorkingDirectory=/opt/tgdrive
 EnvironmentFile=/opt/tgdrive/.env
 Environment=PYTHONUNBUFFERED=1
 # 只绑回环，对外一律走 Caddy
-ExecStart=/opt/tgdrive/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8787 --proxy-headers --forwarded-allow-ips=127.0.0.1
+ExecStart=/opt/tgdrive/.venv/bin/uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8787 --proxy-headers --forwarded-allow-ips=127.0.0.1
 Restart=always
 RestartSec=3
 TimeoutStopSec=30

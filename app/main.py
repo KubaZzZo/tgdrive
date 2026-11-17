@@ -54,9 +54,9 @@ def create_app(
     storage: TelegramStorage | None = None,
 ) -> FastAPI:
     cfg = app_settings or default_settings
+    configure_logging(cfg.log_level, cfg.log_json)
     cfg.validate()
     cfg.ensure_dirs()
-    configure_logging(cfg.log_level, cfg.log_json)
 
     database = db or Database(cfg.db_path)
     control = database
@@ -229,6 +229,3 @@ def create_app(
         return Response(status_code=204)
 
     return app
-
-
-app = create_app()

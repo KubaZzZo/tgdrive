@@ -15,6 +15,8 @@ async def main() -> int:
     if not settings.tg_api_id or not settings.tg_api_hash:
         print("缺少 TG_API_ID / TG_API_HASH")
         return 2
+    settings.ensure_dirs()
+    settings.tg_session.parent.mkdir(parents=True, exist_ok=True)
     client = TelegramClient(str(settings.tg_session), settings.tg_api_id, settings.tg_api_hash, proxy=get_proxy())
     await client.connect()
     try:

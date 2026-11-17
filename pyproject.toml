@@ -1,6 +1,8 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+tmp_path_retention_count = 3
+tmp_path_retention_policy = "failed"
 filterwarnings = [
   "ignore:The 'app' shortcut is now deprecated:DeprecationWarning",
 ]
