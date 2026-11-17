@@ -90,7 +90,7 @@ flowchart TD
    npm ci
    npm run build
    cd ..
-   python -m uvicorn app.main:app --host 127.0.0.1 --port 8787
+   python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8787
    ```
 
 打开 [本地网盘](http://127.0.0.1:8787)，用 `APP_PASSWORD` 登录。从「频道同步」查看同步状态或重新扫描历史。安装 FFmpeg 后可使用视频抽帧和上传 MP4 索引前置，Docker 镜像已包含 FFmpeg。
@@ -136,6 +136,14 @@ eD2k 导入需通过 `VIDEO_IMPORT_ED2K_SEEDS` 指定含有 `server.met` 或 `no
 
 后端测试覆盖率最低要求为 80%，由 `pyproject.toml` 统一配置；本地覆盖率检查与 CI
 使用相同门槛，低于门槛时验证失败。
+
+应用通过 `app.main:create_app --factory` 显式初始化；导入模块不会创建运行目录或打开数据库。
+旧启动命令中的 `app.main:app` 需替换为上述工厂入口。
+默认 `APP_PASSWORD` / `APP_SECRET` 在所有环境都会输出安全警告，生产环境仍拒绝启动。
+
+测试使用 pytest 管理的系统临时目录，不再写入仓库的 `tmp/tests/`。成功测试的目录会被清理，
+失败测试产物最多保留最近 3 轮；强制终止可能暂留产物，由后续 pytest 运行按保留策略清理。
+显式指定 `--basetemp` 或 `TMPDIR` 可覆盖默认位置。已有的仓库 `tmp/` 内容不会自动删除。
 
 ```bash
 python -m ruff check app tests

@@ -7,7 +7,7 @@ frontend-install:
 	cd frontend && npm ci
 
 dev:
-	python -m uvicorn app.main:app --host 127.0.0.1 --port 8787 --reload
+	python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8787 --reload
 
 test:
 	python -m pytest

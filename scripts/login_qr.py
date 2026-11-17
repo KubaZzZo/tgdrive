@@ -21,6 +21,8 @@ async def main() -> int:
         print(error)
         return 2
 
+    settings.ensure_dirs()
+    settings.tg_session.parent.mkdir(parents=True, exist_ok=True)
     session_path = str(settings.tg_session)
     client = TelegramClient(session_path, settings.tg_api_id, settings.tg_api_hash, proxy=get_proxy())
     await client.connect()

@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import shutil
-import uuid
 from pathlib import Path
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import ROOT_DIR, Settings
+from app.config import Settings
 from app.main import create_app
 
 
@@ -86,13 +84,10 @@ def make_settings(tmp_path: Path, **overrides: Any) -> Settings:
 
 
 @pytest.fixture()
-def workdir() -> Path:
-    path = ROOT_DIR / "tmp" / "tests" / uuid.uuid4().hex
-    path.mkdir(parents=True, exist_ok=True)
-    try:
-        yield path
-    finally:
-        shutil.rmtree(path, ignore_errors=True)
+def workdir(tmp_path: Path) -> Path:
+    # Pytest owns retention/cleanup outside the checkout, including on later runs
+    # after an interrupted test process. Do not mix test output with local tools.
+    return tmp_path
 
 
 @pytest.fixture()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +10,7 @@ from dotenv import load_dotenv
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(ROOT_DIR / ".env")
+logger = logging.getLogger("tgdrive.config")
 
 
 def _env_int(name: str, default: int) -> int:
@@ -211,6 +213,10 @@ class Settings:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def validate(self) -> None:
+        if self.app_password == "change-me":
+            logger.warning("APP_PASSWORD uses the insecure default; set a private password")
+        if self.app_secret == "change-this-secret-in-env":
+            logger.warning("APP_SECRET uses the insecure default; set a random secret")
         if self.google_drive_enabled:
             url = urlsplit(self.google_drive_dav_url)
             if (
@@ -268,4 +274,3 @@ class Settings:
 
 
 settings = Settings()
-settings.ensure_dirs()
