@@ -56,6 +56,7 @@ uploading -> processing -> done
 - Telegram 写入与视频导入进度通过同源 SSE 发送当前任务快照。每条流绑定原频道和任务，连接结束后前端查状态补齐并尝试重连；反向代理需保留流式传输。
 - Telegram 写入由 `UPLOAD_CONCURRENCY` 信号量限制并发，取消时清理已知的分段消息；数据库提交失败时也清理未登记的消息。
 - 分片全部到齐后，后台任务计算 SHA-256 并按 `TG_SEGMENT_SIZE` 上传 Telegram。
+- Telegram 文件段达到 32 MiB 时，使用 `TG_UPLOAD_CONNECTIONS`（默认 4，范围 1–8）个独立 MTProto 连接，以 512 KiB 分片并行上传；小段或配置为 1 时仍使用 Telethon 标准上传。进度在服务端确认保存后更新，失败或取消会停止所有分片任务并断开临时连接。该配置独立于文件任务并发数 `UPLOAD_CONCURRENCY`，默认最多 2 × 4 个上传连接。
 - 写入 Telegram 失败时保留临时文件供重试。服务重启会把 `processing` 标记为可重试错误，超过 `UPLOAD_STALE_HOURS` 的失败任务会清理。
 
 ## 可观测性
