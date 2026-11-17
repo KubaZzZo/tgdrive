@@ -25,6 +25,11 @@ from telethon.tl.types import DocumentAttributeFilename
 from app.config import Settings
 from app.config import settings as default_settings
 from app.core.network import get_proxy
+from app.infrastructure.telegram_upload import (
+    PARALLEL_UPLOAD_MIN_BYTES,
+    UPLOAD_PART_BYTES,
+    upload_parallel,
+)
 
 ProgressCallback = Callable[[int, int], Awaitable[None] | None]
 logger = logging.getLogger("tgdrive.storage")
@@ -264,13 +269,19 @@ class TelegramStorage:
                     await self._progress(progress, _start + sent, total_size)
 
                 try:
-                    uploaded = await client.upload_file(
-                        reader,
-                        file_size=size,
-                        part_size_kb=512,
-                        file_name=part_name,
-                        progress_callback=part_progress,
-                    )
+                    connections = self.settings.tg_upload_connections
+                    if connections > 1 and size >= PARALLEL_UPLOAD_MIN_BYTES:
+                        uploaded = await upload_parallel(
+                            client, reader, size, part_name, connections, part_progress
+                        )
+                    else:
+                        uploaded = await client.upload_file(
+                            reader,
+                            file_size=size,
+                            part_size_kb=UPLOAD_PART_BYTES // 1024,
+                            file_name=part_name,
+                            progress_callback=part_progress,
+                        )
                     message = await client.send_file(
                         self.chat,
                         uploaded,
@@ -542,4 +553,5 @@ class TelegramStorage:
             "error": self.error,
             "chat_id": str(self.chat) if self.chat is not None else None,
             "segment_size": self.settings.tg_segment_size,
+            "upload_connections": self.settings.tg_upload_connections,
         }

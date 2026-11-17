@@ -112,6 +112,7 @@ class Settings:
 
     # Telegram hard limit is 2 GB per file for normal accounts.
     tg_segment_size: int = field(default_factory=lambda: _env_int("TG_SEGMENT_SIZE", 1_800_000_000))
+    tg_upload_connections: int = field(default_factory=lambda: _env_int("TG_UPLOAD_CONNECTIONS", 4))
     upload_chunk_size: int = field(
         default_factory=lambda: _env_int("UPLOAD_CHUNK_SIZE", 8 * 1024 * 1024)
     )
@@ -254,6 +255,8 @@ class Settings:
             raise RuntimeError("TG_MODE 只能是 user 或 bot")
         if self.upload_concurrency <= 0:
             raise RuntimeError("UPLOAD_CONCURRENCY 必须大于 0")
+        if not 1 <= self.tg_upload_connections <= 8:
+            raise RuntimeError("TG_UPLOAD_CONNECTIONS 必须在 1 到 8 之间")
         if self.upload_chunk_size <= 0:
             raise RuntimeError("UPLOAD_CHUNK_SIZE 必须大于 0")
         if self.tg_segment_size <= 0:
