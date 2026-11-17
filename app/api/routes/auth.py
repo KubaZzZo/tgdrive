@@ -11,6 +11,8 @@ router = APIRouter(prefix="/api", tags=["auth"])
 
 
 def _client_key(request: Request) -> str:
+    # Uvicorn resolves X-Forwarded-For only for FORWARDED_ALLOW_IPS proxies.
+    # Reading raw forwarding headers here would bypass that trust boundary.
     return request.client.host if request.client else "unknown"
 
 

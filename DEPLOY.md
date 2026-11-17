@@ -42,6 +42,15 @@ docker compose ps
 
 ## 3. 配置检查
 
+登录限速按客户端 IP 计数。Compose 将 Caddy 固定为 `172.30.87.2`，并通过
+`FORWARDED_ALLOW_IPS` 让 Uvicorn 只接受该代理的 `X-Forwarded-For`。
+若默认网段与现有网络冲突，在 `.env` 同时调整 `PROXY_NETWORK_SUBNET` 和
+`CADDY_PROXY_IP`，保证地址属于该网段。升级此配置时需运行
+`docker compose down` 后再运行 `docker compose up -d --build`，以重建网络和两个服务；
+此操作会短暂停机，请勿添加 `-v`，以保留数据卷。
+使用其他反向代理或直接运行镜像时，请将 `FORWARDED_ALLOW_IPS` 环境变量设为实际可信代理的
+IP（多个地址用逗号分隔），不要设为 `*`。登录路由使用 Uvicorn 处理后的客户端地址。
+
 ```bash
 # 进程存活
 curl -fsS https://drive.example.com/api/health/live

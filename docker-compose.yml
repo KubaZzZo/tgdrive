@@ -23,6 +23,8 @@ services:
       FRONTEND_DIST: /app/static/dist
       COOKIE_SECURE: "true"
       LOG_JSON: "true"
+      # Uvicorn only accepts forwarded client addresses from this Caddy instance.
+      FORWARDED_ALLOW_IPS: ${CADDY_PROXY_IP:-172.30.87.2}
     volumes:
       - tgdata:/data              # SQLite + session，必须备份
       - tgupload:/tmp/upload      # 上传临时分片，可随时清空
@@ -60,7 +62,9 @@ services:
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
-    networks: [web]
+    networks:
+      web:
+        ipv4_address: ${CADDY_PROXY_IP:-172.30.87.2}
 
 volumes:
   tgdata:
@@ -71,3 +75,6 @@ volumes:
 networks:
   web:
     driver: bridge
+    ipam:
+      config:
+        - subnet: ${PROXY_NETWORK_SUBNET:-172.30.87.0/24}
