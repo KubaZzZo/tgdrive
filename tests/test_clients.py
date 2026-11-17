@@ -10,6 +10,8 @@ from urllib.parse import quote
 from xml.etree import ElementTree as XML
 from zipfile import ZipFile
 
+import pytest
+
 from app.infrastructure.db import SCHEMA_VERSION
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"test-image"
@@ -35,6 +37,36 @@ def add_file(db, storage, name, parent=None):
         str(storage.chat),
         [{"part_index": 0, "size": len(data), "tg_message_id": message_id}],
     )
+
+
+@pytest.mark.parametrize("scope", ["webdav", "picgo"])
+@pytest.mark.parametrize("logged_in", [True, False])
+@pytest.mark.parametrize("query", [True, False])
+def test_client_workspace_checks_do_not_require_browser_session(
+    authenticated_client, scope, logged_in, query
+):
+    client, app, storage = authenticated_client
+    issued = credential(client, scope)
+    if not logged_in:
+        client.cookies.clear()
+    headers = {} if query else {"X-Workspace-ID": "old-channel"}
+    params = {"workspace_id": "old-channel"} if query else {}
+    auth = ("tgdrive", issued["secret"]) if scope == "webdav" else None
+    if scope == "picgo":
+        headers["Authorization"] = f"Bearer {issued['secret']}"
+    url = "/webdav" if scope == "webdav" else "/api/picgo/upload"
+    response = client.request(
+        "OPTIONS" if scope == "webdav" else "POST",
+        url,
+        headers=headers,
+        params=params,
+        auth=auth,
+    )
+    assert response.status_code == 409
+    assert response.json()["workspace_changed"]
+    assert not storage.files
+    assert not app.state.db.list_uploads()
+    assert app.state.accounts.current.leases == 0
 
 
 def test_picgo_upload_publishes_picture_and_credential_is_revocable(authenticated_client):

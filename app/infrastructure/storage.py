@@ -167,8 +167,10 @@ class TelegramStorage:
             self.auth_required = False
             self.error = None
             self._started = True
-            print(
-                f"[telegram] connected mode={self.mode} account={getattr(me, 'username', None) or getattr(me, 'id', '?')}"
+            logger.info(
+                "Telegram connected mode=%s account=%s",
+                self.mode,
+                getattr(me, "username", None) or getattr(me, "id", "?"),
             )
         except SESSION_AUTH_ERRORS:
             self.invalidate_session()

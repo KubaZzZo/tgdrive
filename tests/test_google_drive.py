@@ -88,6 +88,17 @@ def test_private_mount_paths_and_streaming(workdir):
             client.post("/api/login", json={"password": settings.app_password}).status_code == 200
         )
         assert client.get("/api/meta").json()["features"]["google_drive"]
+        assert (
+            client.get(f"{base}/items", headers={"X-Workspace-ID": "old-channel"}).status_code
+            == 409
+        )
+        assert (
+            client.get(
+                f"{base}/content", params={"path": "private.mp4", "workspace_id": "old-channel"}
+            ).status_code
+            == 409
+        )
+        assert not requests
         assert client.get(f"{base}/items", params={"path": "../other"}).status_code == 400
         assert client.get(f"{base}/items", params={"path": "photos\\other"}).status_code == 400
         listing = client.get(f"{base}/items")

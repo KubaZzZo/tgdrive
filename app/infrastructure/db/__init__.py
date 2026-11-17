@@ -10,6 +10,7 @@ from app.infrastructure.db.repositories.cleanup import CleanupRepository
 from app.infrastructure.db.repositories.credentials import CredentialsRepository
 from app.infrastructure.db.repositories.images import ImagesRepository
 from app.infrastructure.db.repositories.index_restore import IndexRestoreRepository
+from app.infrastructure.db.repositories.security import SecurityRepository
 from app.infrastructure.db.repositories.shares import SharesRepository
 from app.infrastructure.db.repositories.traffic import TrafficRepository
 from app.infrastructure.db.repositories.trash import TrashRepository
@@ -25,6 +26,7 @@ class Database(
     AccountsRepository,
     CredentialsRepository,
     IndexRestoreRepository,
+    SecurityRepository,
     TrafficRepository,
     UploadsRepository,
     SharesRepository,

@@ -5,7 +5,7 @@ import sqlite3
 from app.infrastructure.db.common import utcnow
 from app.services.categories import classify_file, effective_mime
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -156,22 +156,56 @@ def _upgrade_to_7(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA user_version=7")
 
 
+def _ensure_bot_files(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS channel_bot_files (
+        item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
+        bot_id TEXT NOT NULL, file_id TEXT NOT NULL,
+        remote_version TEXT NOT NULL, size INTEGER NOT NULL)""")
+
+
+def _ensure_bot_covers(conn: sqlite3.Connection) -> None:
+    conn.execute("""CREATE TABLE IF NOT EXISTS channel_bot_covers (
+        item_id TEXT PRIMARY KEY REFERENCES channel_bot_files(item_id) ON DELETE CASCADE,
+        file_id TEXT NOT NULL)""")
+
+
+def _upgrade_to_8(conn: sqlite3.Connection) -> None:
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_bot_files(conn)
+        conn.execute("PRAGMA user_version=8")
+
+
+def _upgrade_to_9(conn: sqlite3.Connection) -> None:
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        # Schema 8 was also used for CDN-only installs, without Bot tables.
+        _ensure_bot_files(conn)
+        _ensure_bot_covers(conn)
+        conn.execute("PRAGMA user_version=9")
+
+
 def _upgrade_to_10(conn: sqlite3.Connection) -> None:
     # Versions 8/9 exist on deployed Bot-fallback instances. Some
     # schema-8 installs instead contain CDN counters. Reconcile all
     # three additive tables without dropping either installation's data.
     with conn:
         conn.execute("BEGIN IMMEDIATE")
-        conn.execute("""CREATE TABLE IF NOT EXISTS channel_bot_files (
-            item_id TEXT PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
-            bot_id TEXT NOT NULL, file_id TEXT NOT NULL,
-            remote_version TEXT NOT NULL, size INTEGER NOT NULL)""")
-        conn.execute("""CREATE TABLE IF NOT EXISTS channel_bot_covers (
-            item_id TEXT PRIMARY KEY REFERENCES channel_bot_files(item_id) ON DELETE CASCADE,
-            file_id TEXT NOT NULL)""")
+        _ensure_bot_files(conn)
+        _ensure_bot_covers(conn)
         conn.execute("""CREATE TABLE IF NOT EXISTS cdn_usage (
             uuid TEXT NOT NULL, period TEXT NOT NULL,
             charged INTEGER NOT NULL, PRIMARY KEY(uuid, period))""")
+        # IF NOT EXISTS preserves legacy data, but cannot verify an existing table.
+        # Reject incompatible layouts before advancing the migration version.
+        for table, required in (
+            ("channel_bot_files", {"item_id", "bot_id", "file_id", "remote_version", "size"}),
+            ("channel_bot_covers", {"item_id", "file_id"}),
+            ("cdn_usage", {"uuid", "period", "charged"}),
+        ):
+            columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if not required.issubset(columns):
+                raise RuntimeError(f"数据库迁移 10 失败：{table} 缺少必要字段，请检查历史数据库")
         conn.execute("PRAGMA user_version=10")
 
 
@@ -303,6 +337,19 @@ def _upgrade_to_18(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA user_version=18")
 
 
+def _upgrade_to_19(conn: sqlite3.Connection) -> None:
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("""CREATE TABLE IF NOT EXISTS login_failures (
+            client_key TEXT NOT NULL, occurred_at REAL NOT NULL
+        )""")
+        conn.execute("""CREATE INDEX IF NOT EXISTS idx_login_failures_client
+            ON login_failures(client_key, occurred_at)""")
+        conn.execute("""CREATE INDEX IF NOT EXISTS idx_login_failures_expiry
+            ON login_failures(occurred_at)""")
+        conn.execute("PRAGMA user_version=19")
+
+
 _MIGRATIONS = (
     (1, _upgrade_to_1),
     (2, _upgrade_to_2),
@@ -311,6 +358,8 @@ _MIGRATIONS = (
     (5, _upgrade_to_5),
     (6, _upgrade_to_6),
     (7, _upgrade_to_7),
+    (8, _upgrade_to_8),
+    (9, _upgrade_to_9),
     (10, _upgrade_to_10),
     (11, _upgrade_to_11),
     (12, _upgrade_to_12),
@@ -320,6 +369,7 @@ _MIGRATIONS = (
     (16, _upgrade_to_16),
     (17, _upgrade_to_17),
     (18, _upgrade_to_18),
+    (19, _upgrade_to_19),
 )
 
 
