@@ -134,6 +134,9 @@ eD2k 导入需通过 `VIDEO_IMPORT_ED2K_SEEDS` 指定含有 `server.met` 或 `no
 
 从仓库根目录验证：
 
+后端测试覆盖率最低要求为 80%，由 `pyproject.toml` 统一配置；本地覆盖率检查与 CI
+使用相同门槛，低于门槛时验证失败。
+
 ```bash
 python -m ruff check app tests
 python -m ruff format --check app tests

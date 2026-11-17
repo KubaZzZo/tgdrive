@@ -562,6 +562,12 @@ class ChannelSyncService:
                 return
             except Exception:
                 self._full = self._full or full
+                logger.warning(
+                    "Channel sync worker will retry chat_id=%s full=%s",
+                    self.chat_id,
+                    self._full,
+                    exc_info=True,
+                )
 
     async def shutdown(self) -> None:
         if self._unsubscribe:
