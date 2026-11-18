@@ -72,7 +72,9 @@ async def upload_parallel(
     async with AsyncExitStack() as cleanup:
         senders = []
         for _ in range(min(connections, part_count)):
-            sender = MTProtoSender(session.auth_key, loggers=client._log)
+            sender = MTProtoSender(
+                session.auth_key, loggers=client._log, connect_timeout=client._timeout
+            )
             cleanup.push_async_callback(disconnect, sender)
             await sender.connect(
                 client._connection(

@@ -106,7 +106,7 @@ docker compose up -d --build
 docker compose ps
 ```
 
-升级前备份 `.env` 和完整数据卷，包括主 SQLite 数据库、`channels/` 下的频道数据库和 `accounts/` 下的会话。对于已使用默认 Compose 的实例，可运行 `docker compose up -d --build --no-deps app` 单独更新应用。部署后检查首页以及 `/api/health/live`、`/api/health/ready`。已安装旧宿主机流量服务的实例可按部署指南停用旧服务。
+升级前备份 `.env` 和完整数据卷，包括主 SQLite 数据库、`channels/` 下的频道数据库和 `accounts/` 下的会话。如果升级涉及 Compose 网络配置，按[部署指南](DEPLOY.md#3-配置检查)重建网络和服务。常规应用更新可运行 `docker compose up -d --build --no-deps app`。部署后检查首页以及 `/api/health/live`、`/api/health/ready`。已安装旧宿主机流量服务的实例可按部署指南停用旧服务。
 
 TG Drive 面向单用户运行。每套数据卷使用一个应用实例和一个 Uvicorn worker。请妥善保管 Telegram 会话，并为重要文件另外保留备份。应用流量统计按两段传输计数，回源并转发 1 GB 内容约产生 2 GB 应用有效载荷，服务商账单还包含协议开销等流量。
 

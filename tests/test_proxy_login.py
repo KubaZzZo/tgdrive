@@ -88,12 +88,12 @@ def test_docker_entrypoint_preserves_proxy_allowlist_from_environment():
     assert "--forwarded-allow-ips" not in command
 
 
-@pytest.mark.parametrize("port", [0, 1024, 65525, *range(65526, 65536)])
+@pytest.mark.parametrize("port", [0, 1024, 65525])
 def test_ed2k_accepts_valid_port_boundaries(workdir, port):
     make_settings(workdir, video_import_ed2k_port=port).validate()
 
 
-@pytest.mark.parametrize("port", [-1, 1, 1023, 65536])
+@pytest.mark.parametrize("port", [-1, 1, 1023, *range(65526, 65537)])
 def test_ed2k_rejects_invalid_ports(workdir, port):
     with pytest.raises(RuntimeError, match="VIDEO_IMPORT_ED2K_PORT"):
         make_settings(workdir, video_import_ed2k_port=port).validate()

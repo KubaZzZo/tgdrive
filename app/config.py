@@ -235,8 +235,9 @@ class Settings:
             raise RuntimeError("TG_DIAGNOSTIC_CHAT_ID 必须是专用 Telegram 频道的 -100… 数字 ID")
         if self.video_import_max_mib <= 0:
             raise RuntimeError("VIDEO_IMPORT_MAX_MIB 必须大于 0")
-        if self.video_import_ed2k_port != 0 and not 1024 <= self.video_import_ed2k_port <= 65535:
-            raise RuntimeError("VIDEO_IMPORT_ED2K_PORT 必须为 0 或 1024 至 65535")
+        # aMule also binds UDP at TCP + 10, which must fit in the port range.
+        if self.video_import_ed2k_port != 0 and not 1024 <= self.video_import_ed2k_port <= 65525:
+            raise RuntimeError("VIDEO_IMPORT_ED2K_PORT 必须为 0 或 1024 至 65525")
         if self.video_import_qb_url and (
             not self.video_import_qb_username or not self.video_import_qb_password
         ):

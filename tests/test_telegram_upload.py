@@ -16,6 +16,7 @@ def fake_client(call):
     return SimpleNamespace(
         session=SimpleNamespace(auth_key=object(), server_address="dc", port=443, dc_id=2),
         _log={},
+        _timeout=17,
         _proxy=("socks5", "example.test", 1080),
         _local_addr=None,
         _connection=lambda *args, **kwargs: (args, kwargs),
@@ -36,6 +37,7 @@ def test_four_connections_preserve_bytes_and_close_senders(workdir, monkeypatch,
         workers_started = asyncio.Event()
 
         def make_sender(*args, **kwargs):
+            assert kwargs["connect_timeout"] == client._timeout
             sender = SimpleNamespace(connect=AsyncMock(), disconnect=AsyncMock())
             senders.append(sender)
             return sender
