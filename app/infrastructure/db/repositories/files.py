@@ -105,6 +105,22 @@ class FilesRepository(SQLiteSession):
             ).fetchall()
         return [dict(row) for row in rows], int(total)
 
+    _summary_key: tuple[int, int] | None = None
+    _summary: dict[str, Any]
+
+    def library_summary(self) -> dict[str, Any]:
+        """Reuse the workspace totals across page and search requests until a write."""
+        with self._lock:
+            # total_changes tracks our writes, data_version tracks other connections.
+            version = self.conn.execute("PRAGMA data_version").fetchone()[0]
+            key = (self.conn.total_changes, version)
+            if self.conn.in_transaction:
+                return {"categories": self.category_stats(), "stats": self.stats()}
+            if self._summary_key != key:
+                self._summary = {"categories": self.category_stats(), "stats": self.stats()}
+                self._summary_key = key
+            return self._summary
+
     def category_stats(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self.conn.execute(

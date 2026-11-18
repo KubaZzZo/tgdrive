@@ -487,6 +487,42 @@ def test_saved_connection_and_workspace_survive_application_restart(
     asyncio.run(app.state.accounts.shutdown())
 
 
+def test_inactive_workspace_keeps_recent_upload_and_expires_stale_upload(workdir, fake_telegram):
+    from datetime import UTC, datetime, timedelta
+
+    async def run():
+        settings = make_settings(workdir, upload_stale_hours=1)
+        app = create_app(settings, storage=Storage(-100111))
+        manager = app.state.accounts
+        await manager.start()
+        try:
+            await manager._activate(Storage(-100222), profile(-100222))
+            db = manager.current.db
+            records = []
+            for name in ("recent", "stale"):
+                path = settings.temp_dir / f"upload_{name}.part"
+                path.write_bytes(b"confirmed")
+                record = db.create_upload(None, f"{name}.bin", 16, None, str(path), 16)
+                db.update_upload(record["id"], received=9)
+                records.append((record["id"], path))
+            recent, stale = records
+            with db.conn:
+                db.conn.execute(
+                    "UPDATE uploads SET updated_at=? WHERE id=?",
+                    ((datetime.now(UTC) - timedelta(hours=2)).isoformat(), stale[0]),
+                )
+            await manager._activate(Storage(-100111), profile(-100111))
+            manager.cleanup_stale_uploads()
+            assert not stale[1].exists() and db.get_upload(stale[0]) is None
+            assert recent[1].read_bytes() == b"confirmed"
+            await manager._activate(Storage(-100222), profile(-100222))
+            assert manager.current.db.get_upload(recent[0])["received"] == 9
+        finally:
+            await manager.shutdown()
+
+    asyncio.run(run())
+
+
 def test_session_settings_reject_untrusted_paths(workdir):
     settings = make_settings(workdir)
     with pytest.raises(RuntimeError):

@@ -4,7 +4,6 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import pytest
 from conftest import FakeTelegramStorage, make_settings
 from fastapi.testclient import TestClient
 from test_video_prepare import box, tail_mp4
@@ -27,17 +26,27 @@ def test_startup_removes_crashed_and_orphan_outputs_but_preserves_retry_file(wor
     unrelated = settings.temp_dir / "keep.part"
     unrelated.write_bytes(b"unrelated")
     partial = settings.temp_dir / "upload_partial.part"
-    partial.write_bytes(b"partial")
+    partial.write_bytes(b"partial" + b"unconfirmed")
     pending = app.state.db.create_upload(None, "partial.bin", 20, None, str(partial), 8)
+    app.state.db.update_upload(pending["id"], received=7)
     record = app.state.db.create_upload(None, "video.mp4", 8, "video/mp4", str(source), 8)
     app.state.db.update_upload(record["id"], state="processing", received=8)
     with TestClient(app):
         assert source.read_bytes() == b"original"
         assert unrelated.read_bytes() == b"unrelated"
         assert not orphan.exists() and not faststart_path(source).exists()
-        assert not partial.exists() and app.state.db.get_upload(pending["id"]) is None
+        assert partial.read_bytes() == b"partial"
+        assert app.state.db.get_upload(pending["id"])["received"] == 7
         recovered = app.state.db.get_upload(record["id"])
         assert recovered["state"] == "error" and recovered["received"] == 8
+    restarted = create_app(settings, storage=FakeTelegramStorage())
+    with TestClient(restarted) as client:
+        assert client.post("/api/login", json={"password": settings.app_password}).is_success
+        response = client.patch(
+            f"/api/uploads/{pending['id']}", headers={"Upload-Offset": "7"}, content=b"-resumed"
+        )
+        assert response.status_code == 200 and response.json()["offset"] == 15
+        assert partial.read_bytes() == b"partial-resumed"
 
 
 def test_receiving_cleanup_skips_active_writers_and_telegram_tasks(workdir):
@@ -55,11 +64,11 @@ def test_receiving_cleanup_skips_active_writers_and_telegram_tasks(workdir):
             with db.conn:
                 db.conn.execute(
                     "UPDATE uploads SET updated_at=? WHERE id=?",
-                    ((datetime.now(UTC) - timedelta(minutes=3)).isoformat(), uploads[state][0]),
+                    ((datetime.now(UTC) - timedelta(hours=73)).isoformat(), uploads[state][0]),
                 )
         try:
             async with service.lock(uploads["writing"][0]):
-                service.cleanup_receiving()
+                assert service.cleanup_stale() == 1
                 for state, (upload_id, path) in uploads.items():
                     assert path.exists() == (state != "abandoned")
                     assert (db.get_upload(upload_id) is not None) == (state != "abandoned")
@@ -69,8 +78,7 @@ def test_receiving_cleanup_skips_active_writers_and_telegram_tasks(workdir):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize("asynchronous", [False, True])
-def test_stale_cleanup_removes_original_and_crash_sidecar(workdir, asynchronous):
+def test_stale_cleanup_removes_original_and_crash_sidecar(workdir):
     async def run():
         db = Database(workdir / "stale.sqlite3")
         source = workdir / "upload_stale.part"
@@ -85,10 +93,7 @@ def test_stale_cleanup_removes_original_and_crash_sidecar(workdir, asynchronous)
             )
         service = UploadService(db, FakeTelegramStorage(), stale_hours=1)
         try:
-            if asynchronous:
-                await service.cleanup_stale_async()
-            else:
-                assert service.cleanup_stale() == 1
+            assert service.cleanup_stale() == 1
             assert db.get_upload(record["id"]) is None
             assert not source.exists() and not faststart_path(source).exists()
         finally:
@@ -183,10 +188,9 @@ def test_failed_sidecar_cleanup_preserves_record_for_retry(workdir, monkeypatch)
         try:
             with monkeypatch.context() as patch:
                 patch.setattr(Path, "unlink", locked)
-                with pytest.raises(PermissionError):
-                    await service.cleanup_stale_async()
+                assert service.cleanup_stale() == 0
             assert db.get_upload(record["id"]) is not None and source.exists() and sidecar.exists()
-            await service.cleanup_stale_async()
+            assert service.cleanup_stale() == 1
             assert (
                 db.get_upload(record["id"]) is None and not source.exists() and not sidecar.exists()
             )

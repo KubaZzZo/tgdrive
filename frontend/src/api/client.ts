@@ -145,7 +145,7 @@ export interface ChunkResponse {
 export type ChunkResult =
   | { kind: 'ok'; data: ChunkResponse }
   | { kind: 'conflict'; offset: number }
-  | { kind: 'error'; status: number; message: string; retryable: boolean }
+  | { kind: 'error'; status: number; message: string }
 
 export async function uploadChunk(
   uploadId: string,
@@ -169,6 +169,8 @@ export async function uploadChunk(
     const payload = (await parsePayload(response)) as Record<string, unknown> | null
     if (response.status === 409 && payload?.workspace_changed) reloadAfterWorkspaceChange()
     if (response.ok) {
+      // The server may have committed the chunk before the response body was lost.
+      if (!Number.isSafeInteger(payload?.offset)) throw new ApiError('未收到服务器确认的上传进度', 0)
       return { kind: 'ok', data: payload as unknown as ChunkResponse }
     }
     if (response.status === 401) {
@@ -181,10 +183,9 @@ export async function uploadChunk(
       kind: 'error',
       status: response.status,
       message: errorMessage(payload, `上传失败 (${response.status})`),
-      retryable: response.status >= 500 || response.status === 429,
     }
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') throw error
+    if (error instanceof ApiError || (error instanceof DOMException && error.name === 'AbortError')) throw error
     throw new ApiError('网络连接中断', 0)
   }
 }
@@ -399,10 +400,10 @@ export const api = {
       body: JSON.stringify(body),
     }),
   getUpload: (uploadId: string) =>
-    request<UploadRecord>(`/api/uploads/${encodeURIComponent(uploadId)}`),
+    request<UploadRecord>(`/api/uploads/${encodeURIComponent(uploadId)}`, { cache: 'no-store' }),
   listUploads: () => request<{ uploads: UploadRecord[] }>('/api/uploads'),
   completeUpload: (uploadId: string) =>
-    request<{ ok?: boolean; upload?: UploadRecord }>(
+    request<{ ok?: boolean; upload?: UploadRecord } | UploadRecord>(
       `/api/uploads/${encodeURIComponent(uploadId)}/complete`,
       { method: 'POST' },
     ),

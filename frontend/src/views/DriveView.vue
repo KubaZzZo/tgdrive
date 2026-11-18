@@ -69,6 +69,14 @@ function navigate(view: 'all' | 'recent' | FileCategory): void {
   clearTimeout(searchTimer)
   void drive.selectView(view)
 }
+function onMobileCategory(event: Event): void {
+  const value = (event.target as HTMLSelectElement).value
+  if (value === 'all' || value === 'recent') navigate(value)
+  else {
+    const category = drive.categories.find((entry) => entry.id === value)
+    if (category) navigate(category.id)
+  }
+}
 function openPeople(): void {
   void router.push({ name: 'people' })
 }
@@ -396,7 +404,7 @@ watch(() => route.fullPath, () => {
           <p v-if="drive.person && drive.person !== drive.title" class="page-description">
             原名 {{ drive.person }}
           </p>
-          <p v-else class="page-description">{{ description }}</p>
+          <p v-else class="page-description library-description">{{ description }}</p>
         </div>
         <div v-if="!inPeople" class="toolbar-actions">
           <button class="ghost" type="button" @click="folderDialog = true">
@@ -452,7 +460,16 @@ watch(() => route.fullPath, () => {
             <AppIcon name="close" :size="16" />
           </button>
         </div>
-        <div class="display-controls">
+        <nav v-if="!inPeople" class="mobile-navigation" aria-label="文件导航">
+          <select class="mobile-category" aria-label="文件分类" :value="drive.view" @change="onMobileCategory">
+            <option value="all">我的文件</option>
+            <option value="recent">最近上传</option>
+            <option v-for="category in drive.categories" :key="category.id" :value="category.id">{{ category.label }}</option>
+          </select>
+          <button type="button" class="ghost" @click="sharesOpen = true"><AppIcon name="link" :size="16" />我的分享</button>
+          <button type="button" class="ghost" @click="trashOpen = true"><AppIcon name="trash" :size="16" />回收站</button>
+        </nav>
+        <div class="display-controls" :class="{ 'with-scope': !inPeople }">
           <label v-if="!inPeople" class="search-scope"><span class="sr-only">搜索范围</span>
             <select aria-label="搜索范围" :value="drive.searchScope || (drive.folderId ? 'folder' : 'all')"
               @change="drive.searchScope = ($event.target as HTMLSelectElement).value === 'folder' ? 'folder' : 'all'; submitSearch()">
@@ -460,8 +477,10 @@ watch(() => route.fullPath, () => {
               <option value="all">全部文件</option>
             </select>
           </label>
-          <button class="ghost" type="button" @click="advancedOpen = true">
-            {{ hasFilters ? '高级搜索 · 已筛选' : '高级搜索' }}
+          <button class="ghost advanced-search" type="button" :class="{ 'filters-active': hasFilters }"
+            :aria-label="hasFilters ? '高级搜索 · 已筛选' : '高级搜索'" @click="advancedOpen = true">
+            <AppIcon name="settings" :size="18" />
+            <span>{{ hasFilters ? '高级搜索 · 已筛选' : '高级搜索' }}</span>
           </button>
           <label class="sr-only" for="file-sort">文件排序</label
           ><select id="file-sort" v-model="drive.sortOption" @change="drive.search()">
@@ -1132,109 +1151,83 @@ label.file-btn:focus-within {
     max-width: 300px;
   }
 }
+@media (min-width: 761px) and (max-width: 900px) {
+  .library-controls { flex-wrap: wrap; }
+}
+.mobile-navigation, .advanced-search .app-icon {
+  display: none;
+}
 @media (max-width: 760px) {
   .library-layout {
     display: block;
   }
-  .library-sidebar {
-    position: static;
-    min-height: 0;
-    padding: 18px 0;
-    border: 0;
-    background: transparent;
-  }
-  .nav-heading,
-  .nav-section-label,
-  .sidebar-storage {
+  .library-sidebar, .eyebrow, .library-description, .category-overview {
     display: none;
-  }
-  .primary-nav {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    margin-bottom: 14px;
-  }
-  .primary-nav button {
-    width: auto;
-    min-height: 40px;
-    padding: 9px 12px;
-    font-size: 13px;
-  }
-  .primary-nav .nav-count {
-    margin-left: 5px;
-  }
-  .category-nav {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 7px;
-  }
-  .category-nav button {
-    flex-direction: column;
-    justify-content: center;
-    gap: 6px;
-    min-height: 66px;
-    padding: 9px 4px;
-    font-size: 11px;
-    border: 1px solid var(--line);
-    background: var(--panel);
-  }
-  .category-nav .nav-count {
-    display: none;
-  }
-  .category-nav button.active {
-    border-color: #b5cbf8;
   }
   .library-content {
-    padding-top: 9px;
+    padding-top: 14px;
   }
   .library-heading {
     display: block;
-    margin-bottom: 20px;
-  }
-  .eyebrow {
-    display: none;
-  }
-  .page-description {
-    max-width: none;
-    font-size: 12px;
+    margin-bottom: 12px;
   }
   .toolbar-actions {
-    margin-top: 18px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, max-content));
+    gap: 6px;
+    margin-top: 10px;
   }
   .toolbar-actions > * {
-    flex: 1;
-    min-height: 44px;
-  }
-  .category-overview {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
-    margin-bottom: 22px;
-  }
-  .category-card {
-    padding: 13px 12px 27px;
-    gap: 12px;
-  }
-  .category-card-label strong {
-    font-size: 21px;
-  }
-  .category-card-label small {
-    display: inline;
-    font-size: 9px;
-  }
-  .category-card-size {
-    bottom: 10px;
-    font-size: 9px;
-  }
-  .display-controls {
-    width: 100%;
-    justify-content: space-between;
-  }
-  .display-controls select {
-    min-height: 44px;
+    min-height: 42px;
+    padding-inline: 8px;
+    gap: 5px;
     font-size: 12px;
   }
-  .view-switch button {
-    min-width: 42px;
+  .mobile-navigation {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 6px;
+    width: 100%;
   }
+  .mobile-navigation .ghost { gap: 5px; padding-inline: 8px; font-size: 12px; }
+  .mobile-category {
+    min-width: 0;
+    min-height: 42px;
+    padding-inline: 8px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--panel);
+    color: var(--text);
+    font-size: 13px;
+  }
+  .display-controls {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    width: 100%;
+    gap: 6px;
+  }
+  .display-controls.with-scope {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  }
+  .display-controls select {
+    width: 100%;
+    min-width: 0;
+    min-height: 42px;
+    padding: 6px;
+    font-size: 12px;
+  }
+  .advanced-search {
+    min-width: 42px;
+    min-height: 42px;
+    padding: 0;
+  }
+  .advanced-search span { display: none; }
+  .advanced-search .app-icon { display: inline-block; }
+  .advanced-search.filters-active { color: var(--accent); background: var(--accent-soft); }
+  .view-switch button { min-width: 35px; }
+  .location-row { margin-bottom: 7px; }
+  .selection-bar { margin-bottom: 8px; }
+  .selection-bar .ghost { min-height: 36px; font-size: 12px; }
   .drop-zone {
     padding: 16px;
     gap: 12px;
@@ -1244,11 +1237,6 @@ label.file-btn:focus-within {
   }
   .drop-zone p {
     font-size: 10px;
-  }
-}
-@media (max-width: 760px) {
-  .category-overview {
-    display: none;
   }
 }
 .people-layout {

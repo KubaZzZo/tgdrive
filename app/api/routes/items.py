@@ -96,11 +96,10 @@ async def list_items(
     return {
         "items": items,
         "path": db.get_path(parent_id),
-        "categories": db.category_stats(),
+        **db.library_summary(),
         "total": total,
         "limit": limit,
         "offset": offset,
-        "stats": db.stats(),
         **({"person_display_name": db.video_person_display_name(person)} if person else {}),
     }
 

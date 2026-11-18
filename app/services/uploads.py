@@ -22,7 +22,7 @@ from app.services.upload_temp import faststart_path, remove_upload_files
 from app.services.video_prepare import prepared_video
 
 logger = logging.getLogger("tgdrive.uploads")
-RECEIVING_IDLE_SECONDS = 120
+RECEIVING_RETENTION_HOURS = 72
 
 
 class UploadSpaceError(Exception):
@@ -38,16 +38,20 @@ class UploadSpace:
 
     def _check(self, directory: Path, growth: int) -> None:
         reserved = {
-            path: size for path, size in self._reservations.items() if path.parent == directory
+            path: size
+            for path, size in self._reservations.copy().items()
+            if path.parent == directory
         }
         remaining = 0
+        used = 0
         for path, size in reserved.items():
             try:
-                remaining += max(0, size - path.stat().st_size)
+                actual = path.stat().st_size
             except FileNotFoundError:
-                remaining += size
+                actual = 0
+            remaining += max(0, size - actual)
+            used += max(size, actual)
         if self.max_bytes:
-            used = sum(reserved.values())
             for path in directory.glob("upload_*.part"):
                 if path in reserved:
                     continue
@@ -66,47 +70,51 @@ class UploadSpace:
             await asyncio.to_thread(self._check, directory, size)
 
     @asynccontextmanager
-    async def reserve(self, path: Path, size: int) -> AsyncIterator[None]:
+    async def reserve(self, path: Path, size: int, *, existing: int = 0) -> AsyncIterator[None]:
         async with self._lock:
-            await asyncio.to_thread(self._check, path.parent, size)
+            if path in self._reservations:
+                raise UploadSpaceError("上传临时文件正在使用，请重试")
+            await asyncio.to_thread(self._check, path.parent, size - existing)
             self._reservations[path] = size
         try:
             yield
         finally:
-            with CancelScope(shield=True):
-                async with self._lock:
-                    self._reservations.pop(path, None)
+            # Reservation checks run in a thread. Mutate only on the event loop
+            # and leave in-flight checks with a snapshot of the old reservation.
+            self._reservations.pop(path)
 
-    def _write(self, directory: Path, file: BinaryIO, data: bytes) -> None:
-        self._check(directory, len(data))
+    @staticmethod
+    def _write(file: BinaryIO, data: bytes) -> None:
         if file.write(data) != len(data):
             raise UploadSpaceError("上传磁盘空间不足，请释放空间后重试")
 
     async def write(self, directory: Path, file: BinaryIO, data: bytes) -> None:
         async with self._lock:
-            write = asyncio.get_running_loop().run_in_executor(
-                None, self._write, directory, file, data
-            )
-            try:
-                await asyncio.shield(write)
-            except asyncio.CancelledError:
-                # Let the disk write settle before the caller rolls back and closes the file.
-                with CancelScope(shield=True):
-                    while not write.done():
-                        try:
-                            await asyncio.shield(write)
-                        except asyncio.CancelledError:
-                            continue
-                        except Exception:
-                            break
-                    if not write.cancelled():
-                        error = write.exception()
-                        if error is not None:
-                            logger.warning(
-                                "Disk write failed while canceling upload",
-                                exc_info=(type(error), error, error.__traceback__),
-                            )
-                raise
+            await asyncio.to_thread(self._check, directory, len(data))
+            await self.write_reserved(file, data)
+
+    async def write_reserved(self, file: BinaryIO, data: bytes) -> None:
+        write = asyncio.get_running_loop().run_in_executor(None, self._write, file, data)
+        try:
+            await asyncio.shield(write)
+        except asyncio.CancelledError:
+            # Let the disk write settle before the caller rolls back and closes the file.
+            with CancelScope(shield=True):
+                while not write.done():
+                    try:
+                        await asyncio.shield(write)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not write.cancelled():
+                    error = write.exception()
+                    if error is not None:
+                        logger.warning(
+                            "Disk write failed while canceling upload",
+                            exc_info=(type(error), error, error.__traceback__),
+                        )
+            raise
 
 
 def file_sha256(path: Path) -> str:
@@ -162,11 +170,11 @@ class UploadService:
         self.stale_hours = stale_hours
         self.space = space if space is not None else UploadSpace()
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._stages: dict[str, tuple[str, float]] = {}
         self.progress_events = ProgressSignal()
         self._closed = False
         self.locks = locks if locks is not None else WeakValueDictionary[str, asyncio.Lock]()
         self._slots = asyncio.Semaphore(concurrency)
-        self._maintenance: asyncio.Task[None] | None = None
         self.image_host_enabled = image_host_enabled
         self.video_slots = video_slots if video_slots is not None else asyncio.Semaphore(1)
         self.faststart = faststart
@@ -178,10 +186,6 @@ class UploadService:
         async with lock:
             yield
 
-    def start(self) -> None:
-        if self._maintenance is None:
-            self._maintenance = asyncio.create_task(self._maintain(), name="upload-cleanup")
-
     def discard_upload(self, upload: dict[str, Any]) -> None:
         remove_upload_files(Path(upload["temp_path"]))
         self.db.delete_upload(upload["id"])
@@ -192,61 +196,61 @@ class UploadService:
         except OSError:
             logger.exception("Could not remove interrupted upload %s", upload["id"])
 
-    def cleanup_receiving(self, *, all_pending: bool = False) -> None:
-        cutoff = datetime.now(UTC)
-        if not all_pending:
-            cutoff -= timedelta(seconds=RECEIVING_IDLE_SECONDS)
-        for upload in self.db.list_receiving_uploads(cutoff.isoformat()):
-            lock = self.locks.get(upload["id"])
-            if lock is None or not lock.locked():
-                # No awaits between checking the lock and removing the file.
-                self.discard_receiving(upload)
-
     def recover_interrupted(self) -> int:
-        # Called before this workspace's tasks start; keep originals for retry.
+        # An old runtime can still hold a lease during a channel switch.
         for upload in self.db.list_uploads(
             states=("processing", "uploading", "error", "done"), include_imports=True
         ):
+            lock = self.locks.get(upload["id"])
+            if lock is not None and lock.locked():
+                continue
+            path = Path(upload["temp_path"])
             try:
-                faststart_path(Path(upload["temp_path"])).unlink(missing_ok=True)
+                faststart_path(path).unlink(missing_ok=True)
             except OSError:
                 logger.warning("Could not remove leftover faststart output")
+            if not upload["link_import"] and upload["state"] in {"uploading", "error"}:
+                try:
+                    if path.stat().st_size > int(upload["received"]):
+                        with path.open("r+b") as file:
+                            file.truncate(int(upload["received"]))
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    logger.warning(
+                        "Could not truncate unconfirmed upload bytes for %s", upload["id"]
+                    )
         return self.db.recover_interrupted_uploads()
 
-    async def _maintain(self) -> None:
-        next_stale_cleanup = time.monotonic() + 300
-        while True:
-            await asyncio.sleep(15)
-            try:
-                self.cleanup_receiving()
-                if self.stale_hours > 0 and time.monotonic() >= next_stale_cleanup:
-                    next_stale_cleanup = time.monotonic() + 300
-                    await self.cleanup_stale_async()
-            except Exception:
-                logger.exception("Upload cleanup failed")
+    def current_stage(self, upload_id: str) -> str:
+        stage = self._stages.get(upload_id)
+        return stage[0] if stage else "queued"
 
-    async def cleanup_stale_async(self) -> None:
-        cutoff = (datetime.now(UTC) - timedelta(hours=self.stale_hours)).isoformat()
-        for upload in self.db.list_stale_uploads(cutoff):
-            lock = self.locks.get(upload["id"])
-            if lock is None or not lock.locked():
-                async with self.lock(upload["id"]):
-                    current = self.db.get_upload(upload["id"])
-                    if (
-                        current
-                        and current["state"] in {"uploading", "error"}
-                        and current["updated_at"] < cutoff
-                    ):
-                        self.discard_upload(current)
+    def _set_stage(self, upload_id: str, stage: str | None) -> None:
+        now = time.monotonic()
+        previous = self._stages.pop(upload_id, None)
+        if previous:
+            logger.info(
+                "Upload %s stage=%s duration_ms=%.0f",
+                upload_id,
+                previous[0],
+                (now - previous[1]) * 1000,
+            )
+        if stage:
+            self._stages[upload_id] = (stage, now)
+        self.progress_events.notify()
 
     async def _run(self, upload_id: str, *, discard_on_error: bool = False) -> None:
+        self._set_stage(upload_id, "queued")
         try:
             async with self._slots:
+                self._set_stage(upload_id, "preparing")
                 await self._process(upload_id)
         except asyncio.CancelledError:
             self.db.update_upload(upload_id, state="error", error="服务关闭，上传已中断，请重试")
             raise
         finally:
+            self._set_stage(upload_id, None)
             if discard_on_error:
                 upload = self.db.get_upload(upload_id)
                 if upload and upload["state"] != "done":
@@ -316,7 +320,9 @@ class UploadService:
                 slots=self.video_slots,
             ) as prepared:
                 stored_size = prepared.stat().st_size
+                self._set_stage(upload_id, "hashing")
                 sha256 = await upload_sha256(prepared)
+                self._set_stage(upload_id, "sending")
                 parts = await self.storage.upload_file(
                     path=prepared,
                     name=upload["name"],
@@ -324,6 +330,7 @@ class UploadService:
                     progress=progress,
                     storage_tag=upload_id,
                 )
+            self._set_stage(upload_id, "committing")
             item = self.db.create_file(
                 name=upload["name"],
                 parent_id=upload["parent_id"],
@@ -363,15 +370,27 @@ class UploadService:
                 except Exception:
                     logger.exception("Failed to remove uncommitted Telegram segments")
 
-    def cleanup_stale(self) -> int:
+    def cleanup_stale(self, db: Database | None = None) -> int:
         """Remove unfinished upload records and their temp files after a TTL."""
-        if self.stale_hours <= 0:
-            return 0
-        cutoff = (datetime.now(UTC) - timedelta(hours=self.stale_hours)).isoformat()
+        db = self.db if db is None else db
+        cutoff = (
+            datetime.now(UTC) - timedelta(hours=self.stale_hours or RECEIVING_RETENTION_HOURS)
+        ).isoformat()
+        stale = (
+            db.list_stale_uploads(cutoff) if self.stale_hours else db.list_receiving_uploads(cutoff)
+        )
         removed = 0
-        for upload in self.db.list_stale_uploads(cutoff):
-            self.discard_upload(upload)
-            removed += 1
+        for upload in stale:
+            lock = self.locks.get(upload["id"])
+            if lock is not None and lock.locked():
+                continue
+            # The event loop cannot start a PATCH or a DELETE during these operations.
+            try:
+                remove_upload_files(Path(upload["temp_path"]))
+                db.delete_upload(upload["id"])
+                removed += 1
+            except OSError:
+                logger.exception("Could not remove stale upload %s", upload["id"])
         if removed:
             logger.info("Removed %s stale upload(s)", removed)
         return removed
@@ -379,8 +398,6 @@ class UploadService:
     async def shutdown(self) -> None:
         self._closed = True
         tasks = list(self._tasks.values())
-        if self._maintenance:
-            tasks.append(self._maintenance)
         for task in tasks:
             task.cancel()
         if tasks:

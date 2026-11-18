@@ -108,3 +108,28 @@ def test_reconcile_deployed_and_cdn_schema_variants_without_data_loss(workdir, v
     if variant == "schema8-cdn":
         assert db.cdn_totals()[("sub-kept", "2026-11")] == 456
     db.close()
+
+
+def test_library_summary_cache_observes_local_and_external_changes(workdir):
+    path = workdir / "library.sqlite3"
+    db = Database(path)
+    other = Database(path)
+    statements = []
+    try:
+        db.conn.set_trace_callback(statements.append)
+        assert db.library_summary()["stats"]["folders"] == 0
+        statements.clear()
+        assert db.library_summary()["stats"]["folders"] == 0
+        assert not any("FROM items" in sql for sql in statements)
+        db.create_folder("local", None)
+        assert db.library_summary()["stats"]["folders"] == 1
+        other.create_folder("external", None)
+        assert db.library_summary()["stats"]["folders"] == 2
+        db.conn.execute("BEGIN")
+        db.conn.execute("DELETE FROM items")
+        assert db.library_summary()["stats"]["folders"] == 0
+        db.conn.rollback()
+        assert db.library_summary()["stats"]["folders"] == 2
+    finally:
+        other.close()
+        db.close()

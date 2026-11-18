@@ -37,6 +37,15 @@ class AccountsRepository(SQLiteSession):
             ).fetchone()
             return row[0] if row else None
 
+    def telegram_workspace_keys(self) -> list[str]:
+        with self._lock:
+            return [
+                row[0]
+                for row in self.conn.execute(
+                    "SELECT DISTINCT database_key FROM telegram_workspaces"
+                )
+            ]
+
     def save_telegram_profile(
         self, profile: dict[str, Any], database_key: str, activate: bool = True
     ) -> None:

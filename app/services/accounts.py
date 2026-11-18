@@ -8,6 +8,7 @@ import re
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs
 
@@ -76,6 +77,7 @@ class AccountManager:
         self.identity: dict | None = None
         self.workspace_keys: dict[str, str] = {}
         self.retired: set[Runtime] = set()
+        self._upload_maintenance: asyncio.Task[None] | None = None
 
     def task(self, coroutine) -> asyncio.Task:
         task = asyncio.create_task(coroutine)
@@ -93,6 +95,11 @@ class AccountManager:
 
     async def start(self) -> None:
         self.current.cleanup.start()
+        self.cleanup_stale_uploads()
+        if self._upload_maintenance is None:
+            self._upload_maintenance = asyncio.create_task(
+                self._maintain_uploads(), name="upload-cleanup"
+            )
         storage = self.current.storage
         if storage.status()["connected"] and hasattr(storage, "me"):
             try:
@@ -115,6 +122,37 @@ class AccountManager:
                 },
                 "",
             )
+
+    def cleanup_stale_uploads(self) -> None:
+        # Inactive channel files share the same temporary directory and quota.
+        paths = set(self.databases)
+        try:
+            channels = self.settings.data_dir / "channels"
+            paths.update(
+                str(channels / f"{key}.sqlite3")
+                for key in self.control.telegram_workspace_keys()
+                if re.fullmatch(r"[a-f0-9]{32}", key)
+            )
+        except Exception:
+            logger.exception("Could not enumerate upload workspaces; will retry cleanup")
+        for path in paths:
+            db = self.databases.get(path)
+            try:
+                if db is None and not Path(path).is_file():
+                    continue
+                cleanup_db = db if db is not None else Database(path)
+                try:
+                    self.current.uploads.cleanup_stale(cleanup_db)
+                finally:
+                    if db is None:
+                        cleanup_db.close()
+            except Exception:
+                logger.exception("Could not clean stale uploads for workspace %s", path)
+
+    async def _maintain_uploads(self) -> None:
+        while True:
+            await asyncio.sleep(300)
+            self.cleanup_stale_uploads()
 
     def status(self) -> dict:
         active = self.control.active_telegram_profile()
@@ -523,8 +561,6 @@ class AccountManager:
                 ChannelSyncService(db, candidate, self.settings),
             )
             await old.sync.shutdown()
-            if db is not old.db:
-                new.uploads.cleanup_receiving(all_pending=True)
             new.uploads.recover_interrupted()
             await asyncio.wait_for(new.sync.start(), 30)
             await old.cleanup.stop()
@@ -540,7 +576,6 @@ class AccountManager:
             self.switching = False
             raise
         new.cleanup.start()
-        new.uploads.start()
         self.current = new
         self.app.state.db, self.app.state.storage = db, candidate
         self.app.state.uploads, self.app.state.channel_sync = new.uploads, new.sync
@@ -559,18 +594,18 @@ class AccountManager:
     async def _dispose(self, runtime: Runtime) -> None:
         await runtime.cleanup.stop()
         await runtime.uploads.shutdown()
-        if runtime.db is not self.current.db:
-            runtime.uploads.cleanup_receiving(all_pending=True)
         await runtime.storage.stop()
         self.retired.discard(runtime)
 
     async def shutdown(self) -> None:
         async with self.lock:
             await self._cancel()
+        if self._upload_maintenance is not None:
+            self._upload_maintenance.cancel()
+            await asyncio.gather(self._upload_maintenance, return_exceptions=True)
         await self.current.sync.shutdown()
         await self.current.cleanup.stop()
         await self.current.uploads.shutdown()
-        self.current.uploads.cleanup_receiving(all_pending=True)
         await self.current.storage.stop()
         if self.tasks:
             await asyncio.gather(*list(self.tasks), return_exceptions=True)

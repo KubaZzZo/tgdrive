@@ -143,16 +143,11 @@ def test_upload_temp_quota_checks_other_tasks_on_create_and_write(workdir):
             client.patch(path, headers={"Upload-Offset": "0"}, content=b"12345678").status_code
             == 507
         )
-        assert client.get(path).status_code == 404
-        assert sorted(settings.temp_dir.glob("upload_*.part")) == [other_upload]
+        assert client.get(path).json()["received"] == 0
+        assert len(list(settings.temp_dir.glob("upload_*.part"))) == 2
         other_upload.unlink()
-        retry = client.post("/api/uploads", json=payload).json()
-        assert retry["id"] != task["id"]
-        assert retry["offset"] == 0
         assert (
-            client.patch(
-                f"/api/uploads/{retry['id']}", headers={"Upload-Offset": "0"}, content=b"12345678"
-            ).status_code
+            client.patch(path, headers={"Upload-Offset": "0"}, content=b"12345678").status_code
             == 200
         )
 
