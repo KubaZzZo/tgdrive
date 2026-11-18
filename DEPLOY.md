@@ -44,8 +44,11 @@ docker compose ps
 
 登录限速按客户端 IP 计数。Compose 将 Caddy 固定为 `172.30.87.2`，并通过
 `FORWARDED_ALLOW_IPS` 让 Uvicorn 只接受该代理的 `X-Forwarded-For`。
-若默认网段与现有网络冲突，在 `.env` 同时调整 `PROXY_NETWORK_SUBNET` 和
-`CADDY_PROXY_IP`，保证地址属于该网段。升级此配置时需运行
+应用容器从 `PROXY_NETWORK_IP_RANGE`（默认 `172.30.87.128/25`）动态获取地址。
+若使用自定义网段，请在 `.env` 配置 `PROXY_NETWORK_SUBNET`、`PROXY_NETWORK_IP_RANGE` 和
+`CADDY_PROXY_IP`。动态地址池和 Caddy 的固定地址都必须在该网段内，且固定地址必须在动态地址池之外。
+升级已有部署时，如果自定义了网段或 Caddy 地址，请检查并按需设置 `PROXY_NETWORK_IP_RANGE`。
+升级此配置时需运行
 `docker compose down` 后再运行 `docker compose up -d --build`，以重建网络和两个服务；
 此操作会短暂停机，请勿添加 `-v`，以保留数据卷。
 使用其他反向代理或直接运行镜像时，请将 `FORWARDED_ALLOW_IPS` 环境变量设为实际可信代理的
@@ -243,7 +246,7 @@ docker compose -f docker-compose.yml -f docker-compose.ed2k.yml up -d --build
 
 如同时使用 qBittorrent，保留原命令中的 `-f docker-compose.qbittorrent.yml`。
 固定端口时，同批 eD2k 任务依次运行。导入页显示 eD2k 和 Kad 的连接状态及当前文件的来源数。
-如果自定义 `VIDEO_IMPORT_ED2K_PORT`，容器内外应使用相同的 TCP 端口，两个 UDP 端口分别为 TCP +3 和 +10。
+如果自定义 `VIDEO_IMPORT_ED2K_PORT`，固定 TCP 端口须在 1024 至 65525 之间，容器内外应使用相同的端口，两个 UDP 端口分别为 TCP +3 和 +10。
 
 ## Google Drive 只读挂载
 

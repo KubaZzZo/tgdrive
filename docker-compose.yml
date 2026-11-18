@@ -78,3 +78,4 @@ networks:
     ipam:
       config:
         - subnet: ${PROXY_NETWORK_SUBNET:-172.30.87.0/24}
+          ip_range: ${PROXY_NETWORK_IP_RANGE:-172.30.87.128/25}
