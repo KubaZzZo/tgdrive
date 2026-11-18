@@ -1,6 +1,6 @@
 ﻿fastapi>=0.104,<1
 uvicorn[standard]>=0.24
-telethon>=1.36,<2
+telethon==1.45.0
 python-multipart>=0.0.22,<1
 defusedxml>=0.7,<1
 aiofiles>=23.0

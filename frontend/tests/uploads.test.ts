@@ -8,7 +8,11 @@ import type { Meta } from '../src/api/types.ts'
 
 const memory = new Map<string, string>()
 Object.assign(globalThis, {
-  window: { setTimeout, clearTimeout, dispatchEvent() {} },
+  window: {
+    setTimeout: (callback: () => void, ms: number) => setTimeout(callback, ms === 120_000 ? ms : 5),
+    clearTimeout,
+    dispatchEvent() {},
+  },
   localStorage: {
     getItem: (key: string) => memory.get(key) ?? null,
     setItem: (key: string, value: string) => memory.set(key, value),
@@ -75,7 +79,7 @@ test('409 without offset is an error, not a reset to zero', async () => {
   assert.equal(result.kind, 'error')
 })
 
-test('pause removes the interrupted upload and resumes from zero with a new ID', async () => {
+test('pause and immediate resume reuse the server-confirmed offset', async () => {
   const store = useUploadStore()
   let creates = 0
   let patches = 0
@@ -92,12 +96,13 @@ test('pause removes the interrupted upload and resumes from zero with a new ID',
       if (patches === 1) {
         return new Promise((_, reject) => init.signal?.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))))
       }
-      assert.equal(url, '/api/uploads/2')
+      assert.equal(url, '/api/uploads/1')
       resumedOffset = new Headers(init.headers).get('Upload-Offset') ?? ''
       return json({ offset: 8, received: 8, size: 8 })
     }
     if (init?.method === 'POST') return json({ ok: true }, 202)
-    return json({ id: '2', progress: 8, state: 'done' })
+    return json({ id: '1', name: 'data.bin', size: 8, parent_id: null,
+      received: 4, chunk_size: 4, state: patches === 1 ? 'uploading' : 'done' })
   }
   store.enqueue([file()], null)
   await until(() => patches === 1)
@@ -105,24 +110,35 @@ test('pause removes the interrupted upload and resumes from zero with a new ID',
   assert.equal(store.jobs[0]!.state, 'paused')
   store.resume(store.jobs[0]!) // Resume before the aborted request has unwound.
   await until(() => store.jobs[0]!.state === 'done')
-  assert.equal(creates, 2)
-  assert.deepEqual(deleted, ['/api/uploads/1'])
-  assert.equal(resumedOffset, '0')
+  assert.equal(creates, 1)
+  assert.deepEqual(deleted, [])
+  assert.equal(resumedOffset, '4')
   assert.equal(store.totalProgress, 100)
 })
 
 test('retry observes an already processing upload instead of creating a duplicate', async () => {
-  const store = useUploadStore()
-  memory.set('tgdrive_resume_v2', JSON.stringify({ '|data.bin|8|123': 'existing' }))
-  let gets = 0
+  const original = useUploadStore()
+  let submitted = false
   globalThis.fetch = async (_url, init) => {
+    if (_url === '/api/uploads') return json({ id: 'existing', offset: 8, size: 8, chunk_size: 4 })
+    if (init?.method === 'POST') { submitted = true; return json({ detail: 'denied' }, 403) }
+    throw new Error('Unexpected request')
+  }
+  original.enqueue([file()], null)
+  await until(() => submitted && original.jobs[0]?.state === 'error')
+
+  setActivePinia(createPinia())
+  const recovered = useUploadStore()
+  let gets = 0
+  globalThis.fetch = async (url, init) => {
+    assert.equal(url, '/api/uploads/existing')
     assert.ok(!init?.method || init.method === 'GET')
     gets++
     return json({ id: 'existing', name: 'data.bin', parent_id: null, size: 8,
       received: 8, chunk_size: 4, progress: 8, state: gets === 1 ? 'processing' : 'done' })
   }
-  store.enqueue([file()], null)
-  await until(() => store.jobs[0]!.state === 'done')
+  recovered.enqueue([file()], null)
+  await until(() => recovered.jobs[0]!.state === 'done')
   assert.equal(gets, 2)
 })
 
@@ -137,52 +153,178 @@ test('duplicate queue entries are skipped and permanent upload errors are not re
   }
   assert.equal(store.enqueue([file(), file()], null), 1)
   await until(() => store.jobs[0]!.state === 'error')
-  await until(() => store.jobs[0]!.uploadId === null)
   assert.equal(patches, 1)
-  assert.equal(deletes, 1)
+  assert.equal(deletes, 0)
   store.clearFinished()
   assert.equal(store.jobs.length, 1)
 })
 
-test('retry after offline cleanup failed discards the old task before uploading from zero', async () => {
+test('retry after going offline reuses the confirmed server offset', async () => {
   const store = useUploadStore()
   let online = true
   let creates = 0
-  let deleteAttempts = 0
+  let patches = 0
   globalThis.fetch = async (url, init) => {
-    if (init?.method === 'DELETE') {
-      assert.equal(url, '/api/uploads/1')
-      deleteAttempts++
-    }
-    if (!online) throw new TypeError('offline')
     if (url === '/api/uploads') {
       creates++
-      return json({ id: String(creates), offset: 0, chunk_size: 8, size: 8 })
+      return json({ id: 'one', offset: 4, chunk_size: 4, size: 8 })
     }
-    if (init?.method === 'DELETE') return json({ ok: true })
     if (init?.method === 'PATCH') {
-      if (creates === 1) {
-        online = false
-        throw new TypeError('offline')
-      }
-      assert.equal(url, '/api/uploads/2')
-      assert.equal(deleteAttempts, 2)
-      assert.equal(new Headers(init.headers).get('Upload-Offset'), '0')
+      patches++
+      assert.equal(url, '/api/uploads/one')
+      assert.equal(new Headers(init.headers).get('Upload-Offset'), '4')
+      if (!online) throw new TypeError('offline')
       return json({ offset: 8, received: 8, size: 8 })
     }
     if (init?.method === 'POST') return json({ ok: true }, 202)
-    if (url === '/api/uploads/1') {
-      return json({ id: '1', name: 'data.bin', parent_id: null, size: 8, received: 4,
-        chunk_size: 8, state: 'uploading' })
-    }
-    return json({ id: '2', state: 'done' })
+    return json({ id: 'one', name: 'data.bin', parent_id: null, size: 8,
+      received: 4, chunk_size: 4, state: online && patches > 5 ? 'done' : 'uploading' })
   }
+  online = false
   store.enqueue([file()], null)
-  await until(() => deleteAttempts === 1 && store.jobs[0]!.state === 'error')
+  await until(() => store.jobs[0]!.state === 'error')
+  assert.equal(patches, 5)
+  assert.equal(store.jobs[0]!.received, 4)
   online = true
   store.retry(store.jobs[0]!)
   await until(() => store.jobs[0]!.state === 'done')
+  assert.equal(creates, 1)
+})
+
+test('a lost PATCH response is retried at the same offset and duplicate acknowledgement advances it', async () => {
+  const store = useUploadStore()
+  const offsets: string[] = []
+  globalThis.fetch = async (url, init) => {
+    if (url === '/api/uploads') return json({ id: 'one', offset: 0, size: 8, chunk_size: 4 })
+    if (init?.method === 'PATCH') {
+      offsets.push(new Headers(init.headers).get('Upload-Offset')!)
+      if (offsets.length === 1) return new Response('{', { headers: { 'content-type': 'application/json' } })
+      if (offsets.length === 2) return json({ offset: 4, received: 4, duplicate: true, size: 8 })
+      return json({ offset: 8, received: 8, size: 8 })
+    }
+    return json({ id: 'one', received: 8, state: 'done' })
+  }
+  store.enqueue([file()], null)
+  await until(() => store.jobs[0]?.state === 'done')
+  assert.deepEqual(offsets, ['0', '0', '4'])
+})
+
+test('a timed-out chunk backs off to smaller requests and resumes from the confirmed offset', async () => {
+  const store = useUploadStore()
+  const selected = new File([new Uint8Array(600 * 1024)], 'large.bin')
+  const sends: { offset: number; size: number }[] = []
+  let confirmed = 0
+  globalThis.fetch = async (url, init) => {
+    if (url === '/api/uploads') return json({ id: 'one', offset: 0, size: selected.size, chunk_size: 512 * 1024 })
+    if (init?.method === 'PATCH') {
+      const offset = Number(new Headers(init.headers).get('Upload-Offset'))
+      const size = (init.body as Blob).size
+      sends.push({ offset, size })
+      if (sends.length === 1) return json({ detail: 'timed out' }, 408)
+      assert.equal(offset, confirmed)
+      confirmed += size
+      return json({ offset: confirmed, received: confirmed, size: selected.size })
+    }
+    return json({ id: 'one', state: 'done', received: confirmed })
+  }
+  store.enqueue([selected], null)
+  await until(() => store.jobs[0]?.state === 'done')
+  assert.deepEqual(sends.slice(0, 2), [{ offset: 0, size: 256 * 1024 }, { offset: 0, size: 128 * 1024 }])
+  assert.equal(confirmed, selected.size)
+})
+
+test('retry recreates a server upload only after the old ID expires', async () => {
+  const store = useUploadStore()
+  let creates = 0
+  globalThis.fetch = async (url, init) => {
+    if (url === '/api/uploads') return json({ id: String(++creates), offset: 0, size: 8, chunk_size: 8 })
+    if (url === '/api/uploads/1') return json({ detail: 'expired' }, 404)
+    if (init?.method === 'PATCH') return json({ offset: 8, received: 8, size: 8 })
+    return json({ id: '2', state: 'done', received: 8 })
+  }
+  store.enqueue([file()], null)
+  await until(() => store.jobs[0]?.state === 'error')
+  store.retry(store.jobs[0]!)
+  await until(() => store.jobs[0]?.state === 'done')
   assert.equal(creates, 2)
+})
+
+test('persistent failure submitting a save releases its reservation for retry', async () => {
+  const store = useUploadStore()
+  let submissions = 0
+  globalThis.fetch = async (url, init) => {
+    if (url === '/api/uploads') return json({ id: 'one', offset: 8, size: 8, chunk_size: 8 })
+    if (init?.method === 'POST') {
+      submissions++
+      return json({ detail: 'unavailable' }, 503)
+    }
+    throw new Error('Unexpected request')
+  }
+  store.enqueue([file()], null)
+  await until(() => store.jobs[0]?.state === 'error')
+  assert.equal(submissions, 5)
+  assert.equal(store.jobs[0]?.uploadId, 'one')
+  assert.equal(store.jobs[0]?.received, 8)
+})
+
+test('reselection cannot reuse an upload for a same-metadata file with different contents', async () => {
+  let creates = 0
+  globalThis.fetch = async (url, init) => {
+    if (url === '/api/uploads') return json({ id: String(++creates), offset: 0, size: 8, chunk_size: 4 })
+    if (init?.method === 'PATCH') return json({ detail: 'blocked' }, 413)
+    throw new Error('Different files must use separate upload IDs')
+  }
+  const original = useUploadStore()
+  original.enqueue([file()], null)
+  await until(() => original.jobs[0]?.state === 'error')
+  setActivePinia(createPinia())
+  const replacement = useUploadStore()
+  replacement.enqueue([new File(['ABCDEFGH'], 'data.bin', { lastModified: 123 })], null)
+  await until(() => replacement.jobs[0]?.state === 'error')
+  assert.equal(creates, 2)
+})
+
+test('sends past two saving jobs while limiting reserved saves', async () => {
+  const store = useUploadStore()
+  const received = new Set<string>()
+  const saving = new Set<string>()
+  let allowFinish = false
+  let creates = 0
+  globalThis.fetch = async (url, init) => {
+    if (url === '/api/uploads') return json({ id: String(++creates), offset: 0, size: 8, chunk_size: 8 })
+    const id = String(url).split('/')[3]!
+    if (init?.method === 'PATCH') { received.add(id); return json({ offset: 8, received: 8, size: 8 }) }
+    if (init?.method === 'POST') { saving.add(id); return json({ ok: true }, 202) }
+    return json({ id, state: allowFinish ? 'done' : 'processing', stage: 'sending', progress: 2 })
+  }
+  store.enqueue(Array.from({ length: 5 }, (_, i) => new File(['abcdefgh'], `file${i}.bin`)), null)
+  await until(() => saving.size === 4 && store.jobs[2]?.stage === 'sending')
+  assert.equal(received.size, 4)
+  assert.equal(store.jobs[2]?.progress, 25)
+  assert.equal(store.jobs[4]?.state, 'queued')
+  allowFinish = true
+  await until(() => store.jobs.every((job) => job.state === 'done'))
+  assert.equal(creates, 5)
+})
+
+test('an oversized file reserves the byte budget by itself', async () => {
+  const store = useUploadStore()
+  const huge = new File(['x'], 'huge.bin')
+  Object.defineProperty(huge, 'size', { value: 5 * 1024 ** 3 })
+  let finishReading!: (value: ArrayBuffer) => void
+  huge.slice = () => ({ arrayBuffer: () => new Promise((resolve) => { finishReading = resolve }) }) as Blob
+  globalThis.fetch = async (url, init) => {
+    if (url === '/api/uploads') return json({ id: 'small', offset: 8, size: 8, chunk_size: 8 })
+    if (init?.method === 'POST') return json({ id: 'small', state: 'done', received: 8 })
+    throw new Error('Unexpected request')
+  }
+  store.enqueue([huge, file()], null)
+  assert.equal(store.jobs[0]?.state, 'uploading')
+  assert.equal(store.jobs[1]?.state, 'queued')
+  const cancellation = store.cancel(store.jobs[0]!)
+  finishReading(new ArrayBuffer(0))
+  await cancellation
+  await until(() => store.jobs[1]?.state === 'done')
 })
 
 
@@ -217,7 +359,45 @@ test('queue keeps two active tasks and batch pause/resume preserves waiting task
   finish = true
   store.resumeAll()
   await until(() => store.jobs.every((j) => j.state === 'done'))
-  assert.equal(creates, 5)
+  assert.equal(creates, 3)
+})
+
+test('disk quota failure retains confirmed bytes until a successful cancel', async () => {
+  const store = useUploadStore()
+  let patches = 0
+  let deletes = 0
+  globalThis.fetch = async (url, init) => {
+    if (url === '/api/uploads') return json({ id: 'partial', offset: 4, size: 8, chunk_size: 4 })
+    assert.equal(url, '/api/uploads/partial')
+    if (init?.method === 'PATCH') {
+      patches++
+      return json({ detail: 'temp storage full' }, 507)
+    }
+    assert.equal(init?.method, 'DELETE')
+    if (++deletes === 1) return json({ detail: 'cleanup unavailable' }, 503)
+    return json({ ok: true })
+  }
+  store.enqueue([file()], null)
+  await until(() => store.jobs[0]?.state === 'error')
+  const job = store.jobs[0]!
+  assert.equal(patches, 1)
+  assert.equal(job.error, 'temp storage full')
+  assert.equal(job.received, 4)
+
+  await store.cancel(job)
+  assert.equal(job.state, 'error')
+  assert.equal(job.error, 'cleanup unavailable')
+  assert.equal(job.message, job.error)
+  assert.equal(job.uploadId, 'partial')
+  assert.equal(job.received, 4)
+  assert.deepEqual(Object.values(JSON.parse(memory.get('tgdrive_resume_v2')!)), ['partial'])
+
+  await store.cancel(job)
+  assert.equal(job.state, 'canceled')
+  assert.equal(job.error, '')
+  assert.equal(job.uploadId, null)
+  assert.equal(job.received, 0)
+  assert.deepEqual(JSON.parse(memory.get('tgdrive_resume_v2')!), {})
 })
 
 test('cancel during creation cleans up the late upload and prevents a new run', async () => {
@@ -229,6 +409,7 @@ test('cancel during creation cleans up the late upload and prevents a new run', 
     return new Promise((resolve) => { resolveCreate = resolve })
   }
   store.enqueue([file()], null)
+  await until(() => Boolean(resolveCreate))
   const job = store.jobs[0]!
   const cancel = store.cancel(job)
   assert.equal(job.state, 'canceling')

@@ -64,6 +64,13 @@ class UploadsRepository(SQLiteSession):
         with self._lock, self.conn:
             self.conn.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
 
+    def commit_upload_chunk(self, upload_id: str, offset: int) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                "UPDATE uploads SET received=?, state='uploading', error=NULL, updated_at=? WHERE id=?",
+                (offset, utcnow(), upload_id),
+            )
+
     def list_uploads(
         self, states: tuple[str, ...] = ("uploading", "error"), *, include_imports: bool = False
     ) -> list[dict[str, Any]]:

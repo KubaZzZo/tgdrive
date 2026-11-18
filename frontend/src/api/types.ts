@@ -136,7 +136,10 @@ export interface ItemListResponse {
   stats: Stats
 }
 
+export type UploadStage = 'queued' | 'preparing' | 'hashing' | 'sending' | 'committing'
+
 export interface UploadRecord {
+  stage?: UploadStage | null
   image_host?: number
   id: string
   parent_id: string | null

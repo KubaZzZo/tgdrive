@@ -120,7 +120,7 @@ TG Drive 面向单用户运行。每套数据卷使用一个应用实例和一�
 | `UPLOAD_CHUNK_SIZE` | 8 MiB | 浏览器上传分片大小。 |
 | `TG_UPLOAD_CONNECTIONS` | 4 | 每个不小于 32 MiB 的 Telegram 文件段使用的并行连接数，范围 1–8；设为 1 使用标准单连接上传。 |
 | `UPLOAD_CONCURRENCY` | 2 | 同时写入 Telegram 的文件任务数；与单文件连接数相乘，默认最多 8 个上传连接，不含主连接及下载连接。 |
-| `UPLOAD_STALE_HOURS` | 72 小时 | 写入 Telegram 失败后，供重试的临时文件保留时间。 |
+| `UPLOAD_STALE_HOURS` | 72 小时 | 未完成上传的空闲保留时间。设为 `0` 时，Telegram 写入失败的任务保留至手动清理，尚未提交的上传保留 72 小时。 |
 | `VIDEO_IMPORT_DIR` / `VIDEO_IMPORT_MAX_MIB` | `DATA_DIR/video-imports` / 8192 MiB | 链接导入临时目录和单视频上限。Docker 下可挂载独立磁盘目录。 |
 | `VIDEO_FASTSTART` | `true` | 上传普通 MP4 时尝试把尾部索引移到文件开头。 |
 | `MEDIA_CACHE_MAX_MIB` | 512 MiB | 服务端视频切片缓存容量，设为 `0` 关闭。 |

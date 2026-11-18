@@ -270,7 +270,15 @@ class TelegramStorage:
 
                 try:
                     connections = self.settings.tg_upload_connections
-                    if connections > 1 and size >= PARALLEL_UPLOAD_MIN_BYTES:
+                    parallel = connections > 1 and size >= PARALLEL_UPLOAD_MIN_BYTES
+                    logger.info(
+                        "Upload %s segment=%d bytes=%d telegram_connections=%d",
+                        tag,
+                        index,
+                        size,
+                        connections if parallel else 1,
+                    )
+                    if parallel:
                         uploaded = await upload_parallel(
                             client, reader, size, part_name, connections, part_progress
                         )

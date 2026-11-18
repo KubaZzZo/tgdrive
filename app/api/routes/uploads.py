@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import logging
 import secrets
 from pathlib import Path
 from typing import Any
@@ -22,11 +23,15 @@ from app.services.progress_events import progress_messages
 from app.services.uploads import UploadService, UploadSpaceError
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"], dependencies=[Depends(require_auth)])
+logger = logging.getLogger("tgdrive.uploads")
 
 
-def public_upload(upload: dict[str, Any]) -> dict[str, Any]:
+def public_upload(upload: dict[str, Any], uploads: UploadService) -> dict[str, Any]:
     """Never expose server-local temp paths to the browser."""
-    return {key: value for key, value in upload.items() if key != "temp_path"}
+    record = {key: value for key, value in upload.items() if key != "temp_path"}
+    if upload["state"] == "processing":
+        record["stage"] = uploads.current_stage(upload["id"])
+    return record
 
 
 def is_disk_full(exc: OSError) -> bool:
@@ -102,7 +107,7 @@ async def list_uploads(
     """列出未完成的上传任务。"""
     return {
         "uploads": [
-            public_upload(item)
+            public_upload(item, uploads)
             for item in db.list_uploads()
             if uploads.image_host_enabled or not item["image_host"]
         ]
@@ -122,7 +127,7 @@ async def get_upload(
         or (upload["image_host"] and not uploads.image_host_enabled)
     ):
         raise HTTPException(404, "上传任务不存在")
-    return public_upload(upload)
+    return public_upload(upload, uploads)
 
 
 @router.get("/{upload_id}/events")
@@ -145,7 +150,7 @@ async def upload_events(
             or (record["image_host"] and not uploads.image_host_enabled)
         ):
             return None
-        return public_upload(record)
+        return public_upload(record, uploads)
 
     if snapshot() is None:
         raise HTTPException(404, "上传任务不存在")
@@ -164,6 +169,8 @@ async def upload_chunk(
     uploads: UploadService = Depends(get_upload_service),
 ) -> dict[str, Any] | JSONResponse:
     async with uploads.lock(upload_id):
+        if uploads._closed:
+            raise HTTPException(409, "账号正在切换，请刷新页面后重试")
         upload = db.get_upload(upload_id)
         if not upload or upload["link_import"]:
             raise HTTPException(404, "上传任务不存在")
@@ -195,6 +202,7 @@ async def upload_chunk(
         chunk_limit = min(int(upload["chunk_size"]), remaining)
 
         content_length = request.headers.get("content-length")
+        declared: int | None = None
         if content_length is not None:
             try:
                 declared = int(content_length)
@@ -208,37 +216,59 @@ async def upload_chunk(
         written = 0
         path = Path(upload["temp_path"])
         try:
-            with path.open("r+b", buffering=0) as fh:
-                if fh.seek(0, 2) < offset:
-                    raise HTTPException(409, "临时文件不完整，请重新上传")
-                fh.truncate(offset)
-                fh.seek(offset)
-                stream = request.stream()
-                while True:
-                    async with asyncio.timeout(60):
-                        chunk = await anext(stream, None)
-                    if chunk is None:
-                        break
-                    if not chunk:
-                        continue
-                    if written + len(chunk) > chunk_limit:
-                        raise HTTPException(413, "分片超过约定大小")
-                    await uploads.space.write(path.parent, fh, chunk)
-                    written += len(chunk)
-                if written == 0:
-                    raise HTTPException(400, "空分片")
-                if content_length is not None and written != declared:
-                    raise HTTPException(400, "分片长度与 Content-Length 不匹配")
-                new_offset = offset + written
-                db.update_upload(upload_id, received=new_offset, state="uploading", error=None)
-        except BaseException as exc:
-            uploads.discard_receiving(upload)
-            if isinstance(exc, ClientDisconnect):
-                raise HTTPException(400, "上传连接已断开，请重新上传") from None
-            if isinstance(exc, TimeoutError):
-                raise HTTPException(408, "上传超时，请重新上传") from None
-            if isinstance(exc, FileNotFoundError):
+            try:
+                file = path.open("r+b", buffering=0)
+            except FileNotFoundError:
+                uploads.discard_receiving(upload)
                 raise HTTPException(404, "临时文件不存在，请重新上传") from None
+            with file as fh:
+                actual = fh.seek(0, 2)
+                if actual < offset:
+                    fh.close()
+                    uploads.discard_receiving(upload)
+                    raise HTTPException(409, "临时文件不完整，请重新上传")
+                if actual > offset:
+                    fh.truncate(offset)
+                fh.seek(offset)
+                async with uploads.space.reserve(
+                    path, offset + (declared or chunk_limit), existing=offset
+                ):
+                    try:
+                        stream = request.stream()
+                        while True:
+                            async with asyncio.timeout(60):
+                                chunk = await anext(stream, None)
+                            if chunk is None:
+                                break
+                            if not chunk:
+                                continue
+                            total = written + len(chunk)
+                            if total > chunk_limit:
+                                raise HTTPException(413, "分片超过约定大小")
+                            if declared is not None and total > declared:
+                                raise HTTPException(400, "分片长度与 Content-Length 不匹配")
+                            await uploads.space.write_reserved(fh, chunk)
+                            written = total
+                        if written == 0:
+                            raise HTTPException(400, "空分片")
+                        if declared is not None and written != declared:
+                            raise HTTPException(400, "分片长度与 Content-Length 不匹配")
+                        new_offset = offset + written
+                        db.commit_upload_chunk(upload_id, new_offset)
+                    except BaseException:
+                        try:
+                            fh.truncate(offset)
+                        except OSError:
+                            # A later PATCH or startup recovery can truncate this tail again.
+                            logger.exception(
+                                "Could not roll back unconfirmed upload bytes for %s", upload_id
+                            )
+                        raise
+        except BaseException as exc:
+            if isinstance(exc, ClientDisconnect):
+                raise HTTPException(400, "上传连接已断开，请重试当前分片") from None
+            if isinstance(exc, TimeoutError):
+                raise HTTPException(408, "上传超时，请重试当前分片") from None
             if isinstance(exc, UploadSpaceError):
                 raise HTTPException(507, str(exc)) from None
             if isinstance(exc, OSError) and is_disk_full(exc):
@@ -281,10 +311,10 @@ async def complete_upload(
         if upload["image_host"] and not uploads.image_host_enabled:
             raise HTTPException(404, "图床功能已关闭")
         if upload["state"] == "done":
-            return public_upload(upload)
+            return public_upload(upload, uploads)
         if upload["state"] not in {"uploading", "error"}:
             return JSONResponse(
-                {"error": "正在处理中", "upload": public_upload(upload)}, status_code=202
+                {"error": "正在处理中", "upload": public_upload(upload, uploads)}, status_code=202
             )
         if int(upload["received"]) != int(upload["size"]):
             raise HTTPException(400, f"文件尚未上传完成: {upload['received']}/{upload['size']}")
@@ -293,11 +323,11 @@ async def complete_upload(
             return JSONResponse(
                 {
                     "error": "任务已在处理中",
-                    "upload": public_upload(db.get_upload(upload_id) or upload),
+                    "upload": public_upload(db.get_upload(upload_id) or upload, uploads),
                 },
                 status_code=202,
             )
         return JSONResponse(
-            {"ok": True, "upload": public_upload(db.get_upload(upload_id) or upload)},
+            {"ok": True, "upload": public_upload(db.get_upload(upload_id) or upload, uploads)},
             status_code=202,
         )

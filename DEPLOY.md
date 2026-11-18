@@ -262,3 +262,8 @@ GOOGLE_DRIVE_DAV_PASSWORD=replace-with-openlist-password
 ```
 
 登录 TG Drive 后，从顶部导航打开 Google Drive，可以浏览、预览或下载。播放经 OpenList 和 TG Drive 中转，使用部署服务器的下载与上传带宽。生产部署请使用容器内网或 HTTPS 连接 OpenList。留空 `GOOGLE_DRIVE_DAV_URL` 可以关闭入口。
+
+
+### 上传耗时与连接数验证
+
+按上传 ID 对齐 HTTP 日志中的分片 PATCH 耗时和后台日志中的 `queued`、`preparing`、`hashing`、`sending`、`committing` 耗时。每段 Telegram 传输另有文件段字节数与连接数。复测时可在专用测试频道、同一 VPS 上，用同一份 256 MiB 文件分别测试 `TG_UPLOAD_CONNECTIONS=1/2/4`，每档至少三次，记录发送阶段 MiB/s、端到端耗时、失败及限流次数。另用一批小文件记录整批耗时与临时盘峰值。Telethon 私有接口的适配版本固定在 requirements.txt，升级时运行 tests/test_telegram_upload.py。

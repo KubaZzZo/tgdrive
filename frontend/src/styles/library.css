@@ -104,8 +104,8 @@
 @media (max-width: 760px) {
   .library-controls {
     flex-wrap: wrap;
-    margin-bottom: 17px;
-    gap: 12px;
+    margin-bottom: 11px;
+    gap: 7px;
   }
   .search-field {
     width: 100%;

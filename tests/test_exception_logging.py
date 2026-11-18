@@ -46,9 +46,18 @@ def test_sync_loop_logs_failure_and_preserves_retry_mode(workdir, capture_logger
 
 
 def make_manager(workdir):
-    control = SimpleNamespace(path="control", telegram_profiles=Mock(return_value=[{}]))
+    control = SimpleNamespace(
+        path="control",
+        telegram_profiles=Mock(return_value=[{}]),
+        telegram_workspace_keys=Mock(return_value=[]),
+    )
     storage = SimpleNamespace(chat=-100123, status=lambda: {"connected": True})
-    runtime = SimpleNamespace(db=control, storage=storage, cleanup=SimpleNamespace(start=Mock()))
+    runtime = SimpleNamespace(
+        db=control,
+        storage=storage,
+        cleanup=SimpleNamespace(start=Mock()),
+        uploads=SimpleNamespace(cleanup_stale=Mock()),
+    )
     return accounts.AccountManager(SimpleNamespace(), make_settings(workdir), control, runtime)
 
 
@@ -70,6 +79,32 @@ def test_account_startup_cancellation_is_not_swallowed_or_warned(workdir, captur
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(manager.start())
     assert not records
+
+
+@pytest.mark.parametrize("fail_at_startup", [True, False])
+def test_workspace_enumeration_failure_retries_cleanup(
+    workdir, capture_logger, monkeypatch, fail_at_startup
+):
+    records = capture_logger(accounts)
+    manager = make_manager(workdir)
+    failure = OSError("temporary workspace enumeration failure")
+    steps = [failure, [], []] if fail_at_startup else [[], failure, []]
+    manager.control.telegram_workspace_keys.side_effect = steps
+    sleep = AsyncMock(side_effect=[None, None, asyncio.CancelledError()])
+    monkeypatch.setattr(accounts.asyncio, "sleep", sleep)
+
+    async def run():
+        await manager.start()
+        with pytest.raises(asyncio.CancelledError):
+            await manager._upload_maintenance
+
+    asyncio.run(run())
+    assert manager.control.telegram_workspace_keys.call_count == 3
+    assert manager.current.uploads.cleanup_stale.call_args_list == [call(manager.control)] * 3
+    assert sleep.await_args_list == [call(300)] * 3
+    assert len(records) == 1
+    assert "Could not enumerate upload workspaces" in records[0].getMessage()
+    assert records[0].exc_info[1] is failure
 
 
 @pytest.mark.parametrize("operation", ["authorization", "revocation"])

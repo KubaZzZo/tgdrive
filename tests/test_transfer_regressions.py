@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -141,7 +142,7 @@ def test_concurrent_chunks_do_not_overwrite_or_regress(workdir, reconnected):
     asyncio.run(run())
 
 
-def test_chunk_discards_upload_when_disk_reserve_is_reached(workdir, monkeypatch):
+def test_chunk_preserves_confirmed_prefix_when_disk_reserve_is_reached(workdir, monkeypatch):
     async def run():
         path = workdir / "upload_disk.part"
         path.write_bytes(b"old")
@@ -150,10 +151,9 @@ def test_chunk_discards_upload_when_disk_reserve_is_reached(workdir, monkeypatch
             service = UploadService(db, FakeTelegramStorage())
             record = db.create_upload(None, "data.bin", 8, None, str(path), 8)
             db.update_upload(record["id"], received=3)
-            free = iter([service.space.min_free_bytes + 4, service.space.min_free_bytes])
             monkeypatch.setattr(
                 "app.services.uploads.shutil.disk_usage",
-                lambda _: SimpleNamespace(free=next(free)),
+                lambda _: SimpleNamespace(free=service.space.min_free_bytes + 4),
             )
 
             class Request:
@@ -166,15 +166,15 @@ def test_chunk_discards_upload_when_disk_reserve_is_reached(workdir, monkeypatch
             with pytest.raises(HTTPException) as failure:
                 await upload_chunk(record["id"], Request(), db, service)
             assert failure.value.status_code == 507
-            assert not path.exists()
-            assert db.get_upload(record["id"]) is None
+            assert path.read_bytes() == b"old"
+            assert db.get_upload(record["id"])["received"] == 3
         finally:
             db.close()
 
     asyncio.run(run())
 
 
-def test_repeated_cancellation_waits_for_disk_write_before_removal(workdir, monkeypatch):
+def test_repeated_cancellation_waits_for_disk_write_before_rollback(workdir, monkeypatch):
     async def run():
         path = workdir / "upload_cancel.part"
         path.write_bytes(b"old")
@@ -187,11 +187,11 @@ def test_repeated_cancellation_waits_for_disk_write_before_removal(workdir, monk
         release = Event()
         original_write = service.space._write
 
-        def delayed_write(directory, file, data):
+        def delayed_write(file, data):
             loop.call_soon_threadsafe(entered.set)
             if not release.wait(5):
                 raise TimeoutError("test did not release the disk write")
-            original_write(directory, file, data)
+            original_write(file, data)
 
         monkeypatch.setattr(service.space, "_write", delayed_write)
 
@@ -211,8 +211,9 @@ def test_repeated_cancellation_waits_for_disk_write_before_removal(workdir, monk
             release.set()
             with pytest.raises(asyncio.CancelledError):
                 await task
-            assert not path.exists()
-            assert db.get_upload(record["id"]) is None
+            assert path.read_bytes() == b"old"
+            assert db.get_upload(record["id"])["received"] == 3
+            assert not service.space._reservations
         finally:
             release.set()
             await asyncio.gather(task, return_exceptions=True)
@@ -221,7 +222,62 @@ def test_repeated_cancellation_waits_for_disk_write_before_removal(workdir, monk
     asyncio.run(run())
 
 
-def test_client_disconnect_discards_previously_committed_chunks(workdir):
+def test_chunk_reserves_once_and_accounts_for_unwritten_bytes(workdir, monkeypatch):
+    async def run():
+        db = Database(workdir / "reservations.sqlite3")
+        service = UploadService(db, FakeTelegramStorage())
+        service.space.max_bytes = 12
+        scan = service.space._check
+        scans = []
+
+        def count_scan(directory, growth):
+            scans.append(growth)
+            scan(directory, growth)
+
+        monkeypatch.setattr(service.space, "_check", count_scan)
+        one, two = (workdir / f"upload_{index}.part" for index in range(2))
+        one.write_bytes(b"old")
+        two.touch()
+        first = db.create_upload(None, "first.bin", 8, None, str(one), 8)
+        db.update_upload(first["id"], received=3)
+        second = db.create_upload(None, "second.bin", 5, None, str(two), 8)
+        paused, release = asyncio.Event(), asyncio.Event()
+
+        class Request:
+            headers = {"upload-offset": "3", "content-length": "5"}
+
+            async def stream(self):
+                yield b"1"
+                paused.set()
+                await release.wait()
+                yield b"2"
+                yield b"345"
+
+        task = asyncio.create_task(upload_chunk(first["id"], Request(), db, service))
+        try:
+            await asyncio.wait_for(paused.wait(), 2)
+            assert one.stat().st_size == 4
+            with pytest.raises(HTTPException) as failure:
+                await upload_chunk(
+                    second["id"],
+                    SimpleNamespace(headers={"upload-offset": "0", "content-length": "5"}),
+                    db,
+                    service,
+                )
+            assert failure.value.status_code == 507
+            release.set()
+            assert (await task)["offset"] == 8
+            assert one.read_bytes() == b"old12345" and two.stat().st_size == 0
+            assert scans == [5, 5]
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            db.close()
+
+    asyncio.run(run())
+
+
+def test_client_disconnect_rolls_back_only_unconfirmed_bytes(workdir):
     async def run():
         db = Database(workdir / "disconnect.sqlite3")
         service = UploadService(db, FakeTelegramStorage())
@@ -241,8 +297,53 @@ def test_client_disconnect_discards_previously_committed_chunks(workdir):
             with pytest.raises(HTTPException) as failure:
                 await upload_chunk(record["id"], Request(), db, service)
             assert failure.value.status_code == 400
-            assert not path.exists()
-            assert db.get_upload(record["id"]) is None
+            assert path.read_bytes() == b"old"
+            assert db.get_upload(record["id"])["received"] == 3
+
+            class Retry(Request):
+                async def stream(self):
+                    yield b"123"
+                    yield b"45"
+
+            result = await upload_chunk(record["id"], Retry(), db, service)
+            assert result["offset"] == 8
+            assert path.read_bytes() == b"old12345"
+        finally:
+            db.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("disk_full", [False, True])
+def test_failed_patch_keeps_last_confirmed_offset(workdir, monkeypatch, disk_full):
+    async def run():
+        db = Database(workdir / "rollback.sqlite3")
+        service = UploadService(db, FakeTelegramStorage())
+        path = workdir / "upload_rollback.part"
+        path.write_bytes(b"old")
+        record = db.create_upload(None, "a.bin", 8, None, str(path), 8)
+        db.update_upload(record["id"], received=3)
+
+        def short_write(file, chunk):
+            file.write(chunk[:1])
+            raise OSError(errno.ENOSPC, "no space")
+
+        if disk_full:
+            monkeypatch.setattr(service.space, "_write", short_write)
+
+        class Request:
+            headers = {"upload-offset": "3", "content-length": "5"}
+
+            async def stream(self):
+                yield b"abc"
+
+        try:
+            with pytest.raises(HTTPException) as failure:
+                await upload_chunk(record["id"], Request(), db, service)
+            assert failure.value.status_code == (507 if disk_full else 400)
+            assert path.read_bytes() == b"old"
+            assert db.get_upload(record["id"])["received"] == 3
+            assert not service.space._reservations
         finally:
             db.close()
 
@@ -397,7 +498,7 @@ def test_upload_completion_failure_rolls_back_metadata_and_retries_once(workdir,
     asyncio.run(run())
 
 
-def test_stale_cleanup_rechecks_after_waiting_for_writer(workdir):
+def test_stale_cleanup_skips_active_writer(workdir):
     from datetime import UTC, datetime, timedelta
 
     async def run():
@@ -410,10 +511,9 @@ def test_stale_cleanup_rechecks_after_waiting_for_writer(workdir):
         with db.conn:
             db.conn.execute("UPDATE uploads SET updated_at=? WHERE id=?", (old, upload["id"]))
         async with service.lock(upload["id"]):
-            cleanup = asyncio.create_task(service.cleanup_stale_async())
-            await asyncio.sleep(0)
+            assert service.cleanup_stale() == 0
             db.update_upload(upload["id"], received=4)
-        await cleanup
+        assert service.cleanup_stale() == 0
         assert path.exists()
         assert db.get_upload(upload["id"]) is not None
         db.close()
