@@ -225,12 +225,13 @@ def test_reconcile_each_subscription_only_through_its_watermark(workdir, monkeyp
     db.cdn_observe([(*a, 200, 960), (*b, 200, 600)], 960)
     assert db.cdn_totals() == {a: 250, b: 350}
 
-    # Duplicate, out-of-order, lower-counter, and too-old reports cannot clear pending bytes.
+    # Even a delayed report covers old buckets up to its own watermark.
+    # Duplicate, out-of-order and lower-counter reports cannot advance it.
     local_time = 1_620
     db.cdn_observe([(*a, 200, 960), (*b, 200, 1_200)], 1_620)
     db.cdn_observe([(*a, 199, 1_620), (*b, 200, 590)], 1_620)
     db.cdn_observe([(*a, 200, 950)], 1_620)
-    assert db.cdn_totals() == {a: 250, b: 350}
+    assert db.cdn_totals() == {a: 250, b: 250}
     db.cdn_observe([(*a, 250, 1_620), (*b, 200, 1_620)], 1_620)
     assert db.cdn_totals() == {a: 250, b: 200}
     db.close()

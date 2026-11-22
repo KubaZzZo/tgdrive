@@ -31,7 +31,7 @@ class CDNRepository(SQLiteSession):
                 if (
                     (watermark is None or provider_at > watermark)
                     and used >= current["provider_used"]
-                    and observed_at - PROVIDER_LAG_SECONDS <= provider_at <= observed_at
+                    and provider_at <= observed_at
                 ):
                     watermark = provider_at
                     cutoff = provider_at - PROVIDER_LAG_SECONDS
