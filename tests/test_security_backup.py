@@ -41,7 +41,7 @@ def test_index_backup_excludes_login_records_and_supports_old_schema(workdir, ve
         db.close()
 
 
-@pytest.mark.parametrize("version", [[19], 20, True])
+@pytest.mark.parametrize("version", [[19], 21, True])
 def test_index_restore_rejects_invalid_schema_versions(workdir, version):
     archive = workdir / "invalid.zip"
     manifest = {

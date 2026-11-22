@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -44,15 +45,15 @@ def test_cdn_counts_persist_and_never_reset_on_lagging_api(workdir):
         await refresh(monitor, [row(100), row(800, "unlimited", "unlimited")])
         await monitor.charge(250)
         await refresh(monitor, [row(200), row(800, "unlimited", "unlimited")])
-        assert monitor.snapshot()["subscriptions"][0]["used"] == 350
+        assert monitor.snapshot()["subscriptions"][0]["used"] == 450
         assert not monitor.snapshot()["blocked"]
         db.close()
         db = Database(path)
         monitor = CDNMonitor(db, settings)
         await refresh(monitor, [row(200)])
-        assert monitor.snapshot()["subscriptions"][0]["used"] == 350
+        assert monitor.snapshot()["subscriptions"][0]["used"] == 450
         await monitor.charge(50)
-        assert monitor.snapshot()["subscriptions"][0]["used"] == 400
+        assert monitor.snapshot()["subscriptions"][0]["used"] == 500
         assert "test-token" not in str(monitor.snapshot())
         assert "test-token" not in repr(settings)
         db.close()
@@ -82,7 +83,7 @@ def test_warn_stop_and_preflight_preserve_reserve(workdir):
 
 
 @pytest.mark.parametrize(
-    "condition", ["month", "source_future", "bad_counter", "missing", "api_stale"]
+    "condition", ["month", "source_future", "bad_counter", "missing", "api_stale", "over_quota"]
 )
 def test_uncertain_quota_blocks_media(workdir, condition):
     async def run():
@@ -95,12 +96,15 @@ def test_uncertain_quota_blocks_media(workdir, condition):
             data["usage_updated_at"] = (datetime.now(UTC) + timedelta(hours=1)).isoformat()
         if condition == "bad_counter":
             data["used_bytes"] = "NaN"
+        if condition == "over_quota":
+            data["over_quota"] = True
         await refresh(monitor, [] if condition == "missing" else [data])
         if condition == "api_stale":
             monitor.updated_at = datetime.now(UTC) - timedelta(minutes=4)
         with pytest.raises(HTTPException) as error:
             await monitor.check()
         assert error.value.status_code == 429
+        assert error.value.headers["Cache-Control"] == "no-store"
         db.close()
 
     asyncio.run(run())
@@ -178,7 +182,7 @@ def test_subscription_selection_fails_closed_and_new_month_resets_floor(workdir)
                 axisnow_subscription_ids="limited",
             ),
         )
-        db.cdn_observe([("limited", "2000-01", 9_000_000)])
+        db.cdn_observe([("limited", "2000-01", 9_000_000, 0)], 0)
         await refresh(monitor, [row(), row(9_000_000, "unrelated")])
         assert not monitor.snapshot()["blocked"]
         assert len(monitor.snapshot()["subscriptions"]) == 1
@@ -194,7 +198,7 @@ def test_subscription_selection_fails_closed_and_new_month_resets_floor(workdir)
 def test_charge_is_atomic_across_connections(workdir):
     path = workdir / "cdn.db"
     first, second = Database(path), Database(path)
-    first.cdn_observe([("a", "2026-11", 0), ("b", "2026-11", 0)])
+    first.cdn_observe([("a", "2026-11", 0, 0), ("b", "2026-11", 0, 0)], 0)
     limits = [("a", "2026-11", 100), ("b", "2026-11", 100)]
     with ThreadPoolExecutor(2) as pool:
         results = list(pool.map(lambda db: db.cdn_charge(limits, 70), [first, second]))
@@ -204,6 +208,95 @@ def test_charge_is_atomic_across_connections(workdir):
     assert set(first.cdn_totals().values()) == {70}
     first.close()
     second.close()
+
+
+def test_reconcile_each_subscription_only_through_its_watermark(workdir, monkeypatch):
+    db = Database(workdir / "cdn.db")
+    local_time = 600
+    monkeypatch.setattr(
+        "app.infrastructure.db.repositories.cdn.time", SimpleNamespace(time=lambda: local_time)
+    )
+    a, b = ("a", "2026-11"), ("b", "2026-11")
+    limits = [(*a, 1_000), (*b, 1_000)]
+    db.cdn_observe([(*a, 100, 600), (*b, 200, 600)], 600)
+    assert db.cdn_charge(limits, 100)
+    local_time = 960
+    assert db.cdn_charge(limits, 50)
+    db.cdn_observe([(*a, 200, 960), (*b, 200, 600)], 960)
+    assert db.cdn_totals() == {a: 250, b: 350}
+
+    # Duplicate, out-of-order, lower-counter, and too-old reports cannot clear pending bytes.
+    local_time = 1_620
+    db.cdn_observe([(*a, 200, 960), (*b, 200, 1_200)], 1_620)
+    db.cdn_observe([(*a, 199, 1_620), (*b, 200, 590)], 1_620)
+    db.cdn_observe([(*a, 200, 950)], 1_620)
+    assert db.cdn_totals() == {a: 250, b: 350}
+    db.cdn_observe([(*a, 250, 1_620), (*b, 200, 1_620)], 1_620)
+    assert db.cdn_totals() == {a: 250, b: 200}
+    db.close()
+
+
+def test_reconcile_and_charge_preserve_concurrent_reservations(workdir, monkeypatch):
+    path = workdir / "cdn.db"
+    first, second = Database(path), Database(path)
+    local_time = 600
+    monkeypatch.setattr(
+        "app.infrastructure.db.repositories.cdn.time", SimpleNamespace(time=lambda: local_time)
+    )
+    key = ("a", "2026-11")
+    limits = [(*key, 1_000)]
+    first.cdn_observe([(*key, 100, 600)], 600)
+    assert first.cdn_charge(limits, 100)
+    local_time = 960
+    with ThreadPoolExecutor(2) as pool:
+        observe = pool.submit(first.cdn_observe, [(*key, 200, 960)], 960)
+        assert pool.submit(second.cdn_charge, limits, 50).result()
+        observe.result()
+    assert first.cdn_totals()[key] == 250
+    first.close()
+    second.close()
+
+
+def test_legacy_estimate_recovers_video_range_after_provider_catches_up(authenticated_client):
+    client, app, storage = authenticated_client
+    settings = make_settings(app.state.settings.data_dir.parent, axisnow_api_token="test-token")
+    monitor = CDNMonitor(app.state.traffic.db, settings)
+    app.state.cdn = app.state.traffic.cdn = monitor
+    sample = row(8_257_075_200)
+    sample["effective_quota_mb"] = 50 * 1024
+    legacy = sample.copy()
+    now = datetime.now(UTC)
+    legacy["usage_updated_at"] = (now - timedelta(minutes=8)).isoformat()
+    key = (sample["uuid"], sample["quota_period"])
+    ceiling = 50 * 1024**3 * 95 // 100
+    with monitor.db.conn:
+        monitor.db.conn.execute(
+            "INSERT INTO cdn_usage (uuid, period, charged, legacy_at) VALUES (?, ?, ?, ?)",
+            (*key, ceiling - 780, (now - timedelta(minutes=6)).timestamp()),
+        )
+    item = app.state.db.create_file(
+        "video.mp4",
+        None,
+        2048,
+        "video/mp4",
+        None,
+        str(storage.chat),
+        [{"part_index": 0, "tg_message_id": 201, "size": 2048}],
+    )
+    storage.files[201] = b"a" * 2048
+    url = f"/api/files/{item['id']}/download"
+    headers = {"Range": "bytes=0-1023"}
+    for _ in range(2):
+        asyncio.run(refresh(monitor, [legacy]))
+        response = client.get(url, headers=headers)
+        assert response.status_code == 429
+        assert "超过 CDN 保护余量" in response.json()["detail"]
+
+    asyncio.run(refresh(monitor, [sample]))
+    response = client.get(url, headers=headers)
+    assert response.status_code == 206 and response.content == b"a" * 1024
+    asyncio.run(refresh(monitor, [sample]))
+    assert monitor.db.cdn_totals()[key] == int(sample["used_bytes"]) + 1024
 
 
 def test_download_share_and_head_are_blocked_but_control_remains_available(authenticated_client):

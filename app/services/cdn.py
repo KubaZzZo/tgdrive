@@ -16,6 +16,7 @@ from app.infrastructure.db import Database
 
 logger = logging.getLogger("tgdrive.cdn")
 API_URL = "https://api.axisnow.io/client/v1/tenant_subscriptions/filter"
+QUOTA_ZONE = ZoneInfo("Asia/Shanghai")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -107,12 +108,15 @@ class CDNMonitor:
             self._attempted_at = now
             try:
                 raw = await asyncio.to_thread(subscription_rows, self.settings.axisnow_api_token)
+                observed_at = datetime.now(UTC)
+                period = observed_at.astimezone(QUOTA_ZONE).strftime("%Y-%m")
                 selected = {
                     s.strip()
                     for s in self.settings.axisnow_subscription_ids.split(",")
                     if s.strip()
                 }
                 rows = []
+                observations = []
                 for row in raw:
                     if selected and row["uuid"] not in selected:
                         continue
@@ -132,6 +136,11 @@ class CDNMonitor:
                     updated = datetime.fromisoformat(row["usage_updated_at"].replace("Z", "+00:00"))
                     if updated.tzinfo is None:
                         raise ValueError("用量时间缺少时区")
+                    if (
+                        row["quota_period"] == period
+                        and (updated - observed_at).total_seconds() <= 60
+                    ):
+                        observations.append((row["uuid"], period, used, updated.timestamp()))
                     rows.append(
                         {
                             "id": row["uuid"],
@@ -145,7 +154,7 @@ class CDNMonitor:
                     )
                 if not rows or (selected and selected != {r["id"] for r in rows}):
                     raise ValueError("没有找到全部有效订阅，请检查订阅范围")
-                self.db.cdn_observe([(r["id"], r["period"], r["provider_used"]) for r in rows])
+                self.db.cdn_observe(observations, observed_at.timestamp())
                 self.rows, self.updated_at, self.error = rows, now, None
             except Exception as exc:
                 # Never log response bodies or exception strings containing credentials.
@@ -158,7 +167,7 @@ class CDNMonitor:
 
     def snapshot(self, now: datetime | None = None) -> dict:
         now = now or datetime.now(UTC)
-        period = now.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m")
+        period = now.astimezone(QUOTA_ZONE).strftime("%Y-%m")
         stale = self.updated_at is None or (now - self.updated_at).total_seconds() > 180
         totals = self.db.cdn_totals() if self.configured else {}
         subscriptions = []
@@ -214,12 +223,19 @@ class CDNMonitor:
             and row["used"] + size > row["quota_bytes"] * self.settings.cdn_stop_percent // 100
             for row in status["subscriptions"]
         )
-        if status["blocked"] or cannot_fit:
-            raise HTTPException(
-                429,
-                "CDN 流量保护已开启：余量不足或用量数据过期，请查看流量面板",
-                headers={"Retry-After": "60", "Cache-Control": "no-store"},
-            )
+        if status["stale"] or not status["available"]:
+            detail = "CDN 用量数据暂不可用，媒体传输已暂停，请查看流量面板"
+        elif status["blocked"]:
+            detail = "CDN 用量已达到保护阈值或平台额度，媒体传输已暂停"
+        elif cannot_fit:
+            detail = "本次请求所需流量超过 CDN 保护余量"
+        else:
+            return
+        raise HTTPException(
+            429,
+            detail,
+            headers={"Retry-After": "60", "Cache-Control": "no-store"},
+        )
 
     async def charge(self, size: int) -> None:
         await self.check()
@@ -231,4 +247,8 @@ class CDNMonitor:
             if r["quota_bytes"] is not None
         ]
         if not self.db.cdn_charge(limits, size):
-            raise HTTPException(429, "CDN 保护余量不足，传输已暂停", headers={"Retry-After": "60"})
+            raise HTTPException(
+                429,
+                "CDN 保护余量不足，传输已暂停",
+                headers={"Retry-After": "60", "Cache-Control": "no-store"},
+            )

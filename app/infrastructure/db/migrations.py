@@ -5,7 +5,7 @@ import sqlite3
 from app.infrastructure.db.common import utcnow
 from app.services.categories import classify_file, effective_mime
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -350,6 +350,28 @@ def _upgrade_to_19(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA user_version=19")
 
 
+def _upgrade_to_20(conn: sqlite3.Connection) -> None:
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(cdn_usage)")}
+        if "provider_used" not in columns:
+            conn.execute(
+                "ALTER TABLE cdn_usage ADD COLUMN provider_used INTEGER NOT NULL DEFAULT 0"
+            )
+        if "provider_at" not in columns:
+            conn.execute("ALTER TABLE cdn_usage ADD COLUMN provider_at REAL")
+        if "legacy_at" not in columns:
+            conn.execute("ALTER TABLE cdn_usage ADD COLUMN legacy_at REAL")
+            conn.execute(
+                "UPDATE cdn_usage SET legacy_at = CAST(strftime('%s', 'now') AS INTEGER) + 1"
+            )
+        conn.execute("""CREATE TABLE IF NOT EXISTS cdn_pending (
+            uuid TEXT NOT NULL, period TEXT NOT NULL, bucket_end INTEGER NOT NULL,
+            bytes INTEGER NOT NULL, PRIMARY KEY(uuid, period, bucket_end),
+            FOREIGN KEY(uuid, period) REFERENCES cdn_usage(uuid, period) ON DELETE CASCADE)""")
+        conn.execute("PRAGMA user_version=20")
+
+
 _MIGRATIONS = (
     (1, _upgrade_to_1),
     (2, _upgrade_to_2),
@@ -370,6 +392,7 @@ _MIGRATIONS = (
     (17, _upgrade_to_17),
     (18, _upgrade_to_18),
     (19, _upgrade_to_19),
+    (20, _upgrade_to_20),
 )
 
 
