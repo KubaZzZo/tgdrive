@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -186,10 +187,44 @@ def test_subscription_selection_fails_closed_and_new_month_resets_floor(workdir)
         await refresh(monitor, [row(), row(9_000_000, "unrelated")])
         assert not monitor.snapshot()["blocked"]
         assert len(monitor.snapshot()["subscriptions"]) == 1
-        await refresh(monitor, [row(uuid="unrelated")])
-        monitor.updated_at = datetime.now(UTC) - timedelta(minutes=4)
-        with pytest.raises(HTTPException):
-            await monitor.check()
+        for listing in ([row(uuid="unrelated")], [{**row(), "status": "disabled"}]):
+            await refresh(monitor, listing)
+            assert not monitor.snapshot()["available"]
+            assert "AXISNOW_SUBSCRIPTION_IDS" in monitor.snapshot()["error"]
+            with pytest.raises(HTTPException) as error:
+                await monitor.check(1024)
+            assert error.value.status_code == 429
+            await refresh(monitor, [row()])
+            await monitor.check(1024)
+            assert monitor.error is None
+        db.close()
+
+    asyncio.run(run())
+
+
+def test_api_outage_preserves_fresh_quota_but_empty_listing_blocks_immediately(workdir):
+    async def run():
+        db = Database(workdir / "cdn.db")
+        monitor = CDNMonitor(db, make_settings(workdir, axisnow_api_token="test-token"))
+        await refresh(monitor, [row()])
+        last_success = monitor.updated_at
+        monitor._attempted_at = None
+        with patch(
+            "app.services.cdn.subscription_rows",
+            side_effect=urllib.error.HTTPError("", 503, "", {}, None),
+        ):
+            await monitor.refresh()
+        assert monitor.updated_at == last_success
+        assert "自动重试" in monitor.error
+        await monitor.check(1024)
+        assert monitor.snapshot(last_success + timedelta(seconds=181))["blocked"]
+        await refresh(monitor, [])
+        assert "没有有效订阅" in monitor.error
+        with pytest.raises(HTTPException) as error:
+            await monitor.check(1024)
+        assert error.value.status_code == 429
+        await refresh(monitor, [row()])
+        await monitor.check(1024)
         db.close()
 
     asyncio.run(run())
@@ -355,3 +390,16 @@ def test_filter_pagination_and_credentials_stay_on_api_host():
     assert all(r.get_header("User-agent") == "TGDrive/2.1" for r in requests)
     assert all(r.get_header("Accept") == "application/json" for r in requests)
     assert json.loads(requests[1].data)["page"] == 2
+
+
+def test_changing_pagination_total_cannot_confirm_subscription_removal():
+    from io import BytesIO
+
+    pages = [
+        b'{"success":true,"result_info":{"total_count":2},"result":[{"uuid":"a"}]}',
+        b'{"success":true,"result_info":{"total_count":1},"result":[]}',
+    ]
+    with patch("urllib.request.build_opener") as opener:
+        opener.return_value.open.side_effect = [BytesIO(page) for page in pages]
+        with pytest.raises(ValueError, match="分页期间"):
+            subscription_rows("test-token")

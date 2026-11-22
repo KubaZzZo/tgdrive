@@ -27,6 +27,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 def subscription_rows(token: str) -> list[dict]:
     """Read-only filter API used by the AxisNow subscription console."""
     rows: list[dict] = []
+    expected_total = None
     opener = urllib.request.build_opener(NoRedirect())
     for page in range(1, 101):
         request = urllib.request.Request(
@@ -50,7 +51,12 @@ def subscription_rows(token: str) -> list[dict]:
             raise ValueError("无效的订阅响应")
         batch = data["result"]
         rows.extend(batch)
-        if len(rows) >= int(data["result_info"]["total_count"]):
+        total = integer(data["result_info"]["total_count"])
+        if expected_total is None:
+            expected_total = total
+        if total != expected_total or len(rows) > total:
+            raise ValueError("订阅列表在分页期间发生变化")
+        if len(rows) == total:
             if len({row["uuid"] for row in rows}) != len(rows):
                 raise ValueError("订阅分页重复")
             return rows
@@ -153,17 +159,27 @@ class CDNMonitor:
                         }
                     )
                 if not rows or (selected and selected != {r["id"] for r in rows}):
-                    raise ValueError("没有找到全部有效订阅，请检查订阅范围")
+                    # A complete listing confirms the scope has changed. A prior
+                    # active list may still be fresh enough to authorize transfers.
+                    self.rows = []
+                    self.updated_at = observed_at
+                    self.error = (
+                        "指定订阅已停用或不在列表中，请核对 AXISNOW_SUBSCRIPTION_IDS"
+                        if selected
+                        else "平台当前没有有效订阅，请核对 AxisNow 订阅状态"
+                    )
+                    return
                 self.db.cdn_observe(observations, observed_at.timestamp())
                 self.rows, self.updated_at, self.error = rows, now, None
             except Exception as exc:
                 # Never log response bodies or exception strings containing credentials.
                 logger.warning("AxisNow quota refresh failed: %s", type(exc).__name__)
-                self.error = (
-                    "CDN 令牌无效或无读取权限"
-                    if isinstance(exc, urllib.error.HTTPError) and exc.code in {401, 403}
-                    else "CDN 用量同步失败，请检查 API 配置或网络"
-                )
+                if isinstance(exc, urllib.error.HTTPError) and exc.code in {401, 403}:
+                    self.error = "CDN 令牌无效或无读取权限"
+                elif isinstance(exc, urllib.error.HTTPError) and 500 <= exc.code < 600:
+                    self.error = "AxisNow API 暂时不可用，系统将自动重试"
+                else:
+                    self.error = "CDN 用量同步失败，请检查 API 配置或网络"
 
     def snapshot(self, now: datetime | None = None) -> dict:
         now = now or datetime.now(UTC)
