@@ -79,6 +79,9 @@ def test_reconcile_deployed_and_cdn_schema_variants_without_data_loss(workdir, v
             (item["id"], "123", "file-kept", "v1", 3),
         )
         db.conn.execute("INSERT INTO channel_bot_covers VALUES (?,?)", (item["id"], "cover-kept"))
+        db.conn.execute("DROP TABLE cdn_pending")
+        for column in ("provider_used", "provider_at", "legacy_at"):
+            db.conn.execute(f"ALTER TABLE cdn_usage DROP COLUMN {column}")
         db.conn.execute("INSERT INTO cdn_usage VALUES (?,?,?)", ("sub-kept", "2026-11", 456))
         if variant != "schema8-cdn":
             db.conn.execute("DROP TABLE cdn_usage")
@@ -107,6 +110,11 @@ def test_reconcile_deployed_and_cdn_schema_variants_without_data_loss(workdir, v
         )
     if variant == "schema8-cdn":
         assert db.cdn_totals()[("sub-kept", "2026-11")] == 456
+        migrated = db.conn.execute(
+            "SELECT provider_used, provider_at, legacy_at FROM cdn_usage"
+        ).fetchone()
+        assert migrated["provider_used"] == 0 and migrated["provider_at"] is None
+        assert migrated["legacy_at"] > 0
     db.close()
 
 
