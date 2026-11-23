@@ -17,7 +17,7 @@ from statistics import median
 from tempfile import TemporaryDirectory
 
 import uvicorn
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[2]
 DURATION = 150
@@ -170,6 +170,11 @@ def exercise(
                 )
                 - started
             )
+            if video.evaluate(
+                "video => document.pictureInPictureEnabled && !!video.requestPictureInPicture"
+            ):
+                toolbar = page.get_by_role("group", name="播放器操作")
+                expect(toolbar.get_by_role("button", name="画中画", exact=True)).to_be_visible()
             startup_requests = len(requests)
             assert video.evaluate("video => video.src.includes('/download')")
             assert any(value and value.startswith("bytes=") for value in requests), requests
