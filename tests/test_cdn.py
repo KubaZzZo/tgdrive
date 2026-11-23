@@ -238,6 +238,38 @@ def test_confirmed_membership_change_blocks_even_with_invalid_usage(workdir, dis
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("other_selected", [False, True])
+def test_removed_subscription_blocks_even_when_another_row_has_no_status(workdir, other_selected):
+    async def run():
+        db = Database(workdir / "cdn.db")
+        try:
+            monitor = CDNMonitor(
+                db,
+                make_settings(
+                    workdir,
+                    axisnow_api_token="test-token",
+                    axisnow_subscription_ids="a,b" if other_selected else "a",
+                ),
+            )
+            a, b = row(uuid="a"), row(uuid="b")
+            await refresh(monitor, [a, b])
+            await monitor.check(1)
+
+            malformed = {key: value for key, value in b.items() if key != "status"}
+            if not other_selected:
+                await refresh(monitor, [a, malformed])
+                assert monitor.error is None
+            await refresh(monitor, [malformed])
+            with pytest.raises(HTTPException) as error:
+                await monitor.check(1)
+            assert error.value.status_code == 429
+            assert "AXISNOW_SUBSCRIPTION_IDS" in monitor.error
+        finally:
+            db.close()
+
+    asyncio.run(run())
+
+
 def test_api_outage_preserves_fresh_quota_but_empty_listing_blocks_immediately(workdir):
     async def run():
         db = Database(workdir / "cdn.db")

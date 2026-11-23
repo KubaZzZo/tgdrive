@@ -121,21 +121,27 @@ class CDNMonitor:
                     for s in self.settings.axisnow_subscription_ids.split(",")
                     if s.strip()
                 }
-                active = {}
-                seen = set()
+                subscriptions = {}
                 for row in raw:
-                    subscription_id, status = row["uuid"], row["status"]
+                    subscription_id = row["uuid"]
                     if (
                         not isinstance(subscription_id, str)
                         or not subscription_id.strip()
-                        or subscription_id in seen
-                        or not isinstance(status, str)
-                        or not status.strip()
+                        or subscription_id in subscriptions
                     ):
-                        raise ValueError("无效的订阅 ID 或状态")
-                    seen.add(subscription_id)
-                    if status == "active" and (not selected or subscription_id in selected):
-                        active[subscription_id] = row
+                        raise ValueError("无效的订阅 ID")
+                    subscriptions[subscription_id] = row
+
+                active = {}
+                if selected <= subscriptions.keys():
+                    for subscription_id, row in subscriptions.items():
+                        if selected and subscription_id not in selected:
+                            continue
+                        status = row.get("status")
+                        if not isinstance(status, str) or not status.strip():
+                            raise ValueError("无效的订阅状态")
+                        if status == "active":
+                            active[subscription_id] = row
                 if not active or (selected and selected != active.keys()):
                     # A complete listing confirms the scope has changed even
                     # when usage data on another subscription is malformed.
