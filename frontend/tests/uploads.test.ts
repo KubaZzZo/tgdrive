@@ -142,6 +142,51 @@ test('retry observes an already processing upload instead of creating a duplicat
   assert.equal(gets, 2)
 })
 
+for (const mode of ['retry', 'reselect'] as const) {
+  test(`an invalid temp file starts a new upload on ${mode}`, async () => {
+    const original = useUploadStore()
+    const requests: string[] = []
+    const invalid = {
+      id: 'old', name: 'data.bin', parent_id: null, size: 8,
+      received: 8, chunk_size: 8, state: 'invalid', error: '临时文件不存在，请重新上传',
+    }
+    let creates = 0
+    globalThis.fetch = async (url, init) => {
+      requests.push(`${init?.method ?? 'GET'} ${url}`)
+      if (url === '/api/uploads') {
+        return json({ id: ++creates === 1 ? 'old' : 'new', offset: 0, size: 8, chunk_size: 8 })
+      }
+      if (init?.method === 'PATCH') {
+        assert.equal(new Headers(init.headers).get('Upload-Offset'), '0')
+        return json({ offset: 8, received: 8, size: 8 })
+      }
+      if (url === '/api/uploads/old/complete' && mode === 'reselect') {
+        return json({ detail: 'denied' }, 403)
+      }
+      if (String(url).startsWith('/api/uploads/old')) return json(invalid)
+      return json({ id: 'new', state: 'done' })
+    }
+    original.enqueue([file()], null)
+    await until(() => original.jobs[0]?.state === 'error')
+    let store = original
+    if (mode === 'retry') {
+      assert.equal(original.jobs[0]!.uploadId, null)
+      assert.deepEqual(JSON.parse(memory.get('tgdrive_resume_v2')!), {})
+      store.retry(store.jobs[0]!)
+    } else {
+      setActivePinia(createPinia())
+      store = useUploadStore()
+      store.enqueue([file()], null)
+    }
+    await until(() => store.jobs[0]?.state === 'done')
+    assert.deepEqual(requests, [
+      'POST /api/uploads', 'PATCH /api/uploads/old', 'POST /api/uploads/old/complete',
+      ...(mode === 'reselect' ? ['GET /api/uploads/old'] : []),
+      'POST /api/uploads', 'PATCH /api/uploads/new', 'POST /api/uploads/new/complete',
+    ])
+  })
+}
+
 test('duplicate queue entries are skipped and permanent upload errors are not retried', async () => {
   const store = useUploadStore()
   let patches = 0

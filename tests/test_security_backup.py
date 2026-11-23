@@ -7,7 +7,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
-from app.infrastructure.db import Database
+from app.infrastructure.db import SCHEMA_VERSION, Database
 from app.services.index_backup import build_index_backup
 from app.services.index_restore import read_index_archive
 
@@ -41,7 +41,7 @@ def test_index_backup_excludes_login_records_and_supports_old_schema(workdir, ve
         db.close()
 
 
-@pytest.mark.parametrize("version", [[19], 21, True])
+@pytest.mark.parametrize("version", [[19], SCHEMA_VERSION + 1, True])
 def test_index_restore_rejects_invalid_schema_versions(workdir, version):
     archive = workdir / "invalid.zip"
     manifest = {

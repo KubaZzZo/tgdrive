@@ -121,13 +121,36 @@ class CDNMonitor:
                     for s in self.settings.axisnow_subscription_ids.split(",")
                     if s.strip()
                 }
+                active = {}
+                seen = set()
+                for row in raw:
+                    subscription_id, status = row["uuid"], row["status"]
+                    if (
+                        not isinstance(subscription_id, str)
+                        or not subscription_id.strip()
+                        or subscription_id in seen
+                        or not isinstance(status, str)
+                        or not status.strip()
+                    ):
+                        raise ValueError("无效的订阅 ID 或状态")
+                    seen.add(subscription_id)
+                    if status == "active" and (not selected or subscription_id in selected):
+                        active[subscription_id] = row
+                if not active or (selected and selected != active.keys()):
+                    # A complete listing confirms the scope has changed even
+                    # when usage data on another subscription is malformed.
+                    self.rows = []
+                    self.updated_at = observed_at
+                    self.error = (
+                        "指定订阅已停用或不在列表中，请核对 AXISNOW_SUBSCRIPTION_IDS"
+                        if selected
+                        else "平台当前没有有效订阅，请核对 AxisNow 订阅状态"
+                    )
+                    return
+
                 rows = []
                 observations = []
-                for row in raw:
-                    if selected and row["uuid"] not in selected:
-                        continue
-                    if row["status"] != "active":
-                        continue
+                for subscription_id, row in active.items():
                     mode = row["effective_quota_mode"]
                     if mode not in {"fixed", "unlimited"}:
                         raise ValueError("未知的额度模式")
@@ -146,11 +169,11 @@ class CDNMonitor:
                         row["quota_period"] == period
                         and (updated - observed_at).total_seconds() <= 60
                     ):
-                        observations.append((row["uuid"], period, used, updated.timestamp()))
+                        observations.append((subscription_id, period, used, updated.timestamp()))
                     rows.append(
                         {
-                            "id": row["uuid"],
-                            "name": row.get("share_code") or row["uuid"],
+                            "id": subscription_id,
+                            "name": row.get("share_code") or subscription_id,
                             "period": row["quota_period"],
                             "quota_bytes": quota,
                             "provider_used": used,
@@ -158,17 +181,6 @@ class CDNMonitor:
                             "over_quota": row.get("over_quota") is True,
                         }
                     )
-                if not rows or (selected and selected != {r["id"] for r in rows}):
-                    # A complete listing confirms the scope has changed. A prior
-                    # active list may still be fresh enough to authorize transfers.
-                    self.rows = []
-                    self.updated_at = observed_at
-                    self.error = (
-                        "指定订阅已停用或不在列表中，请核对 AXISNOW_SUBSCRIPTION_IDS"
-                        if selected
-                        else "平台当前没有有效订阅，请核对 AxisNow 订阅状态"
-                    )
-                    return
                 self.db.cdn_observe(observations, observed_at.timestamp())
                 self.rows, self.updated_at, self.error = rows, now, None
             except Exception as exc:

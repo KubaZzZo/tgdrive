@@ -212,6 +212,7 @@ def test_upload_uses_prepared_size_hash_and_original_progress_on_retry(workdir, 
                 return await super().upload_file(**kwargs)
 
         storage = Storage()
+        await storage.start()
         service = UploadService(db, storage, space=UploadSpace(min_free_mib=0))
         upload = db.create_upload(None, "video.mp4", len(original), "video/mp4", str(source), 8)
         db.update_upload(upload["id"], received=len(original))

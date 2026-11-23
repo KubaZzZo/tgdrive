@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import time
 from threading import Event
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -432,6 +433,7 @@ def test_metadata_failure_removes_uploaded_messages(workdir):
                 return parts
 
         storage = DeletingStorage()
+        await storage.start()
         service = UploadService(db, storage)
         path = workdir / "metadata.part"
         path.write_bytes(b"data")
@@ -451,6 +453,7 @@ def test_upload_completion_failure_rolls_back_metadata_and_retries_once(workdir,
     async def run():
         db = Database(workdir / "completion.sqlite3")
         storage = FakeTelegramStorage()
+        await storage.start()
         service = UploadService(db, storage)
         path = workdir / "completion.part"
         data = b"\x89PNG\r\n\x1a\nreview"
@@ -492,6 +495,66 @@ def test_upload_completion_failure_rolls_back_metadata_and_retries_once(workdir,
             await service._process(upload["id"])
             assert db.get_upload(upload["id"])["state"] == "done"
             assert db.stats()["files"] == 1 and storage.files == {102: data}
+        finally:
+            db.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("fail_at", ["send", "commit"])
+def test_failed_upload_rollback_is_durable_across_retry(workdir, monkeypatch, fail_at):
+    async def run():
+        db = Database(workdir / "rollback.sqlite3")
+        path = workdir / "data.part"
+        path.write_bytes(b"abcdefgh")
+        upload = db.create_upload(None, "data.bin", 8, None, str(path), 4)
+        db.update_upload(upload["id"], received=8)
+        storage = TelegramStorage(make_settings(workdir, tg_segment_size=4))
+        chat_id = "-100123"
+        storage.chat, storage._started = int(chat_id), True
+        storage.client = SimpleNamespace(
+            upload_file=AsyncMock(),
+            send_file=AsyncMock(
+                side_effect=[
+                    SimpleNamespace(id=101),
+                    RuntimeError("Telegram send failed")
+                    if fail_at == "send"
+                    else SimpleNamespace(id=102),
+                    SimpleNamespace(id=103),
+                    SimpleNamespace(id=104),
+                ]
+            ),
+            delete_messages=AsyncMock(side_effect=RuntimeError("Telegram delete failed")),
+        )
+        service = UploadService(db, storage)
+        create_file = db.create_file
+
+        def fail_commit(**kwargs):
+            assert db.has_telegram_cleanup(upload["id"])
+            assert not db.due_telegram_cleanup(chat_id, time.time())
+            raise RuntimeError("File commit failed")
+
+        if fail_at == "commit":
+            monkeypatch.setattr(db, "create_file", fail_commit)
+        try:
+            await service._process(upload["id"])
+            assert db.get_upload(upload["id"])["state"] == "error"
+            old_messages = [101] if fail_at == "send" else [101, 102]
+            assert [
+                job["message_id"] for job in db.due_telegram_cleanup(chat_id, time.time() + 60)
+            ] == old_messages
+
+            monkeypatch.setattr(db, "create_file", create_file)
+            await service._process(upload["id"])
+            record = db.get_upload(upload["id"])
+            assert record["state"] == "done"
+            assert [part["tg_message_id"] for part in db.get_parts(record["item_id"])] == [103, 104]
+            with db.conn:
+                db.conn.execute("UPDATE telegram_cleanup SET retry_at=0")
+            storage.client.delete_messages.side_effect = None
+            await service.cleanup.process()
+            storage.client.delete_messages.assert_awaited_with(int(chat_id), old_messages)
+            assert not db.has_telegram_cleanup(upload["id"])
         finally:
             db.close()
 

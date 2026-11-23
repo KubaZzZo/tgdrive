@@ -129,7 +129,7 @@ async def upload_image(
                 with path.open("wb", buffering=0) as output:
                     await uploads.space.write(path.parent, output, data)
                 del data
-                db.update_upload(upload_id, received=body.size, state="processing")
+                db.update_upload(upload_id, received=body.size)
                 task = uploads.schedule(upload_id, discard_on_error=True)
                 if task is None:
                     raise HTTPException(409, "账号正在切换，请重试")

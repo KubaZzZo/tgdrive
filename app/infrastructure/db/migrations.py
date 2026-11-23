@@ -5,7 +5,7 @@ import sqlite3
 from app.infrastructure.db.common import utcnow
 from app.services.categories import classify_file, effective_mime
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -372,6 +372,17 @@ def _upgrade_to_20(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA user_version=20")
 
 
+def _upgrade_to_21(conn: sqlite3.Connection) -> None:
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(telegram_cleanup)")}
+        if "pending_upload" not in columns:
+            conn.execute(
+                "ALTER TABLE telegram_cleanup ADD COLUMN pending_upload INTEGER NOT NULL DEFAULT 0"
+            )
+        conn.execute("PRAGMA user_version=21")
+
+
 _MIGRATIONS = (
     (1, _upgrade_to_1),
     (2, _upgrade_to_2),
@@ -393,6 +404,7 @@ _MIGRATIONS = (
     (18, _upgrade_to_18),
     (19, _upgrade_to_19),
     (20, _upgrade_to_20),
+    (21, _upgrade_to_21),
 )
 
 

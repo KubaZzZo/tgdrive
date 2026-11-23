@@ -47,7 +47,7 @@ class Runtime:
     cleanup: TelegramCleanup = field(init=False)
 
     def __post_init__(self) -> None:
-        self.cleanup = TelegramCleanup(self.db, self.storage)
+        self.cleanup = self.uploads.cleanup
 
 
 def account_settings(settings: Settings, profile: dict | None) -> Settings:

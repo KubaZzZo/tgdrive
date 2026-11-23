@@ -156,7 +156,9 @@ async def upload_events(
         raise HTTPException(404, "上传任务不存在")
     return event_response(
         progress_messages(
-            snapshot, lambda state: state["state"] in {"done", "error"}, uploads.progress_events
+            snapshot,
+            lambda state: state["state"] in {"done", "error", "invalid"},
+            uploads.progress_events,
         )
     )
 
@@ -310,7 +312,7 @@ async def complete_upload(
             raise HTTPException(404, "上传任务不存在")
         if upload["image_host"] and not uploads.image_host_enabled:
             raise HTTPException(404, "图床功能已关闭")
-        if upload["state"] == "done":
+        if upload["state"] in {"done", "invalid"}:
             return public_upload(upload, uploads)
         if upload["state"] not in {"uploading", "error"}:
             return JSONResponse(
@@ -318,7 +320,6 @@ async def complete_upload(
             )
         if int(upload["received"]) != int(upload["size"]):
             raise HTTPException(400, f"文件尚未上传完成: {upload['received']}/{upload['size']}")
-        db.update_upload(upload_id, state="processing", progress=0, error=None)
         if not uploads.schedule(upload_id):
             return JSONResponse(
                 {

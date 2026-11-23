@@ -76,7 +76,7 @@ export interface VideoPerson extends PersonLabel {
 }
 
 export type ItemKind = 'file' | 'folder'
-export type UploadState = 'uploading' | 'processing' | 'done' | 'error'
+export type UploadState = 'uploading' | 'processing' | 'done' | 'error' | 'invalid'
 
 export interface DriveItem {
   id: string

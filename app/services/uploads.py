@@ -18,6 +18,7 @@ from app.infrastructure.db import Database
 from app.infrastructure.storage import TelegramStorage
 from app.services.image_host import MAX_IMAGE_SIZE, image_mime
 from app.services.progress_events import ProgressSignal
+from app.services.telegram_cleanup import TelegramCleanup
 from app.services.upload_temp import faststart_path, remove_upload_files
 from app.services.video_prepare import prepared_video
 
@@ -27,6 +28,15 @@ RECEIVING_RETENTION_HOURS = 72
 
 class UploadSpaceError(Exception):
     pass
+
+
+def incomplete_temp_file(path: Path, size: int) -> str | None:
+    try:
+        if path.stat().st_size != size:
+            return "临时文件大小不匹配，请重新上传"
+    except FileNotFoundError:
+        return "临时文件不存在，请重新上传"
+    return None
 
 
 class UploadSpace:
@@ -167,6 +177,7 @@ class UploadService:
     ):
         self.db = db
         self.storage = storage
+        self.cleanup = TelegramCleanup(db, storage)
         self.stale_hours = stale_hours
         self.space = space if space is not None else UploadSpace()
         self._tasks: dict[str, asyncio.Task[None]] = {}
@@ -196,7 +207,16 @@ class UploadService:
         except OSError:
             logger.exception("Could not remove interrupted upload %s", upload["id"])
 
+    def _invalidate(self, upload_id: str, path: Path, error: str) -> None:
+        self.db.update_upload(upload_id, state="invalid", error=error)
+        try:
+            remove_upload_files(path)
+        except OSError:
+            logger.warning("Could not remove invalid upload %s", upload_id, exc_info=True)
+
     def recover_interrupted(self) -> int:
+        if self.storage.chat is not None:
+            self.db.release_upload_segments(str(self.storage.chat))
         # An old runtime can still hold a lease during a channel switch.
         for upload in self.db.list_uploads(
             states=("processing", "uploading", "error", "done"), include_imports=True
@@ -209,17 +229,20 @@ class UploadService:
                 faststart_path(path).unlink(missing_ok=True)
             except OSError:
                 logger.warning("Could not remove leftover faststart output")
-            if not upload["link_import"] and upload["state"] in {"uploading", "error"}:
+            if not upload["link_import"] and upload["state"] != "done":
                 try:
-                    if path.stat().st_size > int(upload["received"]):
+                    if upload["received"] == upload["size"]:
+                        if error := incomplete_temp_file(path, int(upload["size"])):
+                            self._invalidate(upload["id"], path, error)
+                    elif upload["state"] in {"uploading", "error"} and (
+                        path.stat().st_size > int(upload["received"])
+                    ):
                         with path.open("r+b") as file:
                             file.truncate(int(upload["received"]))
                 except FileNotFoundError:
                     pass
                 except OSError:
-                    logger.warning(
-                        "Could not truncate unconfirmed upload bytes for %s", upload["id"]
-                    )
+                    logger.warning("Could not recover local upload file for %s", upload["id"])
         return self.db.recover_interrupted_uploads()
 
     def current_stage(self, upload_id: str) -> str:
@@ -266,6 +289,7 @@ class UploadService:
     ) -> asyncio.Task[None] | None:
         if self._closed or upload_id in self._tasks:
             return None
+        self.db.update_upload(upload_id, state="processing", progress=0, error=None)
         task = asyncio.create_task(
             self._run(upload_id, discard_on_error=discard_on_error), name=f"upload:{upload_id}"
         )
@@ -275,12 +299,9 @@ class UploadService:
 
     async def _process(self, upload_id: str) -> None:
         upload = self.db.get_upload(upload_id)
-        if not upload or upload["state"] == "done":
+        if not upload or upload["state"] in {"done", "invalid"}:
             return
         path = Path(upload["temp_path"])
-        if not path.exists():
-            self.db.update_upload(upload_id, state="error", error="临时文件不存在，请重新上传")
-            return
 
         self.db.update_upload(upload_id, state="processing", progress=0, error=None)
         last_update = 0.0
@@ -294,13 +315,16 @@ class UploadService:
                 self.db.update_upload(upload_id, progress=value)
                 self.progress_events.notify()
 
-        parts: list[dict[str, Any]] = []
-        committed = False
+        chat_id = str(self.storage.chat)
+        failure = None
         try:
+            if error := incomplete_temp_file(path, int(upload["size"])):
+                if upload["link_import"]:
+                    raise ValueError(error)
+                self._invalidate(upload_id, path, error)
+                return
             # A retry may follow a crash; remove the old output before reserving space.
             faststart_path(path).unlink(missing_ok=True)
-            if path.stat().st_size != int(upload["size"]):
-                raise ValueError("临时文件大小不匹配，请取消后重新上传")
             if upload["image_host"]:
                 if not self.image_host_enabled:
                     raise ValueError("图床功能已关闭")
@@ -329,6 +353,9 @@ class UploadService:
                     mime=upload["mime"],
                     progress=progress,
                     storage_tag=upload_id,
+                    on_segment=lambda message_id: self.db.record_upload_segment(
+                        chat_id, upload_id, message_id
+                    ),
                 )
             self._set_stage(upload_id, "committing")
             item = self.db.create_file(
@@ -337,12 +364,11 @@ class UploadService:
                 size=stored_size,
                 mime=upload["mime"],
                 sha256=sha256,
-                chat_id=str(self.storage.chat),
+                chat_id=chat_id,
                 parts=parts,
                 hosted_mime=upload["mime"] if upload["image_host"] else None,
                 upload_id=upload_id,
             )
-            committed = True
             try:
                 remove_upload_files(path)
             except OSError:
@@ -353,22 +379,18 @@ class UploadService:
                 item["size"],
                 len(parts),
             )
-        except asyncio.CancelledError:
-            self.db.update_upload(
-                upload_id, state="error", error="服务正在关闭，Telegram 写入已中断，请重试"
-            )
-            raise
         except Exception as exc:
             logger.exception("Upload failed: %s", upload_id)
-            self.db.update_upload(upload_id, state="error", error=str(exc))
+            failure = str(exc)
         finally:
-            if parts and not committed:
+            if self.db.release_upload_segments(chat_id, upload_id):
+                self.cleanup.wake()
                 try:
-                    await self.storage.delete_messages(
-                        [int(part["tg_message_id"]) for part in parts]
-                    )
+                    await self.cleanup.process(upload_id)
                 except Exception:
-                    logger.exception("Failed to remove uncommitted Telegram segments")
+                    logger.exception("Could not process upload rollback for %s", upload_id)
+        if failure is not None:
+            self.db.update_upload(upload_id, state="error", error=failure)
 
     def cleanup_stale(self, db: Database | None = None) -> int:
         """Remove unfinished upload records and their temp files after a TTL."""

@@ -23,8 +23,8 @@ from app.services.image_host import IMAGE_MIMES
 MAX_ARCHIVE = 64 * 1024**2
 MAX_INDEX = 192 * 1024**2
 MAX_ROWS = 100_000
-# Versions 19 and 20 change installation-wide login and CDN data only.
-INDEX_SCHEMA_VERSIONS = {18, 19, 20}
+# Versions 19 through 21 leave the exported index tables unchanged.
+INDEX_SCHEMA_VERSIONS = {18, 19, 20, 21}
 ITEM_ID = re.compile(r"[0-9a-f]{32}")
 TOKEN = re.compile(r"[A-Za-z0-9_-]{1,128}")
 

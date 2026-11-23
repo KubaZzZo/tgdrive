@@ -283,6 +283,11 @@ class FilesRepository(SQLiteSession):
                 )
                 if not cursor.rowcount:
                     raise LookupError("上传任务不存在或已不在处理中")
+                self.conn.execute(
+                    """DELETE FROM telegram_cleanup
+                       WHERE batch_id=? AND chat_id=? AND pending_upload=1""",
+                    (upload_id, str(chat_id)),
+                )
             return self.get_item(item_id)  # type: ignore[return-value]
 
     def rename_item(self, item_id: str, name: str) -> dict[str, Any] | None:

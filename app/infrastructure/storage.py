@@ -232,14 +232,17 @@ class TelegramStorage:
         mime: str | None = None,
         progress: ProgressCallback | None = None,
         storage_tag: str | None = None,
+        *,
+        on_segment: Callable[[int], None] | None = None,
     ) -> list[dict[str, Any]]:
         """Upload a file, splitting it into Telegram-safe segments.
 
         Telegram's MTProto uploader transfers each message in 512 KiB parts.
         On top of that, files larger than TG_SEGMENT_SIZE are split into
         independent documents, keeping a failed upload recoverable at segment
-        granularity.  Messages created by a failed attempt are removed on a
-        best-effort basis so normal failures do not leave orphan documents.
+        granularity. When provided, on_segment records each confirmed message
+        for the caller's durable rollback. Unrecorded messages are removed on
+        a best-effort basis.
         """
         client = self.require_client()
         assert self.chat is not None
@@ -290,23 +293,27 @@ class TelegramStorage:
                             file_name=part_name,
                             progress_callback=part_progress,
                         )
-                    message = await client.send_file(
-                        self.chat,
-                        uploaded,
-                        caption=f"tgdrive:v1:{tag}:{index}",
-                        force_document=True,
-                        attributes=[DocumentAttributeFilename(part_name)],
-                    )
                 finally:
                     reader.close()
 
+                message = await client.send_file(
+                    self.chat,
+                    uploaded,
+                    caption=f"tgdrive:v1:{tag}:{index}",
+                    force_document=True,
+                    attributes=[DocumentAttributeFilename(part_name)],
+                )
                 if not message:
                     raise RuntimeError(f"Telegram 未返回第 {index + 1} 段的消息")
-                uploaded_message_ids.append(int(message.id))
+                message_id = int(message.id)
+                uploaded_message_ids.append(message_id)
+                if on_segment is not None:
+                    on_segment(message_id)
+                    uploaded_message_ids.pop()
                 parts.append(
                     {
                         "part_index": index,
-                        "tg_message_id": int(message.id),
+                        "tg_message_id": message_id,
                         "size": size,
                     }
                 )

@@ -36,11 +36,15 @@ class FakeTelegramStorage:
             "segment_size": 1024,
         }
 
-    async def upload_file(self, path: Path, name: str, mime=None, progress=None, storage_tag=None):
+    async def upload_file(
+        self, path: Path, name: str, mime=None, progress=None, storage_tag=None, *, on_segment=None
+    ):
         data = path.read_bytes()
         self._next_id += 1
         message_id = self._next_id
         self.files[message_id] = data
+        if on_segment is not None:
+            on_segment(message_id)
         if progress:
             await progress(len(data), len(data))
         return [{"part_index": 0, "tg_message_id": message_id, "size": len(data)}]

@@ -6,10 +6,27 @@ from app.infrastructure.db.session import SQLiteSession
 
 
 class CleanupRepository(SQLiteSession):
+    def record_upload_segment(self, chat_id: str, upload_id: str, message_id: int) -> None:
+        with self._lock, self.conn:
+            self.conn.execute(
+                """INSERT INTO telegram_cleanup(chat_id, message_id, batch_id, pending_upload)
+                   VALUES (?,?,?,1)""",
+                (chat_id, message_id, upload_id),
+            )
+
+    def release_upload_segments(self, chat_id: str, upload_id: str | None = None) -> int:
+        sql = "UPDATE telegram_cleanup SET pending_upload=0 WHERE chat_id=? AND pending_upload=1"
+        params = [chat_id]
+        if upload_id is not None:
+            sql += " AND batch_id=?"
+            params.append(upload_id)
+        with self._lock, self.conn:
+            return self.conn.execute(sql, params).rowcount
+
     def due_telegram_cleanup(
         self, chat_id: str, now: float, batch_id: str | None = None
     ) -> list[dict[str, Any]]:
-        sql = "SELECT * FROM telegram_cleanup WHERE chat_id=? AND retry_at<=?"
+        sql = "SELECT * FROM telegram_cleanup WHERE chat_id=? AND retry_at<=? AND pending_upload=0"
         params: list[Any] = [chat_id, now]
         if batch_id is not None:
             sql += " AND batch_id=?"

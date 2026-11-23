@@ -202,6 +202,42 @@ def test_subscription_selection_fails_closed_and_new_month_resets_floor(workdir)
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("disabled", [False, True])
+@pytest.mark.parametrize("field", ["used_bytes", "usage_updated_at"])
+def test_confirmed_membership_change_blocks_even_with_invalid_usage(workdir, disabled, field):
+    async def run():
+        db = Database(workdir / "cdn.db")
+        try:
+            monitor = CDNMonitor(
+                db,
+                make_settings(
+                    workdir,
+                    axisnow_api_token="test-token",
+                    axisnow_subscription_ids="a,b",
+                ),
+            )
+            a, b = row(uuid="a"), row(uuid="b")
+            await refresh(monitor, [a, b])
+            malformed = {**b, field: "bad-data"}
+            await refresh(monitor, [a, malformed])
+            await monitor.check(1)
+
+            listing = [malformed]
+            if disabled:
+                listing.append({**a, "status": "disabled"})
+            await refresh(monitor, listing)
+            with pytest.raises(HTTPException) as error:
+                await monitor.check(1)
+            assert error.value.status_code == 429
+            assert "AXISNOW_SUBSCRIPTION_IDS" in monitor.error
+            await refresh(monitor, [a, b])
+            await monitor.check(1)
+        finally:
+            db.close()
+
+    asyncio.run(run())
+
+
 def test_api_outage_preserves_fresh_quota_but_empty_listing_blocks_immediately(workdir):
     async def run():
         db = Database(workdir / "cdn.db")

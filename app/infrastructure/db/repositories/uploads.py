@@ -97,7 +97,7 @@ class UploadsRepository(SQLiteSession):
     def list_stale_uploads(self, before: str) -> list[dict[str, Any]]:
         with self._lock:
             rows = self.conn.execute(
-                "SELECT * FROM uploads WHERE link_import=0 AND state IN ('uploading','error') AND updated_at < ?",
+                "SELECT * FROM uploads WHERE link_import=0 AND state IN ('uploading','error','invalid') AND updated_at < ?",
                 (before,),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -106,7 +106,7 @@ class UploadsRepository(SQLiteSession):
         with self._lock:
             rows = self.conn.execute(
                 "SELECT * FROM uploads WHERE link_import=0 AND updated_at < ? "
-                "AND (state='uploading' OR (state='error' AND received < size))",
+                "AND (state IN ('uploading','invalid') OR (state='error' AND received < size))",
                 (before,),
             ).fetchall()
         return [dict(row) for row in rows]

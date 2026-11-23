@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from threading import Event
 
 import pytest
@@ -398,6 +399,50 @@ def test_upload_rejects_wrong_chunk_size(authenticated_client):
         content=b"123456789",
     )
     assert response.status_code == 413
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_complete_upload_reports_invalid_temp_file(authenticated_client, missing):
+    client, app, storage = authenticated_client
+    created = client.post("/api/uploads", json={"name": "file.bin", "size": 4})
+    url = f"/api/uploads/{created.json()['id']}"
+    assert client.patch(url, headers={"Upload-Offset": "0"}, content=b"data").is_success
+    record = app.state.db.get_upload(created.json()["id"])
+    path = Path(record["temp_path"])
+    if missing:
+        path.unlink()
+    else:
+        path.write_bytes(b"dat")
+
+    assert client.post(f"{url}/complete").status_code == 202
+    events = client.get(f"{url}/events")
+    assert events.is_success and '"state":"invalid"' in events.text
+    retry = client.post(f"{url}/complete")
+    assert retry.status_code == 200 and retry.json()["state"] == "invalid"
+    assert client.get(url).json()["state"] == "invalid"
+    assert client.patch(url, headers={"Upload-Offset": "0"}, content=b"data").status_code == 409
+    assert not storage.files and not path.exists()
+
+
+def test_startup_recovers_pending_upload_segments_for_its_channel(workdir):
+    settings = make_settings(workdir, channel_sync_enabled=False)
+    storage = FakeTelegramStorage()
+    app = create_app(settings, storage=storage)
+    chat_id = str(storage.chat)
+    other_chat_id = "-1009000000000"
+    db = app.state.db
+    db.record_upload_segment(chat_id, "crashed-upload", 101)
+    db.record_upload_segment(other_chat_id, "other-upload", 101)
+    assert db.due_telegram_cleanup(chat_id, time.time()) == []
+    db.close()
+
+    restarted = create_app(settings, storage=storage)
+    with TestClient(restarted) as client:
+        client.portal.call(restarted.state.accounts.current.cleanup.process)
+        assert storage.deleted_message_ids == [101]
+        assert not restarted.state.db.has_telegram_cleanup("crashed-upload")
+        assert restarted.state.db.has_telegram_cleanup("other-upload")
+        assert restarted.state.db.due_telegram_cleanup(other_chat_id, time.time()) == []
 
 
 def test_recover_interrupted_upload(workdir):

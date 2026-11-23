@@ -177,6 +177,10 @@ export const useUploadStore = defineStore('uploads', () => {
         if (!(cause instanceof ApiError) || cause.status !== 404) throw cause
       }
     }
+    forgetUpload(job)
+  }
+
+  function forgetUpload(job: UploadJob): void {
     saveResume(job, null)
     job.uploadId = null
     job.received = 0
@@ -210,7 +214,8 @@ export const useUploadStore = defineStore('uploads', () => {
     if (typeof known === 'string') {
       try {
         const info = await withRetry(job, () => api.getUpload(known))
-        if (info?.id === known && Number(info.size) === job.file.size && info.name === job.file.name &&
+        if (info?.id === known && info.state !== 'invalid' &&
+          Number(info.size) === job.file.size && info.name === job.file.name &&
           info.parent_id === job.parentId && Boolean(info.image_host) === job.imageHost) {
           job.uploadId = info.id
           return info
@@ -220,9 +225,7 @@ export const useUploadStore = defineStore('uploads', () => {
       }
       if (!stopped(job)) {
         job.uploadId = known
-        saveResume(job, null)
-        job.uploadId = null
-        job.received = 0
+        forgetUpload(job)
       }
     }
     if (stopped(job)) throw new Error('上传已暂停或取消')
@@ -403,6 +406,10 @@ export const useUploadStore = defineStore('uploads', () => {
       }
       if (stopped(job)) return
       if (record.state === 'done') return
+      if (record.state === 'invalid') {
+        forgetUpload(job)
+        throw new Error(record.error || '服务器临时文件已失效，请重新上传')
+      }
       if (record.state === 'error') throw new Error(record.error || 'Telegram 保存失败')
       if (record.state === 'uploading') waitingForSave = true
       else showProgress(record)

@@ -90,10 +90,10 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
         cleanup_faststart_outputs(cfg.temp_dir)
+        await telegram.start()
         interrupted = upload_service.recover_interrupted()
         if interrupted:
             logger.warning("Marked %s interrupted upload(s) as retryable errors", interrupted)
-        await telegram.start()
         await channel_sync.start()
         await account_manager.start()
         app.state.video_import.resume(account_manager.current.uploads)
