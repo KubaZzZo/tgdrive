@@ -487,7 +487,6 @@ onBeforeUnmount(() => {
             </button>
             <button
               v-if="pipAvailable"
-              class="media-secondary"
               type="button"
               aria-label="画中画"
               :aria-pressed="pipActive"
@@ -530,9 +529,6 @@ onBeforeUnmount(() => {
           <div v-if="kind === 'video'" class="media-buttons">
             <button type="button" :disabled="listenDisabled" @click="toggleListening">
               <AppIcon :name="listening ? 'video' : 'audio'" :size="15" />{{ listening ? '恢复画面' : '听视频' }}
-            </button>
-            <button v-if="pipAvailable" class="media-compact-actions" type="button" aria-label="画中画" :aria-pressed="pipActive" :disabled="pipDisabled" @click="pictureInPicture">
-              <AppIcon name="pip" :size="15" />画中画
             </button>
           </div>
           <label class="media-setting">播放速度
@@ -856,7 +852,7 @@ onBeforeUnmount(() => {
   .media-controls { padding-inline: 8px; }
 }
 @container media-layout (max-width: 420px) {
-  .media-toolbar { flex-wrap: nowrap; gap: 4px; }
+  .media-toolbar { gap: 4px; }
   .media-toolbar .media-buttons { flex-wrap: nowrap; gap: 0; }
   .media-toolbar .media-secondary { display: none; }
   .media-settings .media-compact-actions { display: flex; }
