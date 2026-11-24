@@ -4,14 +4,16 @@ import asyncio
 import os
 import time
 from contextlib import aclosing
+from functools import partial
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
 from test_downloads import make_file
 
 from app.services import media_cache
-from app.services.media_cache import MediaSliceCache
-from app.services.video_prepare import warm_mp4_index
+from app.services.media_cache import MIB, MediaSliceCache
+from app.services.video_prepare import MP4_HEADER_PROBE_BYTES, find_tail_mp4_index
 
 
 async def collect(stream):
@@ -25,31 +27,176 @@ async def settle(cache):
         await asyncio.gather(*tasks)
 
 
-def test_mp4_index_warming_skips_media_payload_and_bounds_the_read():
-    async def run():
-        def header(kind, length):
-            return length.to_bytes(4, "big") + kind
+def box_header(kind: bytes, length: int) -> bytes:
+    return length.to_bytes(4, "big") + kind
 
-        moov_offset = 16 + 100 * 1024 * 1024
-        moov_length = 12 * 1024 * 1024
-        headers = {
-            0: header(b"ftyp", 16),
-            16: header(b"mdat", moov_offset - 16),
-            moov_offset: header(b"moov", moov_length),
-        }
+
+@pytest.mark.parametrize("index_size", [10 * MIB, 17 * MIB])
+@pytest.mark.parametrize("extended_mdat", [False, True])
+def test_finds_tail_mp4_index_without_reading_media_payload(index_size, extended_mdat):
+    async def run():
+        moov_offset = 16 + 100 * MIB
+        size = moov_offset + index_size
         calls = []
 
         async def read(start, end):
             calls.append((start, end))
-            yield headers[start]
+            if start == 0:
+                mdat_size = moov_offset - 16
+                mdat = (
+                    box_header(b"mdat", 1) + mdat_size.to_bytes(8, "big")
+                    if extended_mdat
+                    else box_header(b"mdat", mdat_size)
+                )
+                return (box_header(b"ftyp", 16) + bytes(8) + mdat).ljust(end, b"\0")
+            assert start == moov_offset
+            return box_header(b"moov", index_size).ljust(end - start, b"\0")
 
-        await warm_mp4_index(moov_offset + moov_length, read)
-        assert calls == [
-            (0, 16),
-            (16, 32),
-            (moov_offset, moov_offset + 16),
-            (moov_offset, moov_offset + 8 * 1024 * 1024),
-        ]
+        index = await find_tail_mp4_index(size, read)
+        assert index == ((moov_offset, size) if index_size == 10 * MIB else None)
+        assert calls == [(0, MP4_HEADER_PROBE_BYTES), (moov_offset, moov_offset + 16)]
+
+    asyncio.run(run())
+
+
+def test_front_index_does_not_probe_later_fragments():
+    async def run():
+        prefix = box_header(b"ftyp", 16) + bytes(8) + box_header(b"moov", 32) + bytes(24)
+        read = AsyncMock(return_value=prefix.ljust(MP4_HEADER_PROBE_BYTES, b"\0"))
+        assert await find_tail_mp4_index(4 * MIB, read) is None
+        read.assert_awaited_once_with(0, MP4_HEADER_PROBE_BYTES)
+
+    asyncio.run(run())
+
+
+def test_mp4_index_preloads_exact_slices_and_shares_pending_data(workdir):
+    async def run():
+        slice_bytes = MIB
+        index_start = 3 * MIB + 91
+        index_end = index_start + 2 * MIB + 1024
+        header = box_header(b"ftyp", 16) + bytes(8) + box_header(b"mdat", index_start - 16)
+        index_header = box_header(b"moov", index_end - index_start)
+        cache = MediaSliceCache(workdir / "cache", 24 * MIB, 0, slice_bytes=slice_bytes)
+        index_started = asyncio.Event()
+        release_payload = asyncio.Event()
+        reads = []
+        leases = 0
+
+        def retain():
+            nonlocal leases
+            leases += 1
+
+            def release():
+                nonlocal leases
+                leases -= 1
+
+            return release
+
+        async def fetch(start, end):
+            reads.append((start, end))
+            if start == 0:
+                yield header.ljust(end, b"\0")
+            elif start == index_start:
+                if end - start > 16:
+                    index_started.set()
+                    yield index_header.ljust(64, b"a")
+                    await release_payload.wait()
+                    yield b"a" * (end - start - 64)
+                else:
+                    yield index_header.ljust(end - start, b"a")
+            elif start < index_start + MIB:
+                yield b"a" * (end - start)
+            else:
+                yield b"b" * (end - start)
+
+        stream = partial(
+            cache.stream, "workspace", "version", size=index_end, fetch=fetch, mp4=True
+        )
+        cache.warm_index("workspace", "version", index_end, fetch, retain)
+        cache.warm_index("workspace", "version", index_end, fetch, retain)
+        try:
+            async with asyncio.timeout(4):
+                assert await collect(stream(0, 8)) == header[:8]
+                await index_started.wait()
+                sources = []
+                assert (
+                    await collect(
+                        stream(index_start + 40, index_start + 48, mark_source=sources.append)
+                    )
+                    == b"a" * 8
+                )
+                distant = index_start + MIB - 1
+                assert (
+                    await collect(stream(distant, distant + 1, mark_source=sources.append)) == b"a"
+                )
+                assert sources == ["shared-fill", "telegram-exact"]
+                release_payload.set()
+                await asyncio.gather(*cache._warmers.values())
+                await settle(cache)
+            assert sorted(reads) == sorted(
+                [
+                    (0, slice_bytes),
+                    (index_start, index_start + 16),
+                    (index_start, index_start + MIB),
+                    (distant, distant + 1),
+                    (index_start + MIB, index_start + 2 * MIB),
+                    (index_start + 2 * MIB, index_end),
+                ]
+            )
+            reads.clear()
+            assert await collect(stream(index_start + 8, index_end)) == b"a" * (MIB - 8) + b"b" * (
+                MIB + 1024
+            )
+            assert not reads and leases == 0
+        finally:
+            await cache.close()
+
+    asyncio.run(run())
+
+
+def test_startup_slices_survive_sequential_eviction_and_keep_budget(workdir):
+    async def run():
+        cache = MediaSliceCache(workdir / "cache", 4 * 4096, 0, slice_bytes=4)
+        data = b"abcdefghijklmnopqrstuvwxyz"
+        calls = []
+
+        async def fetch(start, end):
+            calls.append((start, end))
+            yield data[start:end]
+
+        async def read(start, end, version="v"):
+            assert (
+                await collect(
+                    cache.stream("workspace", version, start, end, len(data), fetch, mp4=True)
+                )
+                == data[start:end]
+            )
+            await settle(cache)
+
+        try:
+            await read(0, 4)
+            await read(4, len(data))
+            assert len(list(cache.directory.glob("*.slice"))) == 3
+            count = len(calls)
+            await read(0, 4)
+            assert len(calls) == count
+            await read(0, 4, "new-version")
+            assert len(list(cache.directory.glob("*.startup"))) == 1
+            await read(0, 4)
+            assert len(calls) == count + 2
+            smaller_cache = MediaSliceCache(cache.directory, 2 * 4096, 0, slice_bytes=4)
+            try:
+                assert (
+                    await collect(smaller_cache.stream("workspace", "v3", 24, 26, len(data), fetch))
+                    == data[24:26]
+                )
+                await settle(smaller_cache)
+                assert not list(cache.directory.glob("*.startup"))
+                assert len(list(cache.directory.glob("*.slice"))) == 2
+            finally:
+                await smaller_cache.close()
+        finally:
+            await cache.close()
 
     asyncio.run(run())
 

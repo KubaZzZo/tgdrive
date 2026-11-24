@@ -8,22 +8,26 @@ import shutil
 import sqlite3
 import time
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Awaitable, Callable
+from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing, closing, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import anyio
 
+from app.services.video_prepare import find_tail_mp4_index
+
 MIB = 1024 * 1024
 SLICE_BYTES = 2 * MIB
 OUTPUT_CHUNK_BYTES = 256 * 1024
 MAX_PENDING_FILLS = 8
 MAX_INDEX_WARMERS = 2
+MAX_STARTUP_CACHE_BYTES = 128 * MIB
+MAX_INDEX_LAYOUTS = 256
 CACHE_TTL_SECONDS = 600
 FILL_TIMEOUT_SECONDS = 60
 DISK_BLOCK_BYTES = 4096
-CACHE_FILE = re.compile(r"[0-9a-f]{64}\.(?:slice|part)")
+CACHE_FILE = re.compile(r"[0-9a-f]{64}\.(?:slice|startup|part)")
 
 FetchRange = Callable[[int, int], AsyncGenerator[bytes, None]]
 
@@ -46,7 +50,7 @@ class PendingSlice:
 
 
 class MediaSliceCache:
-    """Private read-through disk cache for immutable, aligned byte slices."""
+    """Private read-through disk cache for immutable byte slices."""
 
     def __init__(
         self,
@@ -61,9 +65,10 @@ class MediaSliceCache:
         self.min_free_bytes = min_free_bytes
         self.slice_bytes = slice_bytes
         self.ttl_seconds = ttl_seconds
+        self.startup_max_bytes = min(max_bytes // 4, MAX_STARTUP_CACHE_BYTES)
         self.pending: dict[Path, PendingSlice] = {}
         self._warmers: dict[Path, asyncio.Task[None]] = {}
-        self._warmed: OrderedDict[Path, float] = OrderedDict()
+        self._indexes: OrderedDict[Path, tuple[float, tuple[int, int] | None]] = OrderedDict()
         self._maintenance: asyncio.Task[None] | None = None
         self._closed = False
         self.hits = 0
@@ -83,6 +88,7 @@ class MediaSliceCache:
             "max_bytes": self.max_bytes,
             "min_free_bytes": self.min_free_bytes,
             "slice_bytes": self.slice_bytes,
+            "startup_max_bytes": self.startup_max_bytes,
             "ttl_seconds": self.ttl_seconds,
             "pending": len(self.pending),
             "hits": self.hits,
@@ -113,27 +119,78 @@ class MediaSliceCache:
         self,
         namespace: str,
         etag: str,
-        warm: Callable[[], Awaitable[None]],
+        size: int,
+        fetch: FetchRange,
         retain: Callable[[], Callable[[], None]],
     ) -> None:
         key = self._path(namespace, etag, 0)
+        self._index_range(key)
         if (
             self._closed
+            or self.startup_max_bytes < allocated_bytes(self.slice_bytes)
             or len(self._warmers) >= MAX_INDEX_WARMERS
             or key in self._warmers
-            or time.monotonic() - self._warmed.get(key, float("-inf")) < self.ttl_seconds
+            or key in self._indexes
         ):
             return
         release = retain()
 
+        async def read(first: int, last: int) -> bytes:
+            # Share the header with the player. Other headers are small probes at
+            # box boundaries and should not start fills of the surrounding slices.
+            source = (
+                self.stream(
+                    namespace,
+                    etag,
+                    first,
+                    last,
+                    size,
+                    fetch,
+                    retain=retain,
+                    mp4=True,
+                    cache_only=True,
+                )
+                if first == 0
+                else fetch(first, last)
+            )
+            async with aclosing(source):
+                data = b"".join([chunk async for chunk in source])
+            if len(data) != last - first:
+                raise OSError("MP4 header data is unavailable")
+            return data
+
         async def run() -> None:
             with suppress(Exception):
                 async with asyncio.timeout(FILL_TIMEOUT_SECONDS):
-                    await warm()
-                self._warmed[key] = time.monotonic()
-                self._warmed.move_to_end(key)
-                if len(self._warmed) > 256:
-                    self._warmed.popitem(last=False)
+                    index = await find_tail_mp4_index(size, read)
+                    if index:
+                        first, last = max(index[0], self.slice_bytes), index[1]
+                        available = self.startup_max_bytes - allocated_bytes(self.slice_bytes)
+                        index = (
+                            (first, last)
+                            if first < last and allocated_bytes(last - first) <= available
+                            else None
+                        )
+                    self._indexes[key] = (time.monotonic(), index)
+                    if len(self._indexes) > MAX_INDEX_LAYOUTS:
+                        self._indexes.popitem(last=False)
+                    if index:
+                        first, last = index
+                        async with aclosing(
+                            self.stream(
+                                namespace,
+                                etag,
+                                first,
+                                last,
+                                size,
+                                fetch,
+                                retain=retain,
+                                mp4=True,
+                                cache_only=True,
+                            )
+                        ) as source:
+                            async for _chunk in source:
+                                pass
 
         task = self._warmers[key] = asyncio.create_task(run(), name="media-index-warm")
 
@@ -142,6 +199,15 @@ class MediaSliceCache:
             release()
 
         task.add_done_callback(done)
+
+    def _index_range(self, key: Path) -> tuple[int, int] | None:
+        entry = self._indexes.get(key)
+        if entry is None:
+            return None
+        if time.monotonic() - entry[0] >= self.ttl_seconds:
+            self._indexes.pop(key)
+            return None
+        return entry[1]
 
     async def _maintain(self) -> None:
         while True:
@@ -165,11 +231,16 @@ class MediaSliceCache:
         except (OSError, sqlite3.Error):
             pass
 
-    def _path(self, namespace: str, etag: str, start: int) -> Path:
+    def _path(self, namespace: str, etag: str, start: int, startup_end: int | None = None) -> Path:
+        suffix = ".slice"
+        partition = ""
+        if startup_end is not None:
+            suffix = ".startup"
+            partition = f"\0{startup_end}"
         key = hashlib.sha256(
-            f"{namespace}\0{etag}\0{self.slice_bytes}\0{start}".encode()
+            f"{namespace}\0{etag}\0{self.slice_bytes}\0{start}{partition}".encode()
         ).hexdigest()
-        return self.directory / f"{key}.slice"
+        return self.directory / (key + suffix)
 
     def _read(self, path: Path, size: int, start: int, length: int) -> bytes | None:
         try:
@@ -200,12 +271,16 @@ class MediaSliceCache:
     def _store(self, path: Path, data: bytearray) -> None:
         temporary = path.with_suffix(".part")
         allocation = allocated_bytes(len(data))
+        startup = path.suffix == ".startup"
+        if startup and allocation > self.startup_max_bytes:
+            return
         try:
             # SQLite's reserved lock serializes the disk budget across app processes.
             with closing(sqlite3.connect(self.directory / ".writer.sqlite3", timeout=0.1)) as lock:
                 lock.execute("BEGIN IMMEDIATE")
                 entries = []
                 used = 0
+                startup_used = 0
                 for entry in self.directory.iterdir():
                     if not CACHE_FILE.fullmatch(entry.name) or entry.is_symlink():
                         continue
@@ -217,15 +292,30 @@ class MediaSliceCache:
                         entry.unlink()
                         continue
                     size = max(allocated_bytes(stat.st_size), getattr(stat, "st_blocks", 0) * 512)
-                    entries.append((stat.st_mtime_ns, entry, size))
+                    is_startup = entry.suffix == ".startup"
+                    entries.append((stat.st_mtime_ns, entry, size, is_startup))
                     used += size
+                    if is_startup:
+                        startup_used += size
                 if not self._has_space(len(data)):
                     return
-                for _, entry, size in sorted(entries):
+                entries.sort()
+                startup_limit = self.startup_max_bytes - (allocation if startup else 0)
+                for _, entry, size, is_startup in entries:
+                    if startup_used <= startup_limit:
+                        break
+                    if is_startup:
+                        entry.unlink()
+                        startup_used -= size
+                        used -= size
+                if startup_used + allocation > self.max_bytes:
+                    return
+                for _, entry, size, is_startup in entries:
                     if used + allocation <= self.max_bytes:
                         break
-                    entry.unlink()
-                    used -= size
+                    if not is_startup:
+                        entry.unlink()
+                        used -= size
                 try:
                     with temporary.open("xb") as file:
                         file.write(data)
@@ -247,33 +337,60 @@ class MediaSliceCache:
         *,
         retain: Callable[[], Callable[[], None]] | None = None,
         read_ahead: bool = False,
-        prioritize_seek: bool = True,
+        mp4: bool = False,
+        cache_only: bool = False,
+        mark_source: Callable[[str], None] | None = None,
     ) -> AsyncGenerator[bytes, None]:
+        startup_cache = mp4 and self.startup_max_bytes >= allocated_bytes(self.slice_bytes)
+        layout_key = self._path(namespace, etag, 0) if startup_cache else None
         cursor = start
         while cursor < end:
             slice_start = cursor // self.slice_bytes * self.slice_bytes
             slice_end = min(slice_start + self.slice_bytes, size)
+            index = self._index_range(layout_key) if layout_key is not None else None
+            in_index = index is not None and index[0] <= cursor < index[1]
+            if index and in_index:
+                # Anchor the cache at moov, so no player waits for the unrelated mdat prefix.
+                slice_start = index[0] + (cursor - index[0]) // self.slice_bytes * self.slice_bytes
+                slice_end = min(slice_start + self.slice_bytes, index[1])
+            startup = startup_cache and (in_index or slice_start == 0)
             length = slice_end - slice_start
             requested_end = min(slice_end, end)
+            if index and cursor < index[0] < requested_end:
+                requested_end = index[0]
             offset = cursor - slice_start
             requested = requested_end - cursor
-            path = self._path(namespace, etag, slice_start)
+            path = self._path(namespace, etag, slice_start, slice_end if startup else None)
             cached = await anyio.to_thread.run_sync(self._read, path, length, offset, requested)
             if cached is not None:
+                if mark_source:
+                    mark_source("cache")
                 for chunk in self._hit_chunks(cached):
                     yield chunk
             else:
                 self.misses += 1
                 pending = self.pending.get(path)
-                if prioritize_seek and offset and (pending is None or len(pending.data) <= offset):
+                crosses_index = index is not None and slice_start < index[0] < slice_end
+                arrived = len(pending.data) if pending is not None else 0
+                # A short MP4 header probe can share an active index fill. A
+                # distant seek should still go directly to the requested offset.
+                can_share_index = in_index and offset - arrived < OUTPUT_CHUNK_BYTES
+                if (offset or crosses_index) and offset >= arrived and not can_share_index:
+                    if cache_only:
+                        return
                     # A cold seek must not wait for the slice prefix. Start its fill only
                     # after the requested bytes reached the caller, without competing.
+                    if mark_source:
+                        mark_source("telegram-exact")
                     async with aclosing(fetch(cursor, requested_end)) as source:
                         async for chunk in source:
                             yield chunk
-                    await self._get_or_start_fill(
-                        path, slice_start, slice_end, slice_start, slice_start, fetch, retain
-                    )
+                    # Leave this boundary to the exact moov fill when the
+                    # normal slice would overlap the index.
+                    if not crosses_index and not in_index:
+                        await self._get_or_start_fill(
+                            path, slice_start, slice_end, slice_start, slice_start, fetch, retain
+                        )
                     cursor = requested_end
                     continue
                 pending, created = await self._get_or_start_fill(
@@ -281,8 +398,10 @@ class MediaSliceCache:
                 )
                 coalesced = pending is not None and not created
                 if pending is not None:
+                    if mark_source:
+                        mark_source("shared-fill" if coalesced else "telegram-fill")
                     self.coalesced += int(coalesced)
-                    prefetch_next = read_ahead and requested_end == slice_end < end
+                    prefetch_next = (read_ahead or in_index) and requested_end == slice_end < end
                     async with aclosing(
                         self._follow(pending, offset, offset + requested)
                     ) as source:
@@ -293,11 +412,17 @@ class MediaSliceCache:
                             if prefetch_next:
                                 prefetch_next = False
                                 await self._read_ahead(
-                                    namespace, etag, slice_end, end, size, fetch, retain
+                                    namespace, etag, slice_end, end, size, fetch, retain, index
                                 )
+                elif cache_only:
+                    # Speculation stops when a slice cannot be stored. The next
+                    # real request can still stream directly from the source.
+                    return
                 else:
                     # Low disk or a full queue: preserve the requested upstream range.
                     requested_end = end
+                    if mark_source:
+                        mark_source("telegram-direct")
                     async with aclosing(fetch(cursor, requested_end)) as source:
                         async for chunk in source:
                             yield chunk
@@ -312,11 +437,21 @@ class MediaSliceCache:
         size: int,
         fetch: FetchRange,
         retain: Callable[[], Callable[[], None]] | None,
+        index: tuple[int, int] | None,
     ) -> None:
-        if len(self.pending) >= MAX_PENDING_FILLS // 2:
+        in_index = index is not None and index[0] <= start < index[1]
+        limit = MAX_PENDING_FILLS if in_index else MAX_PENDING_FILLS // 2
+        if len(self.pending) >= limit:
             return
-        path = self._path(namespace, etag, start)
-        stop = min(start + self.slice_bytes, size)
+        if index and in_index:
+            stop = min(start + self.slice_bytes, index[1])
+        elif start % self.slice_bytes:
+            return
+        else:
+            stop = min(start + self.slice_bytes, size)
+            if index and start < index[0] < stop:
+                return
+        path = self._path(namespace, etag, start, stop if in_index else None)
         if await anyio.to_thread.run_sync(self._read, path, stop - start, 0, 1) is None:
             await self._get_or_start_fill(path, start, stop, start, min(stop, end), fetch, retain)
 

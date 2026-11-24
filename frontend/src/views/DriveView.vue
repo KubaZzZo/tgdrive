@@ -134,6 +134,7 @@ const batchStatus = ref<{ successes: number; failures: string[] } | null>(null)
 const labelTarget = ref<DriveItem | null>(null)
 const previewTarget = ref<DriveItem | null>(null)
 const previewOpen = ref(false)
+const previewOpenedAt = ref(0)
 const telegramTarget = ref<DriveItem | null>(null)
 const closeDeadline = ref(0)
 const downloadStatus = ref('')
@@ -200,6 +201,7 @@ async function openFolder(item: DriveItem): Promise<void> {
 }
 
 function openItem(item: DriveItem, deadline = 0): void {
+  previewOpenedAt.value = performance.now()
   telegramTarget.value = null
   closeDeadline.value = deadline
   previewTarget.value = item
@@ -704,6 +706,7 @@ watch(() => route.fullPath, () => {
       v-if="previewOpen && previewTarget"
       v-model:close-deadline="closeDeadline"
       :open="previewOpen"
+      :opened-at="previewOpenedAt"
       :item="previewTarget"
       :download-pending="!!previewTarget && pendingDownloads.has(previewTarget.id)"
       :download-status="downloadStatus"

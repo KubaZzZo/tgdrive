@@ -8,6 +8,7 @@ import AppIcon from '@/components/ui/AppIcon.vue'
 
 const props = withDefaults(defineProps<{
   src: string; itemId: string; kind: 'video' | 'audio'; size: number
+  openedAt?: number
   poster?: string; downloadPending?: boolean; downloadStatus?: string; allowDownload?: boolean
   openSource?: (element: HTMLMediaElement, signal: AbortSignal) => Promise<void>
 }>(), { allowDownload: true })
@@ -68,6 +69,7 @@ const startupBudgetMs = 15_000
 const nativeVideoStartupLimitMs = 180_000
 let startupTimer: ReturnType<typeof setTimeout> | undefined
 let startupStarted = 0
+let openedAt = 0
 let active = false
 let startedPlayback = false
 let releaseCovers: (() => void) | undefined
@@ -103,6 +105,17 @@ function save(): void {
   resumePending = false
   savePlayback(props.itemId, media.currentTime, media.duration)
 }
+function measureStartup(stage: 'source' | 'metadata' | 'first-frame'): void {
+  if (props.kind !== 'video' || props.openedAt === undefined) return
+  try {
+    if (stage === 'source') {
+      performance.clearMeasures('tgdrive.video.open-to-metadata')
+      performance.clearMeasures('tgdrive.video.open-to-first-frame')
+      performance.clearMeasures('tgdrive.video.open-to-source')
+    }
+    performance.measure(`tgdrive.video.open-to-${stage}`, { start: openedAt })
+  } catch { /* Timing is optional on older WebViews. */ }
+}
 function metadata(): void {
   const media = player.value
   if (!media) return
@@ -112,6 +125,7 @@ function metadata(): void {
   duration.value = Number.isFinite(media.duration) ? media.duration : 0
   if (!restored && duration.value > 0) {
     restored = true
+    measureStartup('metadata')
     const position = playbackPosition(props.itemId, media.duration)
     resumePending = position > 0
     if (position) {
@@ -299,6 +313,7 @@ function ready(): void {
   const media = player.value
   if (!media || !active || media.readyState < (props.kind === 'audio' ? 1 : 2) || media.seeking) return
   loading.value = false
+  if (!startedPlayback) measureStartup('first-frame')
   startedPlayback = true
   clearTimeout(startupTimer)
 }
@@ -311,7 +326,7 @@ function waitForStartup(budget: number): void {
   const message = props.allowDownload ? '媒体启动超时，请重试或下载后播放。' : 'Telegram 直连播放启动超时。'
   startupTimer = setTimeout(() => recover(message), budget)
 }
-function start(): void {
+function start(openTime = performance.now()): void {
   resetMedia()
   restored = false
   resumePending = false
@@ -323,8 +338,10 @@ function start(): void {
   startedPlayback = false
   if (!player.value) return
   active = true
+  openedAt = openTime
   startupStarted = performance.now()
   waitForStartup(startupBudgetMs)
+  measureStartup('source')
   if (props.openSource) {
     const { signal } = controller
     void props.openSource(player.value, signal).catch((cause) => {
@@ -368,7 +385,7 @@ function pause(): void {
 onMounted(() => {
   releaseCovers = holdCoverQueue()
   syncPresentation()
-  start()
+  start(props.openedAt)
   window.addEventListener('pagehide', save)
   document.addEventListener('visibilitychange', save)
   if (props.kind === 'video') {
