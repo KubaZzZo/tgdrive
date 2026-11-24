@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { defineAsyncComponent, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import type { BaseTelegramClient } from '@mtcute/web'
 import { api } from '@/api/client'
 import type { DriveItem } from '@/api/types'
 import BaseModal from '@/components/ui/BaseModal.vue'
+import { useAuthStore } from '@/stores/auth'
 import { clearTelegramDirectSession, readTelegramDirectSession, revokeTelegramDirectSession, saveTelegramDirectSession } from '@/utils/telegramDirectSession'
 import { openTelegramMedia, prepareTelegramMedia, untilAborted } from '@/utils/telegramMedia'
 import { openTelegramVideo } from '@/utils/telegramMiniApp'
@@ -11,6 +12,8 @@ import { openTelegramVideo } from '@/utils/telegramMiniApp'
 const MediaPlayer = defineAsyncComponent(() => import('@/components/MediaPlayer.vue'))
 const props = defineProps<{ item: DriveItem }>()
 const emit = defineEmits<{ close: []; serverFallback: [] }>()
+const auth = useAuthStore()
+const useConfiguredApi = computed(() => auth.authenticated && auth.meta?.telegram_direct_configured === true)
 
 const stage = ref<'opening' | 'credentials' | 'code' | 'password' | 'playing' | 'failed'>('opening')
 const busy = ref(false)
@@ -164,16 +167,25 @@ function sendCode(): void {
   void attempt(async () => {
     const telegramClient = telegram
     if (!telegramClient) return
-    const hash = apiHash.value.trim()
-    apiId = Number(apiIdInput.value)
-    if (!Number.isInteger(apiId) || apiId < 1 || apiId > 0x7fffffff || !/^[0-9a-f]{32}$/i.test(hash)) {
-      error.value = '请输入有效的 Telegram API ID 和 API Hash。'
+    const abortSignal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(30_000)])
+    const configured = useConfiguredApi.value
+    const credentials = configured
+      ? await api.telegramDirectCredentials(abortSignal).catch(() => null)
+      : { api_id: Number(apiIdInput.value), api_hash: apiHash.value.trim() }
+    lifetime.signal.throwIfAborted()
+    if (!credentials) {
+      error.value = '无法读取后台的 Telegram API 配置，请重试。'
       return
     }
+    const { api_id: id, api_hash: hash } = credentials
+    if (!Number.isInteger(id) || id < 1 || id > 0x7fffffff || !/^[0-9a-f]{32}$/i.test(hash)) {
+      error.value = configured ? '请检查后台的 Telegram API 配置。' : '请输入有效的 Telegram API ID 和 API Hash。'
+      return
+    }
+    apiId = id
     releaseClient()
     const connecting = telegramClient.createTelegramDirectClient(apiId, hash)
     client = connecting
-    const abortSignal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(30_000)])
     let result
     try {
       result = await untilAborted(abortSignal, () => (
@@ -262,9 +274,12 @@ onBeforeUnmount(() => {
     </MediaPlayer>
     <p v-else-if="stage === 'opening'" class="muted" role="status">正在准备 Telegram 直连播放…</p>
     <form v-else-if="stage === 'credentials'" class="telegram-auth-form" @submit.prevent="sendCode">
-      <p class="muted">使用已加入原频道的 Telegram 账号授权。API ID 和 API Hash 可在 my.telegram.org 查看。</p>
-      <label>API ID <input v-model="apiIdInput" required inputmode="numeric" pattern="[0-9]+" :disabled="busy" /></label>
-      <label>API Hash <input v-model="apiHash" required type="password" autocomplete="off" :disabled="busy" /></label>
+      <p class="muted">使用已加入原频道的 Telegram 账号授权。</p>
+      <template v-if="!useConfiguredApi">
+        <p class="muted">API ID 和 API Hash 可在 my.telegram.org 查看。</p>
+        <label>API ID <input v-model="apiIdInput" required inputmode="numeric" pattern="[0-9]+" :disabled="busy" /></label>
+        <label>API Hash <input v-model="apiHash" required type="password" autocomplete="off" :disabled="busy" /></label>
+      </template>
       <label>Telegram 手机号 <input v-model="phone" required type="tel" placeholder="+86…" :disabled="busy" /></label>
       <button class="primary" type="submit" :disabled="busy">{{ busy ? '正在连接 Telegram…' : '获取验证码' }}</button>
     </form>

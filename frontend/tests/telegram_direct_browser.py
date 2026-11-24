@@ -9,6 +9,7 @@ import re
 import socket
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -19,15 +20,22 @@ from video_seek_browser import ROOT, make_video
 MINI_APP = "/drive#tgWebAppVersion=9.0&tgWebAppPlatform=android"
 SDK_URL = "https://telegram.org/js/telegram-web-app.js?65"
 PASSWORD = "correct-horse-battery-staple"
+API_ID = 12345
+API_HASH = "a" * 32
 
 MOCK_TELEGRAM = """
 const state = window.telegramFixture = { held: 0, aborted: 0, mode: 'play' };
 const media = Uint8Array.from(atob(MEDIA_DATA), char => char.charCodeAt(0));
-export function createTelegramDirectClient() {
+export function createTelegramDirectClient(apiId, apiHash) {
+  state.credentials = [apiId, apiHash];
   return {
     importSession: async () => {},
     destroy: async () => {},
   };
+}
+export async function sendCode(_client, { phone }) {
+  state.phone = phone;
+  return { type: 'code', phoneCodeHash: 'fixture-code' };
 }
 export async function revokeTelegramDirectAuthorization(saved) {
   if (saved.session !== 'fixture') throw new Error('Wrong direct session');
@@ -57,7 +65,9 @@ export async function telegramDirectMedia() {
 """
 
 
-def open_app(browser, base, mock, *, transport: str):
+def open_app(
+    browser, base, mock, *, transport: str, saved_session: bool = True, direct: bool = True
+):
     page = browser.new_page(viewport={"width": 390, "height": 844})
     page.set_default_timeout(8000)
     page.context.route(SDK_URL, lambda route: route.fulfill(status=200, body=""))
@@ -79,18 +89,68 @@ def open_app(browser, base, mock, *, transport: str):
     )
     assert page.request.post(base + "/api/login", data={"password": PASSWORD}).ok
     page.goto(base + MINI_APP)
-    page.evaluate(
-        """sessionStorage.setItem('tgdrive_telegram_direct_session',
-             JSON.stringify({ apiId: 123, session: 'fixture' }))"""
-    )
-    page.get_by_role("button", name=re.compile(r"fixture.mp4.*Telegram")).click()
+    if saved_session:
+        page.evaluate(
+            """sessionStorage.setItem('tgdrive_telegram_direct_session',
+                 JSON.stringify({ apiId: 123, session: 'fixture' }))"""
+        )
+    if direct:
+        page.get_by_label("fixture.mp4的更多操作", exact=True).click()
+        page.get_by_role("button", name="Telegram 直连播放", exact=True).click()
+    else:
+        page.get_by_role("button", name="fixture.mp4", exact=True).click()
     return page, downloads
+
+
+def verify_configured_credentials(browser, base, mock):
+    page, _ = open_app(browser, base, mock, transport="worker", saved_session=False)
+    dialog = page.get_by_role("dialog")
+    phone = dialog.get_by_label("Telegram 手机号")
+    expect(phone).to_be_visible()
+    expect(dialog.get_by_label("API ID")).to_have_count(0)
+    expect(dialog.get_by_label("API Hash")).to_have_count(0)
+    assert page.evaluate("window.telegramFixture.credentials") is None
+    phone.fill("+15555550123")
+    with page.expect_response("**/api/telegram-direct/credentials") as result:
+        dialog.get_by_role("button", name="获取验证码").click()
+    assert result.value.ok and result.value.request.method == "POST"
+    expect(dialog.get_by_label("Telegram 验证码")).to_be_visible()
+    assert page.evaluate("window.telegramFixture.credentials") == [API_ID, API_HASH]
+    assert page.evaluate("window.telegramFixture.phone") == "+15555550123"
+    page.close()
 
 
 def play(page):
     page.get_by_role("button", name="开始播放").click()
     page.wait_for_function("() => document.querySelector('video')?.currentTime > 0.2")
     return page.get_by_role("dialog")
+
+
+def close_by_timer(page, dialog):
+    page.clock.install()
+    dialog.get_by_role("button", name="播放设置", exact=True).click()
+    dialog.get_by_label("定时关闭").select_option("custom")
+    dialog.get_by_label("自定义分钟").fill("1")
+    dialog.get_by_role("button", name="开始定时", exact=True).click()
+    expect(dialog.get_by_role("timer")).to_be_visible()
+    page.clock.fast_forward(61_000)
+    expect(dialog).to_have_count(0)
+
+
+def verify_default_playback(browser, base, mock):
+    page, downloads = open_app(
+        browser, base, mock, transport="worker", saved_session=False, direct=False
+    )
+    dialog = play(page)
+    assert any("/api/files/" in url and "/download" in url for url in downloads)
+    close_by_timer(page, dialog)
+
+    page.get_by_role("button", name="网格视图").click()
+    page.locator(".file-card-open").get_by_text("fixture.mp4", exact=True).click()
+    expect(dialog.get_by_role("button", name="开始播放")).to_be_visible()
+    assert page.evaluate("window.telegramFixture === undefined")
+    assert page.evaluate("sessionStorage.getItem('tgdrive_telegram_direct_session')") is None
+    page.close()
 
 
 def verify_timer(browser, base, mock):
@@ -107,14 +167,7 @@ def verify_timer(browser, base, mock):
         path,
     )
     page.wait_for_function("() => window.telegramFixture.held > 0")
-    page.clock.install()
-    dialog.get_by_role("button", name="播放设置", exact=True).click()
-    dialog.get_by_label("定时关闭").select_option("custom")
-    dialog.get_by_label("自定义分钟").fill("1")
-    dialog.get_by_role("button", name="开始定时", exact=True).click()
-    expect(dialog.get_by_role("timer")).to_be_visible()
-    page.clock.fast_forward(61_000)
-    expect(dialog).to_have_count(0)
+    close_by_timer(page, dialog)
     assert page.evaluate("window.pendingRead") == "cancelled"
     assert page.evaluate("window.telegramFixture.aborted") > 0
     assert not downloads
@@ -165,6 +218,7 @@ def verify_fallback_and_logout(browser, base, mock):
 def main():
     from conftest import FakeTelegramStorage, make_settings
 
+    from app.api.deps import get_settings
     from app.main import create_app
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -187,12 +241,10 @@ def main():
         mock = MOCK_TELEGRAM.replace("MEDIA_DATA", json.dumps(base64.b64encode(data).decode()))
         storage = Storage()
         storage.files[1] = data
-        app = create_app(
-            make_settings(
-                workdir, frontend_dist=dist, channel_sync_enabled=False, log_level="WARNING"
-            ),
-            storage=storage,
+        settings = make_settings(
+            workdir, frontend_dist=dist, channel_sync_enabled=False, log_level="WARNING"
         )
+        app = create_app(settings, storage=storage)
         app.state.db.create_file(
             "fixture.mp4",
             None,
@@ -217,6 +269,11 @@ def main():
                 sync_playwright() as playwright,
                 playwright.chromium.launch(channel=args.channel) as browser,
             ):
+                configured = replace(settings, tg_direct_api_id=API_ID, tg_direct_api_hash=API_HASH)
+                app.dependency_overrides[get_settings] = lambda: configured
+                verify_default_playback(browser, base, mock)
+                verify_configured_credentials(browser, base, mock)
+                app.dependency_overrides.pop(get_settings)
                 verify_timer(browser, base, mock)
                 verify_expiry(browser, base, mock, "worker")
                 verify_expiry(browser, base, mock, "mp4")
@@ -224,7 +281,7 @@ def main():
         finally:
             server.should_exit = True
             thread.join(timeout=10)
-    print("Verified timer cancellation, expired sessions, explicit server fallback and logout.")
+    print("Verified default server playback, direct authorization, timers, fallback and logout.")
 
 
 if __name__ == "__main__":

@@ -318,6 +318,9 @@ export const api = {
   syncStatus: () => request<SyncStatus>('/api/sync'),
   requestSync: (full = false) => jsonRequest<SyncStatus>('POST', '/api/sync', { full }),
   meta: () => request<Meta>('/api/meta'),
+  telegramDirectCredentials: (signal: AbortSignal) => request<{ api_id: number; api_hash: string }>(
+    '/api/telegram-direct/credentials', { method: 'POST', cache: 'no-store', signal },
+  ),
   login: (password: string) => jsonRequest<{ ok: boolean }>('POST', '/api/login', { password }),
   logout: () => request<{ ok: boolean }>('/api/logout', { method: 'POST' }),
 

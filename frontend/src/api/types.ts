@@ -1,4 +1,4 @@
-export type FileAction = 'download' | 'share' | 'rename' | 'move' | 'remove' | 'people' | 'telegram'
+export type FileAction = 'download' | 'share' | 'rename' | 'move' | 'remove' | 'people' | 'telegram' | 'telegram-direct'
 export interface TelegramIdentity { id: number; username: string | null; first_name: string | null; bot: boolean }
 export interface TelegramProfile { id: string; chat_id: string; user_id: number; username: string | null; first_name: string | null; title: string }
 export interface TelegramAccountStatus {
@@ -121,6 +121,7 @@ export interface Meta {
   app_name: string
   version: string
   authenticated: boolean
+  telegram_direct_configured?: boolean
   storage: StorageStatus
   chunk_size: number
   max_file_size: number
