@@ -44,6 +44,33 @@ def test_health_auth_and_request_id(app_client):
     assert client.get("/api/items").status_code == 200
 
 
+def test_list_items_links_only_complete_single_message_videos(authenticated_client):
+    client, app, storage = authenticated_client
+    db = app.state.db
+    chat_id = str(storage.chat)
+    first = {"part_index": 0, "tg_message_id": 41, "size": 4}
+    second = {"part_index": 1, "tg_message_id": 42, "size": 4}
+    single = db.create_file("single.mp4", None, 4, None, None, chat_id, [first])
+    for name, size, chat, parts in (
+        ("split.mp4", 8, chat_id, [first, second]),
+        ("incomplete.mp4", 8, chat_id, [first]),
+        ("unindexed.mp4", 4, chat_id, []),
+        ("basic-group.mp4", 4, "-123", [first]),
+        ("unresolved-channel.mp4", 4, "channel_name", [first]),
+        ("image.png", 4, chat_id, [first]),
+    ):
+        db.create_file(name, None, size, None, None, chat, parts)
+
+    response = client.get("/api/items")
+    assert response.status_code == 200
+    linked = {
+        item["id"]: item["telegram_video_url"]
+        for item in response.json()["items"]
+        if "telegram_video_url" in item
+    }
+    assert linked == {single["id"]: "https://t.me/c/1234567890/41?single&t=0"}
+
+
 def test_move_and_rename_are_atomic(authenticated_client):
     client, app, _ = authenticated_client
     db = app.state.db
@@ -507,6 +534,9 @@ def test_frontend_dist_is_served(workdir):
         encoding="utf-8",
     )
     (assets / "app.js").write_text("console.log('ok')", encoding="utf-8")
+    (dist / "telegram-media-sw.js").write_text(
+        "self.addEventListener('fetch', () => {})", encoding="utf-8"
+    )
 
     app = create_app(make_settings(workdir), storage=FakeTelegramStorage())
     with TestClient(app) as client:
@@ -515,8 +545,19 @@ def test_frontend_dist_is_served(workdir):
             assert index.status_code == 200
             assert "/assets/app.js" in index.text
             assert index.headers["cache-control"] == "no-cache"
+            policy = index.headers["content-security-policy"]
+            assert (
+                "script-src 'self' https://telegram.org/js/telegram-web-app.js 'wasm-unsafe-eval';"
+                in policy
+            )
+            assert "wss://venus.web.telegram.org" in policy
         for path in ("/api/unknown", "/assets/unknown.js", "/unknown"):
             assert client.get(path).status_code == 404
         asset = client.get("/assets/app.js")
         assert asset.status_code == 200
         assert "console.log" in asset.text
+        assert "script-src 'self';" in asset.headers["content-security-policy"]
+        worker = client.get("/telegram-media-sw.js")
+        assert worker.status_code == 200
+        assert worker.headers["content-type"].startswith("application/javascript")
+        assert worker.headers["cache-control"] == "no-cache"

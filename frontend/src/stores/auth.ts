@@ -3,6 +3,8 @@ import { computed, ref } from 'vue'
 
 import { api, ApiError, setWorkspaceId } from '@/api/client'
 import type { Meta, StorageStatus } from '@/api/types'
+import { clearTelegramDirectSession, revokeTelegramDirectSession } from '@/utils/telegramDirectSession'
+import { useToastStore } from './toast'
 
 export const useAuthStore = defineStore('auth', () => {
   const meta = ref<Meta | null>(null)
@@ -21,6 +23,7 @@ export const useAuthStore = defineStore('auth', () => {
     error.value = ''
     try {
       meta.value = await api.meta()
+      if (!meta.value.authenticated) clearTelegramDirectSession()
       setWorkspaceId(meta.value.storage.chat_id)
     } catch (cause) {
       error.value = cause instanceof ApiError ? cause.message : '无法连接后端服务'
@@ -47,10 +50,18 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function logout(): Promise<void> {
+    const revoked = await revokeTelegramDirectSession().then(
+      () => true,
+      () => false,
+    )
     try {
       await api.logout()
     } finally {
+      clearTelegramDirectSession()
       meta.value = meta.value ? { ...meta.value, authenticated: false } : null
+      if (!revoked) {
+        useToastStore().error('Telegram 直连授权撤销失败，可在 Telegram 的「设备」中结束 TG Drive Browser 会话。')
+      }
     }
   }
 
@@ -60,6 +71,7 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   function markUnauthorized(): void {
+    clearTelegramDirectSession()
     if (meta.value) meta.value = { ...meta.value, authenticated: false }
     else meta.value = null
   }

@@ -3,6 +3,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import type { DriveItem, FileAction } from '@/api/types'
 import { formatBytes, formatDate } from '@/utils/format'
 import { categoryLabel } from '@/utils/categories'
+import { telegramVideoUrl } from '@/utils/telegramMiniApp'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import FileActions from '@/components/FileActions.vue'
 import VideoCover from '@/components/VideoCover.vue'
@@ -44,7 +45,10 @@ function open(item: DriveItem): void {
             :name="item.kind === 'folder' ? 'folder' : (item.category ?? 'document')"
             :size="40"
         /></span>
-        <strong>{{ item.name }}</strong>
+        <span class="file-card-name">
+          <strong class="file-title">{{ item.name }}</strong>
+          <span v-if="telegramVideoUrl(item)" class="telegram-play">Telegram 直连播放</span>
+        </span>
       </button>
       <p>
         {{ item.kind === 'folder' ? '文件夹' : formatBytes(item.size) }} ·
@@ -77,7 +81,8 @@ function open(item: DriveItem): void {
               /></span>
               <div class="file-name-block">
                 <button class="name-btn" type="button" :title="item.name" @click="open(item)">
-                  {{ item.name }}
+                  <span class="file-title">{{ item.name }}</span>
+                  <span v-if="telegramVideoUrl(item)" class="telegram-play">Telegram 直连播放</span>
                 </button>
                 <span class="mobile-meta">{{
                   item.kind === 'folder'
@@ -172,10 +177,19 @@ function open(item: DriveItem): void {
   background: transparent;
   color: var(--text);
   text-align: left;
+  font-size: 12px;
+}
+.file-title {
+  display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+}
+.telegram-play {
+  display: block;
+  margin-top: 3px;
+  color: var(--accent);
+  font-size: 11px;
 }
 .name-btn:hover {
   color: var(--accent);
@@ -232,13 +246,12 @@ function open(item: DriveItem): void {
   height: 78px;
   border-radius: 18px;
 }
-.file-card-open strong {
+.file-card-name {
   max-width: 100%;
+}
+.file-card-name strong {
   font-weight: 500;
   font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .file-card > p {
   margin: 7px 0 0;

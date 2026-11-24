@@ -29,7 +29,7 @@ from app.config import ROOT_DIR, Settings
 from app.config import settings as default_settings
 from app.core.errors import install_exception_handlers
 from app.core.logging import configure_logging
-from app.core.middleware import RequestContextMiddleware
+from app.core.middleware import RequestContextMiddleware, content_security_policy
 from app.core.security import LoginRateLimiter
 from app.infrastructure.db import Database
 from app.infrastructure.google_drive import GoogleDrive
@@ -197,6 +197,15 @@ def create_app(
         if assets_dir.is_dir():
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
 
+    @app.get("/telegram-media-sw.js", include_in_schema=False)
+    async def telegram_media_worker() -> Response:
+        path = cfg.frontend_dist / "telegram-media-sw.js"
+        if not path.is_file():
+            return Response(status_code=404)
+        return FileResponse(
+            path, media_type="application/javascript", headers={"Cache-Control": "no-cache"}
+        )
+
     @app.get("/", include_in_schema=False)
     @app.get("/login", include_in_schema=False)
     @app.get("/drive", include_in_schema=False)
@@ -209,7 +218,13 @@ def create_app(
     @app.get("/clients", include_in_schema=False)
     async def index() -> Response:
         if cfg.index_file.is_file():
-            return FileResponse(cfg.index_file, headers={"Cache-Control": "no-cache"})
+            return FileResponse(
+                cfg.index_file,
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Content-Security-Policy": content_security_policy(telegram_mini_app=True),
+                },
+            )
         return HTMLResponse(
             """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
 <title>TG Drive - frontend not built</title>

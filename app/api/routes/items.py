@@ -6,6 +6,8 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from telethon import utils
+from telethon.tl.types import PeerChannel
 
 from app.api.deps import get_db, get_settings
 from app.api.schemas.items import (
@@ -43,6 +45,18 @@ def ensure_folder(db: Database, parent_id: str | None) -> dict[str, Any] | None:
     if parent["kind"] != "folder":
         raise HTTPException(400, "目标不是文件夹")
     return parent
+
+
+def telegram_video_url(chat_id: str | None, message_id: int | None) -> str | None:
+    if not chat_id or message_id is None or message_id <= 0:
+        return None
+    try:
+        channel_id, peer_type = utils.resolve_id(int(chat_id))
+    except ValueError:
+        return None
+    if peer_type is PeerChannel:
+        return f"https://t.me/c/{channel_id}/{message_id}?single&t=0"
+    return None
 
 
 @router.get("/items")
@@ -93,6 +107,9 @@ async def list_items(
         item["download_url"] = (
             f"/api/files/{item['id']}/download" if item["kind"] == "file" else None
         )
+        link = telegram_video_url(item["tg_chat_id"], item.pop("telegram_message_id"))
+        if link:
+            item["telegram_video_url"] = link
     return {
         "items": items,
         "path": db.get_path(parent_id),
