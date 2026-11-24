@@ -6,6 +6,7 @@ import logging
 import mimetypes
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import perf_counter
 from typing import Any
@@ -27,7 +28,6 @@ from app.services.cdn import CDNMonitor
 from app.services.image_host import MAX_IMAGE_SIZE
 from app.services.telegram_bot import MAX_BOT_DOWNLOAD, BotAPIError
 from app.services.thumbnails import VIDEO_SAMPLE_BYTES, Thumbnail, image_thumbnail, video_thumbnail
-from app.services.video_prepare import warm_mp4_index
 
 router = APIRouter(tags=["files"])
 auth_router = APIRouter(prefix="/api", tags=["files"], dependencies=[Depends(require_auth)])
@@ -87,7 +87,18 @@ async def iter_item_range(
                     yield chunk
 
 
-async def trace_media_range(stream, request_id: str, expected: int, mode: str):
+@dataclass
+class MediaRead:
+    source: str = "telegram"
+
+    def mark_source(self, source: str) -> None:
+        if self.source == "telegram":
+            self.source = source
+
+
+async def trace_media_range(
+    stream, request_id: str, start: int, expected: int, mode: str, read: MediaRead, *, debug: bool
+):
     started = perf_counter()
     first_ms = None
     sent = 0
@@ -99,11 +110,15 @@ async def trace_media_range(stream, request_id: str, expected: int, mode: str):
                 sent += len(chunk)
                 yield chunk
     finally:
-        logger.info(
-            "Media %s origin_first_ms=%s origin_total_ms=%.1f bytes_yielded=%d expected=%d",
+        log = logger.debug if debug else logger.info
+        log(
+            "Media %s first_chunk_ms=%s total_ms=%.1f offset=%d source=%s "
+            "bytes_yielded=%d expected=%d",
             mode,
             first_ms,
             (perf_counter() - started) * 1000,
+            start,
+            read.source,
             sent,
             expected,
             extra={"request_id": request_id},
@@ -191,13 +206,10 @@ async def stream_item(
     if request.method == "HEAD" or not length:
         return Response(status_code=206 if partial else 200, media_type=mime, headers=headers)
     probe = request.headers.get("X-TGDrive-Media-Probe") == "1"
-    trace = (
-        not public
-        and inline
-        and mime.startswith("video/")
-        and (start == 0 or (probe and partial and length <= 1024 * 1024))
-    )
-    mode = "probe" if probe else "initial-range"
+    video = not public and inline and mime.startswith("video/")
+    trace = video and (start == 0 or (probe and partial and length <= 1024 * 1024))
+    debug = video and logger.isEnabledFor(logging.DEBUG)
+    mode = "probe" if probe else "range" if start else "initial-range"
     if bot and bot_file_id:
         started = perf_counter()
         try:
@@ -215,9 +227,11 @@ async def stream_item(
         await cdn.charge(len(data))
         return Response(data, status_code=206 if partial else 200, media_type=mime, headers=headers)
     cache = request.app.state.media_cache
+    media_read = MediaRead() if trace or debug else None
     if cache.enabled and inline and item.get("category") == "video":
         runtime = request.state.telegram_runtime
         manager = request.app.state.accounts
+        mp4 = mime.split(";", 1)[0] in {"video/mp4", "video/x-m4v"}
 
         def retain_runtime():
             # Take the lease before scheduling: even an early disconnect must not retire it.
@@ -231,46 +245,42 @@ async def stream_item(
             return release
 
         def fetch_slice(first: int, last: int):
-            return iter_item_range(db, storage, item, first, last, parts)
+            upstream = iter_item_range(db, storage, item, first, last, parts)
+            if debug:
+                return trace_media_range(
+                    upstream,
+                    request.state.request_id,
+                    first,
+                    last - first,
+                    "telegram-range",
+                    MediaRead(),
+                    debug=True,
+                )
+            return upstream
 
-        def cached_range(first: int, last: int, *, warming: bool = False):
-            return cache.stream(
+        if start == 0 and mp4 and not probe and size > max(cache.slice_bytes, PREFETCH_MIN_BYTES):
+            cache.warm_index(db.path, etag, size, fetch_slice, retain_runtime)
+        stream = charge_media_stream(
+            cache.stream(
                 db.path,
                 etag,
-                first,
-                last,
+                start,
+                end,
                 size,
                 fetch_slice,
                 retain=retain_runtime,
-                read_ahead=not warming,
-                prioritize_seek=not warming,
-            )
-
-        async def video_stream():
-            async with aclosing(cached_range(start, end)) as source:
-                warm = (
-                    start == 0
-                    and size > max(cache.slice_bytes, PREFETCH_MIN_BYTES)
-                    and mime.split(";", 1)[0] in {"video/mp4", "video/x-m4v"}
-                )
-                async for chunk in source:
-                    yield chunk
-                    if warm:
-                        warm = False
-                        cache.warm_index(
-                            db.path,
-                            etag,
-                            lambda: warm_mp4_index(
-                                size, lambda first, last: cached_range(first, last, warming=True)
-                            ),
-                            retain_runtime,
-                        )
-
-        stream = charge_media_stream(video_stream(), cdn)
+                read_ahead=True,
+                mp4=mp4,
+                mark_source=media_read.mark_source if media_read else None,
+            ),
+            cdn,
+        )
     else:
         stream = iter_item_range(db, storage, item, start, end, parts, cdn, prefetch=not inline)
-    if trace:
-        stream = trace_media_range(stream, request.state.request_id, length, mode)
+    if media_read:
+        stream = trace_media_range(
+            stream, request.state.request_id, start, length, mode, media_read, debug=not trace
+        )
     return FileStreamingResponse(
         stream,
         status_code=206 if partial else 200,

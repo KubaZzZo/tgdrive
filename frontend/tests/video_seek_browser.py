@@ -25,7 +25,14 @@ TARGET = 112
 sys.path[:0] = [str(ROOT), str(ROOT / "tests")]
 
 
-def make_video(ffmpeg: str, path: Path, *, indexed: bool | None, tail_index: bool = False) -> bytes:
+def make_video(
+    ffmpeg: str,
+    path: Path,
+    *,
+    indexed: bool | None,
+    tail_index: bool = False,
+    index_bytes: int = 0,
+) -> bytes:
     ordinary = indexed is None
     flags = (
         ("0" if tail_index else "+faststart")
@@ -69,7 +76,15 @@ def make_video(ffmpeg: str, path: Path, *, indexed: bool | None, tail_index: boo
     if ordinary:
         movie = data.index(b"moov") - 4
         assert (movie > len(data) // 2) == tail_index
-        assert movie + struct.unpack_from(">I", data, movie)[0] > 65536
+        movie_size = struct.unpack_from(">I", data, movie)[0]
+        assert movie + movie_size > 65536
+        if index_bytes:
+            assert tail_index and movie + movie_size == len(data)
+            free_size = index_bytes - movie_size
+            assert free_size >= 8
+            struct.pack_into(">I", data, movie, index_bytes)
+            data.extend(struct.pack(">I4s", free_size, b"free"))
+            data.extend(bytes(free_size - 8))
         return bytes(data)
     # Empty-movie FFmpeg fixtures leave the duration at zero. Set the movie
     # duration so the player can expose the complete timeline before playback.
@@ -119,13 +134,16 @@ def exercise(
         ).ok
         page.goto(base)
         resume_position = None
-        for label, name in [
+        cases = [
             ("unindexed first seek", "unindexed.mp4"),
             ("unindexed native resume after reload", "unindexed.mp4"),
             ("indexed first seek", "indexed.mp4"),
             ("ordinary MP4 native", "ordinary.mp4"),
             ("ordinary MP4 with tail index", "tail-index.mp4"),
-        ]:
+        ]
+        if "large-tail-index.mp4" in files:
+            cases.append(("ordinary MP4 with a 10 MiB tail index", "large-tail-index.mp4"))
+        for label, name in cases:
             item_id, _ = files[name]
             warm = label == "unindexed native resume after reload"
             if warm:
@@ -147,7 +165,7 @@ def exercise(
                     const video = document.querySelector('.media-screen video');
                     return video?.readyState >= 1 && Math.abs(video.duration - 150) < 1;
                 }""",
-                timeout=12000,
+                timeout=30000 if name == "large-tail-index.mp4" else 12000,
             )
             video = page.locator(".media-screen video")
             first_frame = (
@@ -176,6 +194,20 @@ def exercise(
                 toolbar = page.get_by_role("group", name="播放器操作")
                 expect(toolbar.get_by_role("button", name="画中画", exact=True)).to_be_visible()
             startup_requests = len(requests)
+            timings = video.evaluate(
+                """(video, started) => {
+                    const mark = stage => performance.getEntriesByName(`tgdrive.video.open-to-${stage}`).at(-1)?.duration;
+                    const request = performance.getEntriesByName(video.currentSrc, 'resource')
+                        .find(entry => entry.startTime >= started);
+                    return {
+                        source_ms: mark('source') ?? null,
+                        metadata_ms: mark('metadata') ?? null,
+                        first_frame_ready_ms: mark('first-frame') ?? null,
+                        first_response_ms: request?.responseStart ? request.responseStart - started : null,
+                    };
+                }""",
+                started,
+            )
             assert video.evaluate("video => video.src.includes('/download')")
             assert any(value and value.startswith("bytes=") for value in requests), requests
             elapsed = None
@@ -236,6 +268,10 @@ def exercise(
                 "play_window_ms": play_ms,
                 "startup_range_requests": startup_requests,
                 "bytes_sent_on_cancelled_reads": storage.cancelled_bytes - before_cancel,
+                **{
+                    key: round(value) if value is not None else None
+                    for key, value in timings.items()
+                },
             }
             samples.append(sample)
             print(json.dumps(sample), flush=True)
@@ -283,6 +319,12 @@ def main() -> None:
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--channel", help="Playwright Chromium channel, such as msedge or chrome")
     parser.add_argument("--delay-ms", type=int, default=15, help="Fixture delay per 256 KiB block")
+    parser.add_argument(
+        "--origin-rtt-ms", type=int, default=0, help="Delay before each source read"
+    )
+    parser.add_argument(
+        "--large-tail-index", action="store_true", help="Also test a 10 MiB MP4 index"
+    )
     parser.add_argument("--mobile", action="store_true", help="Use a narrow mobile viewport")
     parser.add_argument("--media-cache-mib", type=int, default=0, help="Enable source slice cache")
     parser.add_argument("--runs", type=int, default=1, help="Number of independent browser samples")
@@ -294,6 +336,7 @@ def main() -> None:
         args.runs < 1
         or not 1 <= args.play_ms <= 30_000
         or args.delay_ms < 0
+        or args.origin_rtt_ms < 0
         or args.media_cache_mib < 0
     ):
         parser.error("runs must be positive, play-ms must be 1–30000, delay-ms must be nonnegative")
@@ -305,6 +348,8 @@ def main() -> None:
         async def iter_download(self, message_id, offset, length, *, prefetch=False):
             sent = 0
             try:
+                if args.origin_rtt_ms:
+                    await asyncio.sleep(args.origin_rtt_ms / 1000)
                 for start in range(offset, offset + length, 262144):
                     await asyncio.sleep(args.delay_ms / 1000)
                     block = self.files[message_id][start : min(start + 262144, offset + length)]
@@ -327,17 +372,21 @@ def main() -> None:
             storage=storage,
         )
         files = {}
-        for message_id, (name, indexed) in enumerate(
-            [
-                ("unindexed.mp4", False),
-                ("indexed.mp4", True),
-                ("ordinary.mp4", None),
-                ("tail-index.mp4", None),
-            ],
-            start=1,
-        ):
+        fixtures = [
+            ("unindexed.mp4", False),
+            ("indexed.mp4", True),
+            ("ordinary.mp4", None),
+            ("tail-index.mp4", None),
+        ]
+        if args.large_tail_index:
+            fixtures.append(("large-tail-index.mp4", None))
+        for message_id, (name, indexed) in enumerate(fixtures, start=1):
             data = make_video(
-                args.ffmpeg, path / name, indexed=indexed, tail_index=name == "tail-index.mp4"
+                args.ffmpeg,
+                path / name,
+                indexed=indexed,
+                tail_index=name.endswith("tail-index.mp4"),
+                index_bytes=10 * 1024**2 if name == "large-tail-index.mp4" else 0,
             )
             storage.files[message_id] = data
             item = app.state.db.create_file(

@@ -46,13 +46,17 @@
 
 未对齐的冷跳转优先按当前切片内的实际范围回源，正常传输完成后才启动后台补齐，避免尾部索引请求先等待整个切片前缀。已有后台填充到达所需位置时继续共享；尚未到达时直接读取请求范围。中途断开的精确读取会关闭回源，不再为它启动新的补齐任务。
 
-起播后会在后台读取 MP4 顶层 box 的头，跳过媒体载荷并预热最多 8 MiB 的 moov 索引。播放跨切片时在有空闲容量的情况下并发准备下一块。预热与预读共用填充队列，冷跳转仍可直接读取所需范围。
+从文件开头播放时，服务端复用首切片检查 MP4 顶层 box，跳过媒体载荷，预读不超过 16 MiB 的后置 moov 索引。索引从实际偏移切片，能与播放器共享正在填充的内容。MP4 首切片和后置索引在总缓存内最多占四分之一且不超过 128 MiB，普通顺序读取优先淘汰普通切片。超出起播缓存预算、索引前置或分片 MP4 继续按原 Range 播放。索引和顺序播放都会在有空闲容量时并发预读下一切片。
 
 每个进程最多同时填充 8 块，填充超时为 60 秒，队列满或空间不足时按实际 Range 回源。填充保留原频道连接，频道切换后仍使用原工作区；服务关闭会取消填充并释放连接。`MEDIA_CACHE_TTL_SECONDS=600` 表示切片闲置 10 分钟后失效，运行期间定期清理。禁用缓存后不启动维护任务，可手动清理原缓存目录。
 
 视频浏览器回归可加 `--media-cache-mib 16 --mobile --delay-ms 350`，使用合成视频和延迟回源验证缓存开启后的起播、拖动与权限流程，不连接 Telegram。真实 MP4 前置索引测试位于 `tests/test_video_prepare.py`，需要 FFmpeg；CI 会安装后运行。
 
-登录后可从 `GET /api/traffic` 的 `media_cache` 字段查看切片命中次数、未命中次数、缓存发送字节、正在填充的块数，以及合并请求数 `coalesced` 和共享填充发送字节 `coalesced_bytes`。`overfetch_bytes` 记录相对首个请求多读的 Telegram 字节；后续请求可能复用这些数据。统计按进程启动累积，可结合服务端起播日志比较冷、热请求的首字节时间。发送客户端的字节继续计入 CDN 流量。
+登录后可从 `GET /api/traffic` 的 `media_cache` 字段查看切片缓存、起播预算 `startup_max_bytes`、合并请求数 `coalesced` 和共享填充发送字节 `coalesced_bytes`。`overfetch_bytes` 记录相对首个请求多读的 Telegram 字节。计数按进程启动累积，也包含后台切片活动。发给客户端的字节继续计入 CDN 流量。
+
+网盘视频打开后，可在浏览器性能面板查看 `tgdrive.video.open-to-source`、`tgdrive.video.open-to-metadata`、`tgdrive.video.open-to-first-frame`。它们记录打开文件到设置媒体源、获得元数据、首帧数据就绪的时间。浏览器网络面板可查看 Range 请求的开始和响应时间，用响应的 `X-Request-ID` 对齐服务端日志。服务端 `Media initial-range` 日志包含首块数据就绪时间、Range 偏移、首块来源和实际发送字节。`LOG_LEVEL=DEBUG` 会补充其他 Range 和 Telegram 回源切片耗时，适合短时对照测量。
+
+可在浏览器回归命令中加 `--large-tail-index --origin-rtt-ms 250 --delay-ms 100 --media-cache-mib 96` 覆盖 10 MiB 尾部索引和延迟回源。
 
 冷跳转正常完成后另行补齐的整块读取全部计入 `overfetch_bytes`；如果已有填充正在执行，则复用该任务，不重复启动补齐。
 

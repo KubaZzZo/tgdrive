@@ -8,7 +8,7 @@ import BaseModal from '@/components/ui/BaseModal.vue'
 
 const MediaPlayer = defineAsyncComponent(() => import('@/components/MediaPlayer.vue'))
 
-const props = defineProps<{ open: boolean; item: DriveItem | null; downloadPending: boolean; downloadStatus: string }>()
+const props = defineProps<{ open: boolean; openedAt: number; item: DriveItem | null; downloadPending: boolean; downloadStatus: string }>()
 const emit = defineEmits<{ close: []; download: [item: DriveItem] }>()
 const closeDeadline = defineModel<number>('closeDeadline', { default: 0 })
 
@@ -31,6 +31,7 @@ const src = computed(() => (props.item ? api.downloadUrl(props.item.id) : ''))
       v-model:close-deadline="closeDeadline"
       :src="src"
       :item-id="item.id"
+      :opened-at="openedAt"
       :kind="kind"
       :size="item.size"
       :download-pending="downloadPending"

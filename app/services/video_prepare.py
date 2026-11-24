@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
-from contextlib import AsyncExitStack, aclosing, asynccontextmanager
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -17,39 +17,43 @@ if TYPE_CHECKING:
 logger = logging.getLogger("tgdrive.video_prepare")
 REMUX_SLACK_BYTES = 8 * 1024 * 1024
 MP4_WARM_MAX_BOXES = 16
-MP4_WARM_MAX_BYTES = 8 * 1024 * 1024
+MP4_WARM_MAX_BYTES = 16 * 1024 * 1024
+MP4_HEADER_PROBE_BYTES = 16 * 1024
 
 
-async def warm_mp4_index(
-    size: int, read: Callable[[int, int], AsyncGenerator[bytes, None]]
-) -> None:
-    """Walk top-level headers by range, skipping the intervening media payload."""
+async def find_tail_mp4_index(
+    size: int, read: Callable[[int, int], Awaitable[bytes]]
+) -> tuple[int, int] | None:
+    """Locate a bounded tail index without reading the intervening media payload."""
+    prefix = await read(0, min(size, MP4_HEADER_PROBE_BYTES))
     offset = 0
+    saw_media = False
     for _ in range(MP4_WARM_MAX_BOXES):
         if offset + 8 > size:
-            return
-        async with aclosing(read(offset, min(offset + 16, size))) as source:
-            header = b"".join([chunk async for chunk in source])
+            return None
+        end = min(offset + 16, size)
+        header = prefix[offset:end] if end <= len(prefix) else await read(offset, end)
         if len(header) < 8:
-            return
+            return None
         length = int.from_bytes(header[:4], "big")
         kind = header[4:8]
         header_size = 8
         if length == 1:
             if len(header) < 16:
-                return
+                return None
             length = int.from_bytes(header[8:16], "big")
             header_size = 16
         elif length == 0:
             length = size - offset
         if length < header_size or offset + length > size or (offset == 0 and kind != b"ftyp"):
-            return
+            return None
         if kind == b"moov":
-            async with aclosing(read(offset, offset + min(length, MP4_WARM_MAX_BYTES))) as source:
-                async for _chunk in source:
-                    pass
-            return
+            return (offset, offset + length) if saw_media and length <= MP4_WARM_MAX_BYTES else None
+        if kind == b"moof":
+            return None
+        saw_media |= kind == b"mdat"
         offset += length
+    return None
 
 
 def mp4_layout(path: Path) -> str | None:
