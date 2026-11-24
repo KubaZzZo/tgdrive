@@ -3,7 +3,7 @@ from datetime import timedelta
 from test_album_captions import album_message
 from test_channel_sync import message
 
-from app.services.channel_sync import describe_message
+from app.services.channel_sync import describe_bot_post, describe_message
 from app.services.people import extract_people
 from app.services.person_names import chinese_person_name
 
@@ -18,6 +18,23 @@ def test_caption_recognizes_chinese_names_and_prefers_explicit_credits():
         "Jane Doe",
     )
     assert not extract_people("北京旅游记录")
+
+
+def test_forwarded_video_credits_preserve_complete_names_and_skip_trailing_tags():
+    caption = "刘德华粉丝推荐\nＡＶ女优：山田はな、佐藤さくら #剪辑\n出演者：高橋あおい／Jane Doe"
+    expected = ("山田はな", "佐藤さくら", "高橋あおい", "Jane Doe")
+    assert describe_message(message(1, caption=caption))["people"] == expected
+    described = describe_bot_post(
+        {
+            "message_id": 1,
+            "date": 1,
+            "forward_origin": {"type": "channel"},
+            "caption": caption,
+            "video": {"file_id": "video-id", "file_size": 20},
+        }
+    )
+    assert described is not None
+    assert described[0]["people"] == expected
 
 
 def test_people_use_shared_album_description_only_when_unambiguous():

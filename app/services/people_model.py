@@ -9,9 +9,8 @@ import httpx
 
 from app.config import Settings
 from app.services.people import (
-    PERSON_FIELD,
     clean_caption,
-    extract_people,
+    credited_people,
     person_key,
     valid_person_name,
 )
@@ -38,11 +37,8 @@ def parse_people(content: str, caption: str) -> list[dict]:
     if not isinstance(people, list) or len(people) > 16:
         raise PeopleModelError("invalid people list")
     source = person_key(caption)
-    credits = (
-        {person_key(name) for name in extract_people(caption)}
-        if any(PERSON_FIELD.match(line) for line in caption.splitlines())
-        else None
-    )
+    explicit_names = credited_people(caption)
+    credits = {person_key(name) for name in explicit_names} if explicit_names is not None else None
 
     def mentioned(name: str) -> bool:
         key = person_key(name)
@@ -111,7 +107,10 @@ class PeopleModel:
     def job(self, caption: str) -> tuple[str, str] | None:
         if not self.enabled:
             return None
-        text = clean_caption(caption).strip()[:2048]
+        cleaned = clean_caption(caption).strip()
+        text = cleaned[:2048]
+        if len(cleaned) > len(text) and credited_people(cleaned) != credited_people(text):
+            return None
         if not any(ch.isalpha() for ch in text):
             return None
         return self.namespace + ":" + hashlib.sha256(text.encode()).hexdigest(), text

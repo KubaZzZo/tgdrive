@@ -5,6 +5,7 @@ import json
 from datetime import timedelta
 
 import httpx
+import pytest
 from conftest import make_settings
 from test_channel_sync import ChannelStorage, message
 
@@ -127,3 +128,31 @@ def test_old_analysis_does_not_overwrite_edited_caption_and_local_credits(workdi
         )
     finally:
         with_db.close()
+
+
+@pytest.mark.parametrize(
+    ("caption", "model_names", "expected"),
+    [
+        ("给刘德华粉丝的推荐，主演为 Jane Doe", ("Jane Doe",), {"Jane Doe"}),
+        ("给刘德华粉丝的推荐", (), set()),
+        ("女优：山田はな、佐藤さくら\n刘德华粉丝推荐", ("山田はな",), {"山田はな", "佐藤さくら"}),
+    ],
+)
+def test_model_replaces_guesses_and_keeps_explicit_credits_after_rescan(
+    workdir, caption, model_names, expected
+):
+    db = Database(workdir / "people-ai.sqlite3")
+    service = ChannelSyncService(db, ChannelStorage(), model_settings(workdir))
+    try:
+        post = message(1, caption=caption)
+        service.ingest(post)
+        before = {row["name"] for row in db.list_video_people("", 10, 0)[0]}
+        assert before == ({"刘德华"} if "女优：" not in caption else expected)
+        key, _ = db.next_people_ai_job(service.people_model.namespace, 1)
+        people = [{"name": name, "display_name": "", "aliases": []} for name in model_names]
+        db.finish_people_ai_job(key, people)
+        assert {row["name"] for row in db.list_video_people("", 10, 0)[0]} == expected
+        assert not service.ingest(post, scan_run="history")
+        assert {row["name"] for row in db.list_video_people("", 10, 0)[0]} == expected
+    finally:
+        db.close()
