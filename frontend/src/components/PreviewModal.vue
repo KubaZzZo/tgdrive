@@ -10,6 +10,7 @@ const MediaPlayer = defineAsyncComponent(() => import('@/components/MediaPlayer.
 
 const props = defineProps<{ open: boolean; item: DriveItem | null; downloadPending: boolean; downloadStatus: string }>()
 const emit = defineEmits<{ close: []; download: [item: DriveItem] }>()
+const closeDeadline = defineModel<number>('closeDeadline', { default: 0 })
 
 const failed = ref(false)
 watch(
@@ -27,6 +28,7 @@ const src = computed(() => (props.item ? api.downloadUrl(props.item.id) : ''))
     <MediaPlayer
       v-if="open && (kind === 'video' || kind === 'audio')"
       :key="item.id"
+      v-model:close-deadline="closeDeadline"
       :src="src"
       :item-id="item.id"
       :kind="kind"

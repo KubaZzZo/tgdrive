@@ -12,11 +12,11 @@
 
 点击视频名称或卡片时，TG Drive 服务器使用已有的 Telegram 会话读取视频，并通过网站域名传给小程序播放器。登录 TG Drive 后即可播放，也能在播放设置里设定定时关闭。分段视频由服务器按原文件顺序拼接。
 
-单条频道消息存有完整视频时，可在文件的更多操作菜单选择「Telegram 直连播放」。设备通过 Telegram WebSocket 按区间读取视频，到点关闭播放器后，浏览器结束视频读取。 [Telegram 浏览器传输协议](https://core.telegram.org/mtproto/transports) · [Telegram 文件读取接口](https://core.telegram.org/method/upload.getFile)
+网页和小程序都可以从文件菜单选择「Telegram 直连播放」，适用于单条频道消息中保存的完整视频。设备有有效的 Telegram 授权时，通过 Telegram WebSocket 按区间读取视频，到点关闭播放器后，浏览器结束视频读取。设备缺少授权或授权失效时，自动打开服务器播放器，沿用已设定的关闭时间。 [Telegram 浏览器传输协议](https://core.telegram.org/mtproto/transports) · [Telegram 文件读取接口](https://core.telegram.org/method/upload.getFile)
 
-首次直连时，可在页面输入从 `my.telegram.org` 获取的 API ID 和 API Hash，再用有权查看存储频道的个人 Telegram 账号完成验证码和两步验证。浏览器把授权请求直接发给 Telegram，并可在同一个小程序标签页内复用会话。退出 TG Drive 或更换直连账号时会向 Telegram 撤销直连会话。关闭标签页后可以在 Telegram 的「设备」中结束对应的 TG Drive Browser 会话。 [Telegram 用户授权](https://core.telegram.org/api/auth)
+要启用设备直连，可在「Telegram 账号 → Telegram 直连授权」中用有权查看存储频道的账号完成一次授权。授权请求直接发给 Telegram。支持保存授权的浏览器或小程序在重开或重新登录 TG Drive 后可以复用会话。可以在此撤销授权，或在 Telegram 的「设备」中结束对应的 TG Drive Browser 会话。主动退出 TG Drive 时也会向 Telegram 撤销设备上的直连会话。 [Telegram 用户授权](https://core.telegram.org/api/auth)
 
-个人部署可在服务端环境中设置 `TG_DIRECT_API_ID` 和 `TG_DIRECT_API_HASH`，省去在小程序中输入这两项的步骤。小程序在登录 TG Drive 后点击「获取验证码」时，通过同源 API 读取配置。该响应应绕过 CDN 缓存。首次授权仍需按 Telegram 的提示完成手机号验证和两步验证。
+授权时使用从 `my.telegram.org` 获取的 API ID 和 API Hash。个人部署可在服务端设置 `TG_DIRECT_API_ID` 和 `TG_DIRECT_API_HASH`，由设备在点击「获取验证码」时通过同源 API 读取。该响应应绕过 CDN 缓存。Telegram 在设备首次授权时可能要求验证码和两步验证密码。
 
 直连播放需要 HTTPS、WebAssembly，以及设备能访问 Telegram WebSocket 数据中心。支持 Service Worker 的 WebView 使用浏览器的 Range 播放。无法启用 Service Worker 时，支持 Media Source 的 WebView 可在浏览器内实时封装带索引的普通 MP4，具体编码由设备解码能力决定。让 `/telegram-media-sw.js` 遵循源站的重新验证策略。 [WebKit Media Source 支持](https://webkit.org/blog/14735/webkit-features-in-safari-17-1/)
 
@@ -34,7 +34,7 @@
 
 回归检查从仓库根目录运行 `python -m pytest -q`，并在 `frontend/` 运行 `npm test` 和 `npm run build`。构建前端并准备 Python Playwright、Chromium 与支持 libx264 的 FFmpeg 后，可运行 `python frontend/tests/video_seek_browser.py --media-cache-mib 32` 验证原生播放、拖动和刷新续播。脚本使用合成视频和模拟 Telegram 回源。
 
-同样可运行 `python frontend/tests/telegram_direct_browser.py`，用测试会话和合成视频验证小程序定时断流、授权过期和播放回退。
+同样可运行 `python frontend/tests/telegram_direct_browser.py`，用测试会话和合成视频验证授权保存、定时断流，以及网页和小程序在设备没有有效授权时的播放行为。
 
 ## 服务端切片缓存
 
