@@ -3,7 +3,8 @@ import { test } from 'node:test'
 import { tl } from '@mtcute/web'
 import type { BaseTelegramClient } from '@mtcute/web'
 import type { DriveItem } from '../src/api/types.ts'
-import { telegramDirectMedia } from '../src/utils/telegramDirectClient.ts'
+import { createTelegramDirectClient, signInQr, telegramDirectMedia } from '../src/utils/telegramDirectClient.ts'
+import { untilAborted } from '../src/utils/telegramMedia.ts'
 
 const blockSize = 256 * 1024
 const item: DriveItem = {
@@ -42,6 +43,55 @@ function fixture(replaced = false) {
   } as unknown as BaseTelegramClient
   return { client, reads }
 }
+
+test('Telegram QR login records authorization before the SDK reads the profile in the new DC', { timeout: 5000 }, async () => {
+  let authorized = false
+  const client = createTelegramDirectClient(123, 'a'.repeat(32), { onQrAuthorized: () => { authorized = true } })
+  const abort = new AbortController()
+  try {
+    assert.equal(client.params.disableUpdates, false)
+    assert.equal(client.updates, undefined)
+    const observer = client.params.network?.middlewares?.[0]
+    assert.ok(observer)
+    const profile = Promise.withResolvers<void>()
+    const token = Uint8Array.of(1, 2, 3)
+    const methods: string[] = []
+    let dc = 2
+    client.changePrimaryDc = async (nextDc) => { dc = nextDc }
+    client.call = ((request: tl.RpcMethod) => observer({ request, manager: client.mt.network }, async () => {
+      methods.push(request._)
+      switch (request._) {
+        case 'auth.exportLoginToken':
+          return methods.length === 1
+            ? { _: 'auth.loginToken', expires: Math.floor(Date.now() / 1000) + 30, token }
+            : { _: 'auth.loginTokenMigrateTo', dcId: 4, token }
+        case 'auth.importLoginToken':
+          assert.equal(dc, 4)
+          assert.deepEqual(request.token, token)
+          return { _: 'auth.loginTokenSuccess' }
+        case 'users.getUsers':
+          assert.equal(authorized, true)
+          profile.resolve()
+          return untilAborted(abort.signal, () => new Promise(() => {}))
+        default:
+          assert.fail(`Unexpected Telegram request ${request._}`)
+      }
+    })) as typeof client.call
+    const signingIn = signInQr(client, {
+      abortSignal: abort.signal,
+      onUrlUpdated: () => queueMicrotask(() => client.onServerUpdate.emit({
+        _: 'updateShort', update: { _: 'updateLoginToken' }, date: Math.floor(Date.now() / 1000),
+      })),
+    })
+    await Promise.race([profile.promise, signingIn])
+    assert.deepEqual(methods, ['auth.exportLoginToken', 'auth.exportLoginToken', 'auth.importLoginToken', 'users.getUsers'])
+    abort.abort()
+    await assert.rejects(signingIn, { name: 'AbortError' })
+  } finally {
+    abort.abort()
+    await client.destroy()
+  }
+})
 
 test('Telegram direct reads align ranges, refresh stale file references and reuse the block', async () => {
   const { client, reads } = fixture()

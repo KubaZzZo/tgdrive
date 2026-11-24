@@ -22,22 +22,28 @@ SDK_URL = "https://telegram.org/js/telegram-web-app.js?65"
 PASSWORD = "correct-horse-battery-staple"
 API_ID = 12345
 API_HASH = "a" * 32
+PHONE = "+8613800138000"
 SESSION_KEY = "tgdrive_telegram_direct_session"
 
 MOCK_TELEGRAM = """
-const state = window.telegramFixture = { held: 0, aborted: 0, mode: 'play', passwordChecks: 0, revoked: [] };
+const state = window.telegramFixture = {
+  held: 0, aborted: 0, mode: 'play', passwordChecks: 0, revoked: [], codeRequests: 0,
+  qrCanceled: 0, destroyed: 0,
+};
 const media = Uint8Array.from(atob(MEDIA_DATA), char => char.charCodeAt(0));
-export function createTelegramDirectClient(apiId, apiHash) {
+export function createTelegramDirectClient(apiId, apiHash, { onQrAuthorized } = {}) {
   state.credentials = [apiId, apiHash];
   return {
+    onQrAuthorized,
     importSession: async (session) => { state.imported = session; },
     exportSession: async () => window.fixtureSession ?? 'fixture',
-    destroy: async () => {},
+    destroy: async () => { state.destroyed++; },
   };
 }
 export async function sendCode(_client, { phone }) {
   state.phone = phone;
-  return { type: 'code', phoneCodeHash: 'fixture-code' };
+  state.codeRequests++;
+  return { type: window.fixtureCodeDelivery ?? 'app', phoneCodeHash: 'fixture-code' };
 }
 export async function signIn(_client, { phoneCode, phoneCodeHash }) {
   if (phoneCode !== '12345' || phoneCodeHash !== 'fixture-code') throw new Error('Wrong code');
@@ -47,6 +53,33 @@ export function telegramPasswordRequired(error) { return error?.message === '2fa
 export async function checkPassword(_client, { password }) {
   if (password !== 'fixture-password') throw new Error('Wrong password');
   state.passwordChecks++;
+}
+export function signInQr(client, { abortSignal, onUrlUpdated, onQrScanned }) {
+  if (!client.onQrAuthorized) throw new Error('Login token updates are disabled');
+  let sequence = 0;
+  state.rotateQr = () => onUrlUpdated(`tg://login?token=Zml4dHVyZS0${++sequence}`, new Date(Date.now() + 30_000));
+  state.rotateQr();
+  return new Promise((resolve, reject) => {
+    const cancel = () => {
+      state.qrCanceled++;
+      reject(abortSignal.reason);
+    };
+    abortSignal.addEventListener('abort', cancel, { once: true });
+    state.confirmQr = (needsPassword = false, holdProfile = false) => {
+      const finish = (complete) => {
+        abortSignal.removeEventListener('abort', cancel);
+        complete();
+      };
+      onQrScanned();
+      if (needsPassword) return finish(() => reject(new Error('2fa')));
+      client.onQrAuthorized();
+      state.finishQr = () => finish(resolve);
+      if (!holdProfile) state.finishQr();
+    };
+  });
+}
+export async function logOutTelegramDirectClient(client) {
+  state.revoked.push(await client.exportSession());
 }
 export async function revokeTelegramDirectAuthorization(saved) {
   state.revoked.push(saved.session);
@@ -132,19 +165,26 @@ def open_app(
 
 
 def open_authorization(page):
-    page.get_by_role("button", name="工具", exact=True).click()
-    page.get_by_role("button", name="Telegram 账号", exact=True).click()
+    tools = page.get_by_role("button", name="工具", exact=True)
+    account = page.get_by_role("button", name="Telegram 账号", exact=True)
+    expect(tools.or_(account).filter(visible=True).first).to_be_visible()
+    if not account.is_visible():
+        tools.click()
+    account.click()
     page.get_by_role("button", name="Telegram 直连授权", exact=True).click()
     return page.get_by_role("dialog", name="Telegram 直连授权")
 
 
 def request_code(page, dialog):
     phone = dialog.get_by_label("Telegram 手机号")
-    phone.fill("+15555550123")
+    phone.fill(PHONE)
     with page.expect_response("**/api/telegram-direct/credentials") as result:
         dialog.get_by_role("button", name="获取验证码").click()
     assert result.value.ok and result.value.request.method == "POST"
     expect(dialog.get_by_label("Telegram 验证码")).to_be_visible()
+
+
+def enter_code(dialog):
     dialog.get_by_label("Telegram 验证码").fill("12345")
     dialog.get_by_role("button", name="授权此设备", exact=True).click()
     dialog.get_by_label("Telegram 两步验证密码").fill("fixture-password")
@@ -158,8 +198,10 @@ def verify_configured_credentials(browser, base, mock):
     expect(dialog.get_by_label("API Hash")).to_have_count(0)
     assert page.evaluate("window.telegramFixture === undefined")
     request_code(page, dialog)
+    expect(dialog.get_by_text("打开官方「Telegram」对话查收验证码", exact=False)).to_be_visible()
+    enter_code(dialog)
     assert page.evaluate("window.telegramFixture.credentials") == [API_ID, API_HASH]
-    assert page.evaluate("window.telegramFixture.phone") == "+15555550123"
+    assert page.evaluate("window.telegramFixture.phone") == PHONE
     dialog.get_by_role("button", name="授权此设备", exact=True).click()
     expect(dialog.get_by_text("当前设备已授权 Telegram 直连播放。")).to_be_visible()
     storage_state = page.context.storage_state()
@@ -195,6 +237,133 @@ def verify_configured_credentials(browser, base, mock):
     page.close()
 
 
+def start_qr(dialog):
+    dialog.get_by_role("button", name="Telegram 扫码授权", exact=True).click()
+    image = dialog.get_by_role("img", name="Telegram 登录二维码", exact=True)
+    expect(image).to_be_visible()
+    assert image.evaluate("async img => { await img.decode(); return img.naturalWidth; }") > 0
+    return image
+
+
+def verify_qr_authorization(browser, base, mock):
+    page, _ = open_app(browser, base, mock, transport="worker", saved_session=False, direct=None)
+    dialog = open_authorization(page)
+    image = start_qr(dialog)
+    assert page.evaluate("window.telegramFixture.credentials") == [API_ID, API_HASH]
+    assert page.evaluate("window.telegramFixture.codeRequests") == 0
+    original = image.get_attribute("src")
+    page.evaluate("window.telegramFixture.rotateQr()")
+    expect(image).not_to_have_attribute("src", original)
+    dialog.get_by_role("button", name="返回授权方式").click()
+    page.wait_for_function(
+        "window.telegramFixture.qrCanceled === 1 && window.telegramFixture.destroyed === 1"
+    )
+    assert page.evaluate("key => localStorage.getItem(key)", SESSION_KEY) is None
+
+    page.evaluate("window.fixtureCodeDelivery = 'sms'")
+    request_code(page, dialog)
+    expect(dialog.get_by_text("Telegram 已通过短信发送验证码", exact=False)).to_be_visible()
+    start_qr(dialog)
+    assert page.evaluate("window.telegramFixture.codeRequests") == 1
+    page.evaluate("window.telegramFixture.confirmQr(true)")
+    dialog.get_by_label("Telegram 两步验证密码").fill("fixture-password")
+    dialog.get_by_role("button", name="授权此设备", exact=True).click()
+    expect(dialog.get_by_text("当前设备已授权 Telegram 直连播放。")).to_be_visible()
+    assert page.evaluate("window.telegramFixture.passwordChecks") == 1
+    page.reload()
+    expect(
+        open_authorization(page).get_by_text("当前设备已授权 Telegram 直连播放。")
+    ).to_be_visible()
+    page.close()
+
+
+def verify_shared_qr_authorization(browser, base, mock):
+    with browser.new_context() as context:
+        mock_telegram(context, mock)
+        assert context.request.post(base + "/api/login", data={"password": PASSWORD}).ok
+        first, second = context.new_page(), context.new_page()
+        first.goto(base + "/drive")
+        second.goto(base + "/drive")
+        second.evaluate("window.fixtureSession = 'fixture-second'")
+        first_dialog = open_authorization(first)
+        second_dialog = open_authorization(second)
+        start_qr(first_dialog)
+        start_qr(second_dialog)
+        for page, dialog in ((first, first_dialog), (second, second_dialog)):
+            page.evaluate("window.telegramFixture.confirmQr()")
+            expect(dialog.get_by_text("当前设备已授权 Telegram 直连播放。")).to_be_visible()
+        second.wait_for_function("window.telegramFixture.revoked.includes('fixture-second')")
+        assert (
+            second.evaluate("key => JSON.parse(localStorage.getItem(key)).session", SESSION_KEY)
+            == "fixture"
+        )
+
+
+def verify_confirmed_qr_cancellation(browser, base, mock, *, mini_app):
+    page, _ = open_app(
+        browser, base, mock, transport="worker", saved_session=False, direct=None, mini_app=mini_app
+    )
+    dialog = open_authorization(page)
+    start_qr(dialog)
+    page.evaluate("window.telegramFixture.confirmQr(false, true)")
+    expect(dialog.get_by_role("status")).to_have_text("正在确认 Telegram 授权…")
+    dialog.get_by_role("button", name="返回授权方式").click()
+    page.wait_for_function("window.telegramFixture.destroyed === 1")
+    assert page.evaluate("window.telegramFixture.revoked") == ["fixture"]
+    assert page.evaluate("key => localStorage.getItem(key)", SESSION_KEY) is None
+    page.close()
+
+
+def verify_qr_invalidated_by_revocation(browser, base, mock, *, logout, needs_password=False):
+    with browser.new_context(viewport={"width": 390, "height": 844}) as context:
+        mock_telegram(context, mock)
+        assert context.request.post(base + "/api/login", data={"password": PASSWORD}).ok
+        first, second = context.new_page(), context.new_page()
+        first.goto(base + MINI_APP)
+        second.goto(base + MINI_APP)
+        first_dialog, second_dialog = open_authorization(first), open_authorization(second)
+        start_qr(first_dialog)
+        first.evaluate(
+            "needsPassword => window.telegramFixture.confirmQr(needsPassword, true)", needs_password
+        )
+        if needs_password:
+            expect(first_dialog.get_by_label("Telegram 两步验证密码")).to_be_visible()
+        else:
+            expect(first_dialog.get_by_role("status")).to_have_text("正在确认 Telegram 授权…")
+
+        start_qr(second_dialog)
+        second.evaluate("window.telegramFixture.confirmQr()")
+        expect(second_dialog.get_by_text("当前设备已授权 Telegram 直连播放。")).to_be_visible()
+        if logout:
+            for dialog in (
+                second_dialog,
+                second.get_by_role("dialog", name="Telegram 账号与存储频道"),
+            ):
+                dialog.get_by_role("button", name="关闭", exact=True).click()
+            second.get_by_role("button", name="工具", exact=True).click()
+            second.get_by_role("button", name="退出", exact=True).click()
+            expect(second).to_have_url(re.compile(r"/login(?:\?|$)"))
+            assert context.request.post(base + "/api/login", data={"password": PASSWORD}).ok
+        else:
+            second_dialog.get_by_role("button", name="撤销直连授权").click()
+            expect(second_dialog.get_by_label("Telegram 手机号")).to_be_visible()
+        assert second.evaluate("window.telegramFixture.revoked") == ["fixture"]
+
+        if needs_password:
+            first_dialog.get_by_label("Telegram 两步验证密码").fill("fixture-password")
+            first_dialog.get_by_role("button", name="授权此设备", exact=True).click()
+        else:
+            first.evaluate("window.telegramFixture.finishQr()")
+        expect(first_dialog.get_by_role("alert")).to_have_text("设备直连已撤销，请重新授权。")
+        expect(first_dialog.get_by_label("Telegram 手机号")).to_be_visible()
+        first.wait_for_function("window.telegramFixture.destroyed === 1")
+        assert first.evaluate("window.telegramFixture.passwordChecks") == 0
+        assert first.evaluate("window.telegramFixture.revoked") == (
+            [] if needs_password else ["fixture"]
+        )
+        assert first.evaluate("key => JSON.parse(localStorage.getItem(key))", SESSION_KEY) is None
+
+
 def verify_shared_authorization(browser, base, mock):
     with browser.new_context(viewport={"width": 390, "height": 844}) as context:
         mock_telegram(context, mock)
@@ -206,8 +375,9 @@ def verify_shared_authorization(browser, base, mock):
         second.evaluate("window.fixtureSession = 'fixture-second'")
         first_dialog = open_authorization(first)
         second_dialog = open_authorization(second)
-        request_code(first, first_dialog)
-        request_code(second, second_dialog)
+        for page, dialog in ((first, first_dialog), (second, second_dialog)):
+            request_code(page, dialog)
+            enter_code(dialog)
 
         for dialog in (first_dialog, second_dialog):
             dialog.get_by_role("button", name="授权此设备", exact=True).click()
@@ -419,6 +589,15 @@ def main():
                 verify_unauthorized_playback(browser, base, mock, mini_app=False)
                 verify_default_playback(browser, base, mock)
                 verify_configured_credentials(browser, base, mock)
+                verify_qr_authorization(browser, base, mock)
+                verify_shared_qr_authorization(browser, base, mock)
+                verify_confirmed_qr_cancellation(browser, base, mock, mini_app=False)
+                verify_confirmed_qr_cancellation(browser, base, mock, mini_app=True)
+                verify_qr_invalidated_by_revocation(browser, base, mock, logout=False)
+                verify_qr_invalidated_by_revocation(browser, base, mock, logout=True)
+                verify_qr_invalidated_by_revocation(
+                    browser, base, mock, logout=False, needs_password=True
+                )
                 verify_shared_authorization(browser, base, mock)
                 app.dependency_overrides.pop(get_settings)
                 verify_timer(browser, base, mock)
@@ -430,7 +609,7 @@ def main():
             thread.join(timeout=10)
             assert not thread.is_alive(), "Fixture server did not shut down"
     print(
-        "Verified prompt-free playback, device authorization, direct playback, timers and logout."
+        "Verified prompt-free playback, code delivery, QR authorization and revocation, timers and logout."
     )
 
 

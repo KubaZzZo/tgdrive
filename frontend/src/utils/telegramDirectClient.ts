@@ -1,20 +1,39 @@
-import { BaseTelegramClient, MemoryStorage, tl } from '@mtcute/web'
+import { BaseTelegramClient, MemoryStorage, networkMiddlewares, tl } from '@mtcute/web'
 import { getMessages, iterDialogs } from '@mtcute/web/methods.js'
 import type { DriveItem } from '@/api/types'
 import type { TelegramDirectSession } from './telegramDirectSession'
 import { untilAborted } from './telegramMedia'
 import type { TelegramMediaSource } from './telegramMedia'
 
-export { checkPassword, sendCode, signIn } from '@mtcute/web/methods.js'
+export { checkPassword, sendCode, signIn, signInQr } from '@mtcute/web/methods.js'
 
 const blockSize = 256 * 1024
 
-export function createTelegramDirectClient(apiId: number, apiHash: string): BaseTelegramClient {
+export function createTelegramDirectClient(
+  apiId: number,
+  apiHash: string,
+  { onQrAuthorized }: { onQrAuthorized?: () => void } = {},
+): BaseTelegramClient {
   return new BaseTelegramClient({
     apiId,
     apiHash,
     storage: new MemoryStorage(),
-    disableUpdates: true,
+    // QR login needs the server's updateLoginToken notification.
+    disableUpdates: !onQrAuthorized,
+    updates: false,
+    network: onQrAuthorized ? {
+      middlewares: [
+        async (context, next) => {
+          const result = await next(context)
+          // signInQr fetches the user profile after Telegram has authorized the session.
+          if (result && typeof result === 'object' && '_' in result && result._ === 'auth.loginTokenSuccess') {
+            onQrAuthorized()
+          }
+          return result
+        },
+        ...networkMiddlewares.basic(),
+      ],
+    } : undefined,
     logLevel: 0,
     initConnectionOptions: { deviceModel: 'TG Drive Browser', appVersion: 'TG Drive' },
   })
@@ -28,15 +47,16 @@ export function telegramSessionExpired(error: unknown): boolean {
   return tl.RpcError.is(error) && error.code === 401
 }
 
+export async function logOutTelegramDirectClient(client: BaseTelegramClient, signal: AbortSignal): Promise<void> {
+  await untilAborted(signal, () => client.call({ _: 'auth.logOut' }, { abortSignal: signal, maxRetryCount: 0 }))
+}
+
 export async function revokeTelegramDirectAuthorization(saved: TelegramDirectSession, signal: AbortSignal): Promise<void> {
   signal.throwIfAborted()
   const client = createTelegramDirectClient(saved.apiId, '')
   try {
-    await untilAborted(signal, async () => {
-      await client.importSession(saved.session)
-      signal.throwIfAborted()
-      await client.call({ _: 'auth.logOut' }, { abortSignal: signal, maxRetryCount: 0 })
-    })
+    await untilAborted(signal, () => client.importSession(saved.session))
+    await logOutTelegramDirectClient(client, signal)
   } catch (cause) {
     if (!telegramSessionExpired(cause)) throw cause
   } finally {
@@ -49,6 +69,7 @@ export function telegramDirectError(error: unknown): string {
   if (tl.RpcError.is(error, 'PHONE_NUMBER_INVALID')) return '请输入带国家或地区区号的 Telegram 手机号。'
   if (tl.RpcError.is(error, 'PHONE_CODE_INVALID')) return '验证码不正确，请重新输入。'
   if (tl.RpcError.is(error, 'PHONE_CODE_EXPIRED')) return '验证码已过期，请重新获取。'
+  if (tl.RpcError.is(error, 'AUTH_TOKEN_EXPIRED')) return '二维码已过期，请重新扫码授权。'
   if (tl.RpcError.is(error, 'PASSWORD_HASH_INVALID')) return '两步验证密码不正确。'
   if (tl.RpcError.is(error, 'CHANNEL_PRIVATE')) return '此 Telegram 账号无权查看原频道。'
   if (tl.RpcError.is(error) && error.code === 420) return 'Telegram 操作过于频繁，请稍后重试。'
