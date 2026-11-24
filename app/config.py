@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -101,6 +102,10 @@ class Settings:
     tg_mode: str = field(default_factory=lambda: os.getenv("TG_MODE", "user").strip().lower())
     tg_api_id: int = field(default_factory=lambda: _env_int("TG_API_ID", 0))
     tg_api_hash: str = field(default_factory=lambda: os.getenv("TG_API_HASH", "").strip())
+    tg_direct_api_id: int = field(default_factory=lambda: _env_int("TG_DIRECT_API_ID", 0))
+    tg_direct_api_hash: str = field(
+        default_factory=lambda: os.getenv("TG_DIRECT_API_HASH", "").strip(), repr=False
+    )
     tg_bot_token: str = field(default_factory=lambda: os.getenv("TG_BOT_TOKEN", "").strip())
     tg_bot_fallback_token: str = field(
         default_factory=lambda: os.getenv("TG_BOT_FALLBACK_TOKEN", "").strip(), repr=False
@@ -176,6 +181,10 @@ class Settings:
         return bool(self.google_drive_dav_url)
 
     @property
+    def telegram_direct_configured(self) -> bool:
+        return bool(self.tg_direct_api_id and self.tg_direct_api_hash)
+
+    @property
     def is_production(self) -> bool:
         return self.app_env in {"prod", "production"}
 
@@ -218,6 +227,11 @@ class Settings:
             logger.warning("APP_PASSWORD uses the insecure default; set a private password")
         if self.app_secret == "change-this-secret-in-env":
             logger.warning("APP_SECRET uses the insecure default; set a random secret")
+        if (self.tg_direct_api_id or self.tg_direct_api_hash) and not (
+            1 <= self.tg_direct_api_id <= 2**31 - 1
+            and re.fullmatch(r"[0-9a-fA-F]{32}", self.tg_direct_api_hash)
+        ):
+            raise RuntimeError("TG_DIRECT_API_ID 和 TG_DIRECT_API_HASH 必须成对配置且格式有效")
         if self.google_drive_enabled:
             url = urlsplit(self.google_drive_dav_url)
             if (

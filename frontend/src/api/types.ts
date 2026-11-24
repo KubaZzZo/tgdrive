@@ -121,6 +121,7 @@ export interface Meta {
   app_name: string
   version: string
   authenticated: boolean
+  telegram_direct_configured?: boolean
   storage: StorageStatus
   chunk_size: number
   max_file_size: number

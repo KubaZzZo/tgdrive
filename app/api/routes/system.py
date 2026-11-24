@@ -37,6 +37,7 @@ async def meta(
     settings: Settings = Depends(get_settings),
     storage: TelegramStorage = Depends(get_storage),
 ) -> dict:
+    authenticated = is_authenticated(request)
     return {
         "features": {
             "people": settings.people_enabled,
@@ -46,13 +47,24 @@ async def meta(
         },
         "app_name": settings.app_name,
         "version": request.app.version,
-        "authenticated": is_authenticated(request),
+        "authenticated": authenticated,
+        "telegram_direct_configured": authenticated and settings.telegram_direct_configured,
         "storage": storage.status(),
         "chunk_size": settings.upload_chunk_size,
         "max_file_size": settings.max_file_size,
         "workspace_is_default": request.state.telegram_runtime.db
         is request.app.state.accounts.control,
     }
+
+
+@router.post("/telegram-direct/credentials", dependencies=[Depends(require_auth)])
+def telegram_direct_credentials(settings: Settings = Depends(get_settings)) -> JSONResponse:
+    if not settings.telegram_direct_configured:
+        raise HTTPException(404, "后台尚未配置 Telegram 直连授权")
+    return JSONResponse(
+        content={"api_id": settings.tg_direct_api_id, "api_hash": settings.tg_direct_api_hash},
+        headers={"Cache-Control": "private, no-store", "Cloudflare-CDN-Cache-Control": "no-store"},
+    )
 
 
 @router.get("/health/live")

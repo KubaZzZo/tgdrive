@@ -71,6 +71,47 @@ def test_list_items_links_only_complete_single_message_videos(authenticated_clie
     assert linked == {single["id"]: "https://t.me/c/1234567890/41?single&t=0"}
 
 
+def test_telegram_direct_credentials_require_login_and_disable_cache(workdir):
+    api_hash = "a" * 32
+    settings = make_settings(workdir, tg_direct_api_id=12345, tg_direct_api_hash=api_hash)
+    app = create_app(settings, storage=FakeTelegramStorage())
+    path = "/api/telegram-direct/credentials"
+    with TestClient(app) as client:
+        public_meta = client.get("/api/meta")
+        assert public_meta.json()["telegram_direct_configured"] is False
+        assert api_hash not in public_meta.text
+        assert client.post(path).status_code == 401
+        assert client.post("/api/login", json={"password": PASSWORD}).status_code == 200
+
+        private_meta = client.get("/api/meta")
+        assert private_meta.json()["telegram_direct_configured"] is True
+        assert api_hash not in private_meta.text
+        assert client.get(path).status_code == 405
+        response = client.post(path)
+        assert response.status_code == 200
+        assert response.json() == {"api_id": 12345, "api_hash": api_hash}
+        assert response.headers["Cache-Control"] == "private, no-store"
+        assert response.headers["Cloudflare-CDN-Cache-Control"] == "no-store"
+
+        assert client.post("/api/logout").status_code == 200
+        assert client.post(path).status_code == 401
+
+
+def test_telegram_direct_credentials_are_optional(authenticated_client):
+    client, _, _ = authenticated_client
+    assert client.get("/api/meta").json()["telegram_direct_configured"] is False
+    assert client.post("/api/telegram-direct/credentials").status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("api_id", "api_hash"), [(12345, ""), (0, "a" * 32), (2**31, "a" * 32), (12345, "x" * 32)]
+)
+def test_telegram_direct_credentials_must_be_a_valid_pair(workdir, api_id, api_hash):
+    settings = make_settings(workdir, tg_direct_api_id=api_id, tg_direct_api_hash=api_hash)
+    with pytest.raises(RuntimeError, match="TG_DIRECT_API_ID 和 TG_DIRECT_API_HASH"):
+        settings.validate()
+
+
 def test_move_and_rename_are_atomic(authenticated_client):
     client, app, _ = authenticated_client
     db = app.state.db

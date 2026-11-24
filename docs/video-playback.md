@@ -12,7 +12,9 @@
 
 单条频道消息存有完整视频时，点击「Telegram 直连播放」会在小程序里的 TG Drive 播放器打开。设备通过 Telegram WebSocket 按区间读取视频，播放设置里可以设定时关闭。到点关闭播放器后，浏览器结束视频读取。分段视频由 TG Drive 服务器按原文件顺序拼接并播放。 [Telegram 浏览器传输协议](https://core.telegram.org/mtproto/transports) · [Telegram 文件读取接口](https://core.telegram.org/method/upload.getFile)
 
-首次直连时，在页面输入从 `my.telegram.org` 获取的 API ID 和 API Hash，再用有权查看存储频道的个人 Telegram 账号完成验证码和两步验证。浏览器把授权请求直接发给 Telegram，并可在同一个小程序标签页内复用会话。退出 TG Drive 或更换直连账号时会向 Telegram 撤销直连会话。关闭标签页后可以在 Telegram 的「设备」中结束对应的 TG Drive Browser 会话。 [Telegram 用户授权](https://core.telegram.org/api/auth)
+首次直连时，可在页面输入从 `my.telegram.org` 获取的 API ID 和 API Hash，再用有权查看存储频道的个人 Telegram 账号完成验证码和两步验证。浏览器把授权请求直接发给 Telegram，并可在同一个小程序标签页内复用会话。退出 TG Drive 或更换直连账号时会向 Telegram 撤销直连会话。关闭标签页后可以在 Telegram 的「设备」中结束对应的 TG Drive Browser 会话。 [Telegram 用户授权](https://core.telegram.org/api/auth)
+
+个人部署可在服务端环境中设置 `TG_DIRECT_API_ID` 和 `TG_DIRECT_API_HASH`，省去在小程序中输入这两项的步骤。小程序在登录 TG Drive 后点击「获取验证码」时，通过同源 API 读取配置。该响应应绕过 CDN 缓存。首次授权仍需按 Telegram 的提示完成手机号验证和两步验证。
 
 直连播放需要 HTTPS、WebAssembly，以及设备能访问 Telegram WebSocket 数据中心。支持 Service Worker 的 WebView 使用浏览器的 Range 播放。无法启用 Service Worker 时，支持 Media Source 的 WebView 可在浏览器内实时封装带索引的普通 MP4，具体编码由设备解码能力决定。让 `/telegram-media-sw.js` 遵循源站的重新验证策略。 [WebKit Media Source 支持](https://webkit.org/blog/14735/webkit-features-in-safari-17-1/)
 
