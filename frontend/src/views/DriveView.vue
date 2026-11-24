@@ -12,7 +12,7 @@ import { useToastStore } from '@/stores/toast'
 import { useUploadStore } from '@/stores/uploads'
 import { formatBytes, previewKind } from '@/utils/format'
 import { groupFolderFiles } from '@/utils/folderUpload'
-import { openTelegramVideo, telegramVideoUrl } from '@/utils/telegramMiniApp'
+import { openTelegramVideo } from '@/utils/telegramMiniApp'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import BaseModal from '@/components/ui/BaseModal.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
@@ -87,14 +87,11 @@ function breadcrumb(id: string | null): void {
   void drive.openFolder(id)
 }
 function onAction(action: FileAction, item: DriveItem): void {
-  if (action === 'telegram-direct' && telegramVideoUrl(item)) {
+  if (action === 'telegram-direct' && item.telegram_video_url) {
     closePreview()
     telegramTarget.value = item
   }
-  if (action === 'telegram') {
-    const url = telegramVideoUrl(item)
-    if (url) openTelegramVideo(url)
-  }
+  if (action === 'telegram' && item.telegram_video_url) openTelegramVideo(item.telegram_video_url)
   if (action === 'download') download(item)
   if (action === 'share') shareTarget.value = item
   if (action === 'rename') renameTarget.value = item
@@ -138,6 +135,7 @@ const labelTarget = ref<DriveItem | null>(null)
 const previewTarget = ref<DriveItem | null>(null)
 const previewOpen = ref(false)
 const telegramTarget = ref<DriveItem | null>(null)
+const closeDeadline = ref(0)
 const downloadStatus = ref('')
 
 const isEmpty = computed(() => !drive.loading && !drive.error && drive.items.length === 0)
@@ -201,11 +199,18 @@ async function openFolder(item: DriveItem): Promise<void> {
   await drive.openFolder(item.id)
 }
 
-function openItem(item: DriveItem): void {
+function openItem(item: DriveItem, deadline = 0): void {
   telegramTarget.value = null
+  closeDeadline.value = deadline
   previewTarget.value = item
   previewOpen.value = true
   downloadStatus.value = ''
+}
+
+function playViaServer(message?: string): void {
+  if (!telegramTarget.value) return
+  openItem(telegramTarget.value, closeDeadline.value)
+  if (message) toast.push(message)
 }
 
 function previewItem(item: DriveItem): void {
@@ -327,6 +332,7 @@ function closePreview(): void {
   previewOpen.value = false
   previewTarget.value = null
   telegramTarget.value = null
+  closeDeadline.value = 0
 }
 
 watch(() => route.fullPath, () => {
@@ -692,9 +698,11 @@ watch(() => route.fullPath, () => {
     <AdvancedSearchDialog v-if="advancedOpen" :filters="drive.filters"
       @close="advancedOpen = false" @apply="applyFilters" />
     <TelegramDirectPlayer v-if="telegramTarget" :key="telegramTarget.id" :item="telegramTarget"
-      @close="closePreview" @server-fallback="openItem(telegramTarget)" />
+      v-model:close-deadline="closeDeadline"
+      @close="closePreview" @server-fallback="playViaServer" />
     <PreviewModal
       v-if="previewOpen && previewTarget"
+      v-model:close-deadline="closeDeadline"
       :open="previewOpen"
       :item="previewTarget"
       :download-pending="!!previewTarget && pendingDownloads.has(previewTarget.id)"

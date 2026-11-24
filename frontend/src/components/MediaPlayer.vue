@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { mediaFailure } from '@/api/client'
 import { mediaTime, playbackPosition, savePlayback } from '@/utils/playback'
 import { formatBytes } from '@/utils/format'
@@ -12,6 +12,7 @@ const props = withDefaults(defineProps<{
   openSource?: (element: HTMLMediaElement, signal: AbortSignal) => Promise<void>
 }>(), { allowDownload: true })
 const emit = defineEmits<{ download: []; close: [] }>()
+const closeDeadline = defineModel<number>('closeDeadline', { default: 0 })
 type SafariVideo = HTMLVideoElement & {
   webkitDisplayingFullscreen?: boolean
   webkitSupportsFullscreen?: boolean
@@ -55,7 +56,6 @@ const closeTimerPresets = [15, 30, 60]
 const closeTimerChoice = ref<number | 'custom'>(15)
 const customCloseMinutes = ref<number | string>('')
 const closeSeconds = ref(0)
-let closeDeadline = 0
 let closeTimeout: ReturnType<typeof setTimeout> | undefined
 let orientationLocked = false
 const videoElement = () => props.kind === 'video' ? player.value as SafariVideo | null : null
@@ -73,14 +73,15 @@ let startedPlayback = false
 let releaseCovers: (() => void) | undefined
 
 function cancelCloseTimer(): void {
-  clearTimeout(closeTimeout)
-  closeDeadline = 0
-  closeSeconds.value = 0
+  closeDeadline.value = 0
 }
 function updateCloseTimer(): void {
-  if (!closeDeadline) return
   clearTimeout(closeTimeout)
-  const remaining = closeDeadline - Date.now()
+  if (!closeDeadline.value) {
+    closeSeconds.value = 0
+    return
+  }
+  const remaining = closeDeadline.value - Date.now()
   if (remaining <= 0) {
     cancelCloseTimer()
     emit('close')
@@ -93,9 +94,9 @@ function startCloseTimer(): void {
   const minutes = closeTimerChoice.value === 'custom' ? Number(customCloseMinutes.value) : closeTimerChoice.value
   const deadline = Date.now() + minutes * 60_000
   if (!Number.isInteger(minutes) || minutes < 1 || !Number.isSafeInteger(deadline)) return
-  closeDeadline = deadline
-  updateCloseTimer()
+  closeDeadline.value = deadline
 }
+watch(closeDeadline, updateCloseTimer)
 function save(): void {
   const media = player.value
   if (!media || !restored || media.seeking || (resumePending && media.currentTime < 2)) return
@@ -370,13 +371,16 @@ onMounted(() => {
   start()
   window.addEventListener('pagehide', save)
   document.addEventListener('visibilitychange', save)
-  if (props.kind === 'video') document.addEventListener('visibilitychange', updateCloseTimer)
+  if (props.kind === 'video') {
+    updateCloseTimer()
+    document.addEventListener('visibilitychange', updateCloseTimer)
+  }
   document.addEventListener('fullscreenchange', syncPresentation)
 })
 onBeforeUnmount(() => {
   save()
   disposed = true
-  cancelCloseTimer()
+  clearTimeout(closeTimeout)
   clearTimeout(startupTimer)
   controller.abort()
   window.removeEventListener('pagehide', save)

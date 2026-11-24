@@ -1,38 +1,29 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { defineAsyncComponent, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import type { BaseTelegramClient } from '@mtcute/web'
 import { api } from '@/api/client'
 import type { DriveItem } from '@/api/types'
 import BaseModal from '@/components/ui/BaseModal.vue'
-import { useAuthStore } from '@/stores/auth'
-import { clearTelegramDirectSession, readTelegramDirectSession, revokeTelegramDirectSession, saveTelegramDirectSession } from '@/utils/telegramDirectSession'
-import { openTelegramMedia, prepareTelegramMedia, untilAborted } from '@/utils/telegramMedia'
+import { clearTelegramDirectSession, readTelegramDirectSession, withTelegramDirectSessionLock } from '@/utils/telegramDirectSession'
+import type { TelegramDirectSession } from '@/utils/telegramDirectSession'
+import { openTelegramMedia, prepareTelegramMedia } from '@/utils/telegramMedia'
 import { openTelegramVideo } from '@/utils/telegramMiniApp'
 
 const MediaPlayer = defineAsyncComponent(() => import('@/components/MediaPlayer.vue'))
 const props = defineProps<{ item: DriveItem }>()
-const emit = defineEmits<{ close: []; serverFallback: [] }>()
-const auth = useAuthStore()
-const useConfiguredApi = computed(() => auth.authenticated && auth.meta?.telegram_direct_configured === true)
+const emit = defineEmits<{ close: []; serverFallback: [message?: string] }>()
+const closeDeadline = defineModel<number>('closeDeadline', { default: 0 })
 
-const stage = ref<'opening' | 'credentials' | 'code' | 'password' | 'playing' | 'failed'>('opening')
-const busy = ref(false)
+const stage = ref<'opening' | 'playing' | 'failed'>('opening')
 const error = ref('')
 const src = ref('')
 const openSource = shallowRef<(element: HTMLMediaElement, signal: AbortSignal) => Promise<void>>()
-const apiIdInput = ref('')
-const apiHash = ref('')
-const phone = ref('')
-const code = ref('')
-const password = ref('')
 
 const lifetime = new AbortController()
 let telegram: typeof import('@/utils/telegramDirectClient') | undefined
 let mp4: typeof import('@/utils/telegramMp4') | undefined
 let client: BaseTelegramClient | undefined
 let playback: AbortController | undefined
-let phoneCodeHash = ''
-let apiId = 0
 
 function releaseClient(): void {
   playback?.abort()
@@ -42,46 +33,14 @@ function releaseClient(): void {
   if (previous) void previous.destroy().catch(() => {})
 }
 
-function showCredentials(): void {
+async function expireSession(saved: TelegramDirectSession): Promise<void> {
   releaseClient()
-  phoneCodeHash = ''
-  code.value = ''
-  password.value = ''
-  error.value = ''
-  stage.value = 'credentials'
+  await withTelegramDirectSessionLock(async () => clearTelegramDirectSession(saved))
+  if (!lifetime.signal.aborted) emit('serverFallback', 'Telegram 直连授权已失效，已改用服务器播放。')
 }
 
-function expireSession(): void {
-  clearTelegramDirectSession()
-  showCredentials()
-  error.value = 'Telegram 授权已过期，请重新授权。'
-}
-
-async function attempt(action: () => Promise<void>): Promise<void> {
-  if (busy.value || lifetime.signal.aborted) return
-  busy.value = true
-  error.value = ''
-  try {
-    await action()
-  } catch (cause) {
-    if (lifetime.signal.aborted) return
-    if (telegram?.telegramSessionExpired(cause)) {
-      expireSession()
-      return
-    }
-    if (stage.value === 'opening') {
-      releaseClient()
-      stage.value = 'failed'
-    }
-    error.value = telegram?.telegramDirectError(cause) ?? '无法加载 Telegram 直连组件，请重试。'
-  } finally {
-    busy.value = false
-  }
-}
-
-async function play(authorizedClient: BaseTelegramClient): Promise<void> {
+async function play(authorizedClient: BaseTelegramClient, saved: TelegramDirectSession): Promise<void> {
   if (!telegram) return
-  stage.value = 'opening'
   const telegramClient = telegram
   const deadline = AbortSignal.any([lifetime.signal, AbortSignal.timeout(30_000)])
   const media = await telegramClient.telegramDirectMedia(authorizedClient, props.item, deadline)
@@ -95,7 +54,7 @@ async function play(authorizedClient: BaseTelegramClient): Promise<void> {
         return await media.read(offset, end, signal)
       } catch (cause) {
         if (!signal.aborted && !connection.signal.aborted && telegramClient.telegramSessionExpired(cause)) {
-          expireSession()
+          await expireSession(saved)
         }
         throw cause
       }
@@ -110,9 +69,15 @@ async function play(authorizedClient: BaseTelegramClient): Promise<void> {
   stage.value = 'playing'
 }
 
-function start(): void {
-  void attempt(async () => {
-    stage.value = 'opening'
+async function start(): Promise<void> {
+  stage.value = 'opening'
+  error.value = ''
+  const saved = readTelegramDirectSession()
+  if (!saved) {
+    emit('serverFallback', '当前设备尚未授权 Telegram 直连，已改用服务器播放。')
+    return
+  }
+  try {
     if (!isSecureContext || typeof AbortSignal.any !== 'function') {
       stage.value = 'failed'
       error.value = '当前 WebView 无法启动 Telegram 直连播放。'
@@ -136,122 +101,25 @@ function start(): void {
     }
     telegram ??= await import('@/utils/telegramDirectClient')
     lifetime.signal.throwIfAborted()
-    const saved = readTelegramDirectSession()
-    if (!saved) { showCredentials(); return }
     const restoring = telegram.createTelegramDirectClient(saved.apiId, '')
     client = restoring
     try { await restoring.importSession(saved.session) }
     catch {
-      if (!lifetime.signal.aborted) {
-        clearTelegramDirectSession()
-        showCredentials()
-      }
+      if (!lifetime.signal.aborted) await expireSession(saved)
       return
     }
-    await play(restoring)
-  })
-}
-
-async function signedIn(authorizedClient: BaseTelegramClient): Promise<void> {
-  lifetime.signal.throwIfAborted()
-  stage.value = 'opening'
-  const session = await authorizedClient.exportSession()
-  lifetime.signal.throwIfAborted()
-  saveTelegramDirectSession({ apiId, session })
-  apiHash.value = ''
-  phoneCodeHash = ''
-  await play(authorizedClient)
-}
-
-function sendCode(): void {
-  void attempt(async () => {
-    const telegramClient = telegram
-    if (!telegramClient) return
-    const abortSignal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(30_000)])
-    const configured = useConfiguredApi.value
-    const credentials = configured
-      ? await api.telegramDirectCredentials(abortSignal).catch(() => null)
-      : { api_id: Number(apiIdInput.value), api_hash: apiHash.value.trim() }
     lifetime.signal.throwIfAborted()
-    if (!credentials) {
-      error.value = '无法读取后台的 Telegram API 配置，请重试。'
+    await play(restoring, saved)
+  } catch (cause) {
+    if (lifetime.signal.aborted) return
+    if (telegram?.telegramSessionExpired(cause)) {
+      await expireSession(saved)
       return
     }
-    const { api_id: id, api_hash: hash } = credentials
-    if (!Number.isInteger(id) || id < 1 || id > 0x7fffffff || !/^[0-9a-f]{32}$/i.test(hash)) {
-      error.value = configured ? '请检查后台的 Telegram API 配置。' : '请输入有效的 Telegram API ID 和 API Hash。'
-      return
-    }
-    apiId = id
     releaseClient()
-    const connecting = telegramClient.createTelegramDirectClient(apiId, hash)
-    client = connecting
-    let result
-    try {
-      result = await untilAborted(abortSignal, () => (
-        telegramClient.sendCode(connecting, { phone: phone.value.trim(), abortSignal })
-      ))
-    } catch (cause) {
-      releaseClient()
-      throw cause
-    }
-    lifetime.signal.throwIfAborted()
-    if ('phoneCodeHash' in result) {
-      if (result.type === 'email_required') {
-        releaseClient()
-        error.value = 'Telegram 要求先设置登录邮箱，请在 Telegram 中完成设置后重试。'
-        return
-      }
-      phoneCodeHash = result.phoneCodeHash
-      stage.value = 'code'
-    } else {
-      await signedIn(connecting)
-    }
-  })
-}
-
-function verifyCode(): void {
-  void attempt(async () => {
-    const signingIn = client
-    if (!signingIn || !telegram) return
-    const abortSignal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(30_000)])
-    try {
-      await telegram.signIn(signingIn, {
-        phone: phone.value.trim(), phoneCodeHash, phoneCode: code.value.trim(), abortSignal,
-      })
-    } catch (cause) {
-      if (!telegram.telegramPasswordRequired(cause)) throw cause
-      stage.value = 'password'
-      return
-    } finally { code.value = '' }
-    await signedIn(signingIn)
-  })
-}
-
-function verifyPassword(): void {
-  void attempt(async () => {
-    const signingIn = client
-    if (!signingIn || !telegram) return
-    const secret = password.value
-    password.value = ''
-    const abortSignal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(30_000)])
-    await telegram.checkPassword(signingIn, { password: secret, abortSignal })
-    await signedIn(signingIn)
-  })
-}
-
-function changeAccount(): void {
-  void attempt(async () => {
-    try {
-      await revokeTelegramDirectSession()
-      lifetime.signal.throwIfAborted()
-      showCredentials()
-    } catch {
-      if (!lifetime.signal.aborted) {
-        error.value = '暂时无法撤销原 Telegram 授权，请检查网络后再更换账号。'
-      }
-    }
-  })
+    stage.value = 'failed'
+    error.value = telegram?.telegramDirectError(cause) ?? '无法加载 Telegram 直连组件，请重试。'
+  }
 }
 
 onMounted(start)
@@ -264,6 +132,7 @@ onBeforeUnmount(() => {
 <template>
   <BaseModal :open="true" :title="item.name" :wide="stage === 'playing'" :media="stage === 'playing'" @close="emit('close')">
     <MediaPlayer v-if="stage === 'playing'"
+      v-model:close-deadline="closeDeadline"
       :src="src" :open-source="openSource" :item-id="item.id" kind="video" :size="item.size"
       :poster="api.thumbnailUrl(item.id, item.updated_at)" :allow-download="false"
       @close="emit('close')">
@@ -273,54 +142,11 @@ onBeforeUnmount(() => {
       </template>
     </MediaPlayer>
     <p v-else-if="stage === 'opening'" class="muted" role="status">正在准备 Telegram 直连播放…</p>
-    <form v-else-if="stage === 'credentials'" class="telegram-auth-form" @submit.prevent="sendCode">
-      <p class="muted">使用已加入原频道的 Telegram 账号授权。</p>
-      <template v-if="!useConfiguredApi">
-        <p class="muted">API ID 和 API Hash 可在 my.telegram.org 查看。</p>
-        <label>API ID <input v-model="apiIdInput" required inputmode="numeric" pattern="[0-9]+" :disabled="busy" /></label>
-        <label>API Hash <input v-model="apiHash" required type="password" autocomplete="off" :disabled="busy" /></label>
-      </template>
-      <label>Telegram 手机号 <input v-model="phone" required type="tel" placeholder="+86…" :disabled="busy" /></label>
-      <button class="primary" type="submit" :disabled="busy">{{ busy ? '正在连接 Telegram…' : '获取验证码' }}</button>
-    </form>
-    <form v-else-if="stage === 'code'" class="telegram-auth-form" @submit.prevent="verifyCode">
-      <p class="muted">输入 Telegram 发给此账号的验证码。</p>
-      <label>Telegram 验证码 <input v-model="code" required autocomplete="one-time-code" :disabled="busy" /></label>
-      <div class="operation-actions">
-        <button class="primary" type="submit" :disabled="busy">{{ busy ? '正在验证…' : '验证并播放' }}</button>
-        <button class="ghost" type="button" :disabled="busy" @click="showCredentials">重新获取</button>
-      </div>
-    </form>
-    <form v-else-if="stage === 'password'" class="telegram-auth-form" @submit.prevent="verifyPassword">
-      <label>Telegram 两步验证密码 <input v-model="password" required type="password" autocomplete="off" :disabled="busy" /></label>
-      <div class="operation-actions">
-        <button class="primary" type="submit" :disabled="busy">{{ busy ? '正在验证…' : '验证并播放' }}</button>
-        <button class="ghost" type="button" :disabled="busy" @click="showCredentials">重新授权</button>
-      </div>
-    </form>
     <p v-if="error" class="inline-error" role="alert">{{ error }}</p>
     <template v-if="stage !== 'playing'" #footer>
-      <button v-if="stage === 'failed'" class="ghost" type="button" :disabled="busy" @click="start">重试直连</button>
-      <button v-if="stage === 'failed' && readTelegramDirectSession()" class="ghost" type="button" :disabled="busy" @click="changeAccount">更换直连账号</button>
+      <button v-if="stage === 'failed'" class="ghost" type="button" @click="start">重试直连</button>
       <button class="ghost" type="button" @click="emit('serverFallback')">经服务器播放</button>
       <button v-if="item.telegram_video_url" class="ghost" type="button" @click="openTelegramVideo(item.telegram_video_url)">在 Telegram 中播放</button>
     </template>
   </BaseModal>
 </template>
-
-<style scoped>
-.telegram-auth-form, .telegram-auth-form label { display: grid; gap: 8px; }
-.telegram-auth-form { gap: 12px; justify-items: start; }
-.telegram-auth-form label { width: 100%; }
-.telegram-auth-form p { margin-block: 0 4px; }
-.telegram-auth-form input {
-  width: 100%;
-  min-height: 42px;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-  color: inherit;
-  font: inherit;
-}
-</style>

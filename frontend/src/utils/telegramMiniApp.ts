@@ -1,5 +1,4 @@
 import type { RouterHistory } from 'vue-router'
-import type { DriveItem } from '@/api/types'
 
 const launchKey = 'tgdrive_telegram_mini_app'
 const sdkUrl = 'https://telegram.org/js/telegram-web-app.js?65'
@@ -16,8 +15,6 @@ declare global {
     Telegram?: { WebApp?: TelegramWebApp }
   }
 }
-
-let inMiniApp = false
 
 function loadSdk(): Promise<void> {
   return new Promise((resolve) => {
@@ -46,7 +43,7 @@ export async function initTelegramMiniApp(history: RouterHistory): Promise<Teleg
     params.has('tgWebAppVersion') && params.has('tgWebAppPlatform')
   )
   const webApp = window.Telegram?.WebApp
-  inMiniApp = launched || Boolean(webApp?.initData || (webApp?.platform && webApp.platform !== 'unknown'))
+  let inMiniApp = launched || Boolean(webApp?.initData || (webApp?.platform && webApp.platform !== 'unknown'))
   try {
     if (inMiniApp) window.sessionStorage.setItem(launchKey, '1')
     else inMiniApp = window.sessionStorage.getItem(launchKey) === '1'
@@ -64,10 +61,6 @@ export async function initTelegramMiniApp(history: RouterHistory): Promise<Teleg
     history.replace(`${url.pathname}${url.search}${url.hash}`)
   }
   return window.Telegram?.WebApp
-}
-
-export function telegramVideoUrl(item: DriveItem): string | undefined {
-  return inMiniApp ? item.telegram_video_url : undefined
 }
 
 export function openTelegramVideo(url: string): void {

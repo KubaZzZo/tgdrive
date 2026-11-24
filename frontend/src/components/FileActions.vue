@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { useAuthStore } from '@/stores/auth'
 import type { DriveItem, FileAction } from '@/api/types'
-import { telegramVideoUrl } from '@/utils/telegramMiniApp'
 import AppIcon from '@/components/ui/AppIcon.vue'
 
 defineProps<{ item: DriveItem }>()
@@ -23,7 +22,7 @@ function choose(action: FileAction, event: Event): void {
     </summary>
     <div class="file-menu-options">
       <template v-if="item.kind === 'file'">
-        <template v-if="telegramVideoUrl(item)">
+        <template v-if="item.telegram_video_url">
           <button type="button" @click="choose('telegram-direct', $event)">Telegram 直连播放</button>
           <button type="button" @click="choose('telegram', $event)">在 Telegram 中播放</button>
         </template>

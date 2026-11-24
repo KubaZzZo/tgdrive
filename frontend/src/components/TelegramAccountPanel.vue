@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api, ApiError, reloadAfterWorkspaceChange } from '@/api/client'
 import type { TelegramAccountStatus, TelegramChannel, TelegramLogin } from '@/api/types'
 import { useAuthStore } from '@/stores/auth'
@@ -7,11 +7,13 @@ import { useSyncStore } from '@/stores/sync'
 import { useUploadStore } from '@/stores/uploads'
 import BaseModal from '@/components/ui/BaseModal.vue'
 
+const TelegramDirectAuthorization = defineAsyncComponent(() => import('@/components/TelegramDirectAuthorization.vue'))
 const auth = useAuthStore()
 const sync = useSyncStore()
 const uploads = useUploadStore()
 const emit = defineEmits<{ close: [] }>()
 const account = ref<TelegramAccountStatus | null>(null)
+const directAuthorizationOpen = ref(false)
 const authRequired = computed(() => sync.status?.state === 'auth_required')
 const connected = computed(() => !authRequired.value && (account.value?.connected ?? auth.storage?.connected))
 const job = ref<TelegramLogin | null>(null)
@@ -178,7 +180,8 @@ onBeforeUnmount(() => { generation++; clearTimeout(timer); password.value = '' }
 </script>
 
 <template>
-  <BaseModal open title="Telegram 账号与存储频道" wide @close="close">
+  <TelegramDirectAuthorization v-if="directAuthorizationOpen" @close="directAuthorizationOpen = false" />
+  <BaseModal v-else open title="Telegram 账号与存储频道" wide @close="close">
     <div class="telegram-panel">
       <p v-if="account"><strong>{{ account.account?.first_name || account.account?.username || '当前账号' }}</strong> · {{ authRequired ? '需要重新登录' : connected ? '已连接' : '未连接' }}<br /><span class="muted">存储频道：{{ account.chat_id || '尚未配置' }}</span></p>
       <p class="muted">每个频道独立保存目录、上传任务和同步记录；切回原频道可继续访问原文件及分享链接。VPS 流量用量始终全局累计。</p>
@@ -221,6 +224,9 @@ onBeforeUnmount(() => { generation++; clearTimeout(timer); password.value = '' }
       </template>
       <button v-if="job" class="ghost" :disabled="busy" @click="close">取消本次登录</button>
     </div>
+    <template v-if="!job" #footer>
+      <button class="ghost" type="button" :disabled="busy" @click="directAuthorizationOpen = true">Telegram 直连授权</button>
+    </template>
   </BaseModal>
 </template>
 
