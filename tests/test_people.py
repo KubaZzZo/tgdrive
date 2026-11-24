@@ -90,6 +90,7 @@ def test_people_history_backfill_and_edits_preserve_renames_and_respect_tombston
     detail = client.get("/api/items", params={"person": "jane doe", "scope": "all"}).json()
     assert detail["person_display_name"] == "简·多伊"
     assert [row["name"] for row in detail["items"]] == ["自定义.mp4"]
+    assert detail["items"][0]["telegram_video_url"] == "https://t.me/c/1234567890/1?single&t=0"
 
     first.edit_date = first.date + timedelta(seconds=1)
     first.message = "现场记录\n\n人物：王小明"

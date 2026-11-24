@@ -13,6 +13,21 @@ from app.core.logging import request_id_ctx, request_log_path
 logger = logging.getLogger("tgdrive.http")
 
 
+def content_security_policy(*, telegram_mini_app: bool = False) -> str:
+    scripts = "'self'"
+    connections = "'self'"
+    if telegram_mini_app:
+        scripts += " https://telegram.org/js/telegram-web-app.js 'wasm-unsafe-eval'"
+        connections += " " + " ".join(
+            f"wss://{dc}.web.telegram.org" for dc in ("pluto", "venus", "aurora", "vesta", "flora")
+        )
+    return (
+        "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
+        f"style-src 'self' 'unsafe-inline'; script-src {scripts}; connect-src {connections}; "
+        "frame-ancestors 'self'"
+    )
+
+
 class RequestContextMiddleware(BaseHTTPMiddleware):
     """Attach a request id and emit one structured access log per API request."""
 
@@ -35,12 +50,7 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
             if path == "/webdav" or path.startswith(("/i/", "/s/", "/webdav/")):
                 response.headers["Cache-Control"] = "private, no-store"
                 response.headers["Cloudflare-CDN-Cache-Control"] = "no-store"
-            response.headers.setdefault(
-                "Content-Security-Policy",
-                "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
-                "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; "
-                "frame-ancestors 'self'",
-            )
+            response.headers.setdefault("Content-Security-Policy", content_security_policy())
             return response
         finally:
             elapsed_ms = round((time.perf_counter() - started) * 1000, 1)

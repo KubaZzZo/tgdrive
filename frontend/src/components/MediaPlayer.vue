@@ -6,10 +6,11 @@ import { formatBytes } from '@/utils/format'
 import { holdCoverQueue } from '@/utils/coverQueue'
 import AppIcon from '@/components/ui/AppIcon.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   src: string; itemId: string; kind: 'video' | 'audio'; size: number
-  poster?: string; downloadPending?: boolean; downloadStatus?: string
-}>()
+  poster?: string; downloadPending?: boolean; downloadStatus?: string; allowDownload?: boolean
+  openSource?: (element: HTMLMediaElement, signal: AbortSignal) => Promise<void>
+}>(), { allowDownload: true })
 const emit = defineEmits<{ download: []; close: [] }>()
 type SafariVideo = HTMLVideoElement & {
   webkitDisplayingFullscreen?: boolean
@@ -259,11 +260,10 @@ function toggleListening(): void {
 function failed(): void {
   const code = player.value?.error?.code
   if (!code || !active) return
-  recover(
-    code === 2
-      ? '媒体传输中断，请重试加载。'
-      : '浏览器无法解码此文件，可以下载后使用本地播放器观看。',
-  )
+  const unsupported = props.allowDownload
+    ? '浏览器无法解码此文件，可以下载后使用本地播放器观看。'
+    : '浏览器无法解码此视频。'
+  recover(code === 2 ? '媒体传输中断，请重试加载。' : unsupported)
 }
 function recover(fallback: string): void {
   if (!active) return
@@ -271,6 +271,7 @@ function recover(fallback: string): void {
   resetMedia()
   loading.value = false
   error.value = fallback
+  if (props.openSource) return
   const signal = controller.signal
   void mediaFailure(props.src, fallback, AbortSignal.any([signal, AbortSignal.timeout(2000)]))
     .then(message => { if (!signal.aborted) error.value = message })
@@ -306,7 +307,8 @@ function startupProgress(): void {
 }
 function waitForStartup(budget: number): void {
   clearTimeout(startupTimer)
-  startupTimer = setTimeout(() => recover('媒体启动超时，请重试或下载后播放。'), budget)
+  const message = props.allowDownload ? '媒体启动超时，请重试或下载后播放。' : 'Telegram 直连播放启动超时。'
+  startupTimer = setTimeout(() => recover(message), budget)
 }
 function start(): void {
   resetMedia()
@@ -322,7 +324,14 @@ function start(): void {
   active = true
   startupStarted = performance.now()
   waitForStartup(startupBudgetMs)
-  player.value.src = props.src
+  if (props.openSource) {
+    const { signal } = controller
+    void props.openSource(player.value, signal).catch((cause) => {
+      if (!signal.aborted) recover(cause instanceof Error ? cause.message : 'Telegram 视频读取中断。')
+    })
+  } else {
+    player.value.src = props.src
+  }
 }
 function retry(): void {
   save()
@@ -446,6 +455,7 @@ onBeforeUnmount(() => {
         <div v-if="error" class="media-error" role="alert">
           <p>{{ error }}</p>
           <button class="ghost" type="button" @click="retry">重新加载</button>
+          <slot name="error-actions" />
         </div>
       </div>
       <div class="media-controls">
@@ -482,7 +492,7 @@ onBeforeUnmount(() => {
             </button>
           </div>
           <div class="media-buttons" role="group" aria-label="播放器操作">
-            <button class="media-secondary" type="button" aria-label="下载文件" :title="downloadPending ? '正在检查下载…' : '下载文件'" :disabled="downloadPending" @click="emit('download')">
+            <button v-if="allowDownload" class="media-secondary" type="button" aria-label="下载文件" :title="downloadPending ? '正在检查下载…' : '下载文件'" :disabled="downloadPending" @click="emit('download')">
               <AppIcon name="download" />
             </button>
             <button
@@ -558,7 +568,7 @@ onBeforeUnmount(() => {
             <button v-if="duration" type="button" @click="restart">从头播放</button>
             <button v-if="kind === 'video'" type="button" @click="rotation = (rotation + 90) % 360">旋转视频 {{ rotation }}°</button>
           </div>
-          <div class="media-buttons media-setting-actions media-compact-actions">
+          <div v-if="allowDownload" class="media-buttons media-setting-actions media-compact-actions">
             <button type="button" :disabled="downloadPending" @click="emit('download')">
               <AppIcon name="download" :size="15" />{{ downloadPending ? '正在检查…' : '下载文件' }}
             </button>

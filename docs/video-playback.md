@@ -6,6 +6,18 @@
 
 下载和在线播放共用 ETag / If-Range 校验。跨 Telegram 分段的读取按文件顺序合并。HEAD 只返回响应头，无效范围返回 416。原生播放器会根据缓冲状态决定何时重新发请求。
 
+## Telegram 小程序
+
+在 BotFather 将小程序或菜单按钮的 URL 设为现有 CDN 上的 HTTPS 网盘地址，例如 `https://drive.example.com/people` 可以直接进入人物页。通过原生 Telegram 客户端的入口打开后，使用 TG Drive 的访问密码登录。页面、列表和封面通过该域名加载，列表和封面按各自的私有缓存策略处理。页面的嵌入策略会拦截 Telegram Web 的跨站小程序框架，可以直接在浏览器打开网盘地址。
+
+单条频道消息存有完整视频时，点击「Telegram 直连播放」会在小程序里的 TG Drive 播放器打开。设备通过 Telegram WebSocket 按区间读取视频，播放设置里可以设定时关闭。到点关闭播放器后，浏览器结束视频读取。分段视频由 TG Drive 服务器按原文件顺序拼接并播放。 [Telegram 浏览器传输协议](https://core.telegram.org/mtproto/transports) · [Telegram 文件读取接口](https://core.telegram.org/method/upload.getFile)
+
+首次直连时，在页面输入从 `my.telegram.org` 获取的 API ID 和 API Hash，再用有权查看存储频道的个人 Telegram 账号完成验证码和两步验证。浏览器把授权请求直接发给 Telegram，并可在同一个小程序标签页内复用会话。退出 TG Drive 或更换直连账号时会向 Telegram 撤销直连会话。关闭标签页后可以在 Telegram 的「设备」中结束对应的 TG Drive Browser 会话。 [Telegram 用户授权](https://core.telegram.org/api/auth)
+
+直连播放需要 HTTPS、WebAssembly，以及设备能访问 Telegram WebSocket 数据中心。支持 Service Worker 的 WebView 使用浏览器的 Range 播放。无法启用 Service Worker 时，支持 Media Source 的 WebView 可在浏览器内实时封装带索引的普通 MP4，具体编码由设备解码能力决定。让 `/telegram-media-sw.js` 遵循源站的重新验证策略。 [WebKit Media Source 支持](https://webkit.org/blog/14735/webkit-features-in-safari-17-1/)
+
+锁屏或切到后台时，定时器受设备系统的网页调度限制。直连失败时可选「经服务器播放」并使用 TG Drive 的定时关闭，也可选择「在 Telegram 中播放」打开原消息。 [Telegram 小程序接口](https://core.telegram.org/bots/webapps#initializing-mini-apps)
+
 ## 外部播放器直链
 
 从文件菜单创建分享后，复制“外部播放器直链”到支持 HTTP URL 的播放器，例如 Kodi 的 `.strm` 文件可写入一行直链。已创建的分享可在“我的分享”中复制播放直链。接口在分享记录中返回 `stream_url`，格式为 `/s/{token}/download`，支持 GET、HEAD 和单段 Range，访问无需登录。任何持有链接的人都可读取文件，请按需要设置有效期；撤销、过期和移入回收站都会使链接停止提供内容。链接只对应单个文件，频道切换后需切回原频道才可访问。
@@ -17,6 +29,8 @@
 编辑或移除频道说明时，自动名称会跟随更新；在网盘手动重命名后则保留自定义名称。已有文件会在完整频道扫描时补齐；升级时对无法确认来源的旧名称按自定义名称保留。相册完整到达后会再次同步，支持文字与视频分批到达。
 
 回归检查从仓库根目录运行 `python -m pytest -q`，并在 `frontend/` 运行 `npm test` 和 `npm run build`。构建前端并准备 Python Playwright、Chromium 与支持 libx264 的 FFmpeg 后，可运行 `python frontend/tests/video_seek_browser.py --media-cache-mib 32` 验证原生播放、拖动和刷新续播。脚本使用合成视频和模拟 Telegram 回源。
+
+同样可运行 `python frontend/tests/telegram_direct_browser.py`，用测试会话和合成视频验证小程序定时断流、授权过期和播放回退。
 
 ## 服务端切片缓存
 

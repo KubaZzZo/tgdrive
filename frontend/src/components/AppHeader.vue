@@ -93,7 +93,7 @@ async function logout(): Promise<void> {
           <span class="telegram-status-dot" :class="{ online: telegramConnected }" />
           <span>Telegram 账号</span>
         </button>
-        <button class="ghost" type="button" :disabled="loggingOut" @click="logout">退出</button>
+        <button class="ghost" type="button" :disabled="loggingOut" @click="logout">{{ loggingOut ? '正在退出…' : '退出' }}</button>
       </div>
     </div>
     <TelegramAccountPanel v-if="telegramOpen" @close="telegramOpen = false" />

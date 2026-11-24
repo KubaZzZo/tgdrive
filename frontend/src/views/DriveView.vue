@@ -12,6 +12,7 @@ import { useToastStore } from '@/stores/toast'
 import { useUploadStore } from '@/stores/uploads'
 import { formatBytes, previewKind } from '@/utils/format'
 import { groupFolderFiles } from '@/utils/folderUpload'
+import { openTelegramVideo, telegramVideoUrl } from '@/utils/telegramMiniApp'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import BaseModal from '@/components/ui/BaseModal.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
@@ -23,6 +24,7 @@ const MoveDialog = defineAsyncComponent(() => import('@/components/MoveDialog.vu
 const PeopleIndex = defineAsyncComponent(() => import('@/views/PeopleIndex.vue'))
 const PreviewModal = defineAsyncComponent(() => import('@/components/PreviewModal.vue'))
 const ShareDialog = defineAsyncComponent(() => import('@/components/ShareDialog.vue'))
+const TelegramDirectPlayer = defineAsyncComponent(() => import('@/components/TelegramDirectPlayer.vue'))
 const TrashDialog = defineAsyncComponent(() => import('@/components/TrashDialog.vue'))
 const VideoPeopleDialog = defineAsyncComponent(() => import('@/components/VideoPeopleDialog.vue'))
 
@@ -85,6 +87,10 @@ function breadcrumb(id: string | null): void {
   void drive.openFolder(id)
 }
 function onAction(action: FileAction, item: DriveItem): void {
+  if (action === 'telegram') {
+    const url = telegramVideoUrl(item)
+    if (url) openTelegramVideo(url)
+  }
   if (action === 'download') download(item)
   if (action === 'share') shareTarget.value = item
   if (action === 'rename') renameTarget.value = item
@@ -127,6 +133,7 @@ const batchStatus = ref<{ successes: number; failures: string[] } | null>(null)
 const labelTarget = ref<DriveItem | null>(null)
 const previewTarget = ref<DriveItem | null>(null)
 const previewOpen = ref(false)
+const telegramTarget = ref<DriveItem | null>(null)
 const downloadStatus = ref('')
 
 const isEmpty = computed(() => !drive.loading && !drive.error && drive.items.length === 0)
@@ -191,12 +198,17 @@ async function openFolder(item: DriveItem): Promise<void> {
 }
 
 function openItem(item: DriveItem): void {
+  telegramTarget.value = null
   previewTarget.value = item
   previewOpen.value = true
   downloadStatus.value = ''
 }
 
 function previewItem(item: DriveItem): void {
+  if (telegramVideoUrl(item)) {
+    telegramTarget.value = item
+    return
+  }
   if (previewKind(item) === 'none') {
     download(item)
     return
@@ -314,6 +326,7 @@ function onDragLeave(event: DragEvent): void {
 function closePreview(): void {
   previewOpen.value = false
   previewTarget.value = null
+  telegramTarget.value = null
 }
 
 watch(() => route.fullPath, () => {
@@ -678,6 +691,8 @@ watch(() => route.fullPath, () => {
     <TrashDialog v-if="trashOpen" @close="trashOpen = false" @restored="drive.load()" />
     <AdvancedSearchDialog v-if="advancedOpen" :filters="drive.filters"
       @close="advancedOpen = false" @apply="applyFilters" />
+    <TelegramDirectPlayer v-if="telegramTarget" :key="telegramTarget.id" :item="telegramTarget"
+      @close="closePreview" @server-fallback="openItem(telegramTarget)" />
     <PreviewModal
       v-if="previewOpen && previewTarget"
       :open="previewOpen"

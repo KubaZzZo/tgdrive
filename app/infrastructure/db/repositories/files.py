@@ -98,7 +98,12 @@ class FilesRepository(SQLiteSession):
         with self._lock:
             total = self.conn.execute("SELECT COUNT(*) FROM items" + where, params).fetchone()[0]
             rows = self.conn.execute(
-                "SELECT * FROM items"
+                """SELECT items.*,
+                       CASE WHEN kind='file' AND category='video' THEN (
+                           SELECT MAX(tg_message_id) FROM file_parts WHERE item_id=items.id
+                           HAVING COUNT(*)=1 AND MIN(part_index)=0 AND MIN(size)=items.size
+                       ) END AS telegram_message_id
+                   FROM items"""
                 + where
                 + f" ORDER BY (kind='folder') DESC, {column} {order}, id ASC LIMIT ? OFFSET ?",
                 [*params, limit, offset],

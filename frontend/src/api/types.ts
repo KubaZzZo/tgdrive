@@ -1,4 +1,4 @@
-export type FileAction = 'download' | 'share' | 'rename' | 'move' | 'remove' | 'people'
+export type FileAction = 'download' | 'share' | 'rename' | 'move' | 'remove' | 'people' | 'telegram'
 export interface TelegramIdentity { id: number; username: string | null; first_name: string | null; bot: boolean }
 export interface TelegramProfile { id: string; chat_id: string; user_id: number; username: string | null; first_name: string | null; title: string }
 export interface TelegramAccountStatus {
@@ -92,6 +92,7 @@ export interface DriveItem {
   created_at: string
   updated_at: string
   download_url?: string | null
+  telegram_video_url?: string
 }
 
 export interface PathItem {
