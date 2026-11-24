@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from unicodedata import normalize
 
 from app.infrastructure.db.repositories.files import FilesRepository
-from app.services.people import MAX_PERSON_LENGTH, person_key
+from app.services.people import MAX_PERSON_LENGTH, clean_caption, credited_people, person_key
 from app.services.person_names import chinese_person_name
 
 PEOPLE_AI_MAX_ATTEMPTS = 3
@@ -167,7 +167,7 @@ class PeopleRepository(FilesRepository):
         if not file.get("people_enabled", True):
             return False
         key = None
-        analysis = ()
+        analysis = None
         if job := file.get("people_ai_job"):
             candidate, caption = job
             if file.get("people_ai_submit"):
@@ -187,7 +187,20 @@ class PeopleRepository(FilesRepository):
                WHERE chat_id=? AND message_id=? AND people_ai_key IS NOT ?""",
             (key, chat_id, message_id, key),
         )
-        return self._replace_video_people(item_id, file.get("people", ()), analysis)
+        if analysis is not None:
+            return self._apply_people_analysis(
+                item_id, clean_caption(file["people_caption"]), analysis
+            )
+        return self._replace_video_people(item_id, file.get("people", ()))
+
+    def _apply_people_analysis(self, item_id: str, caption: str, analysis: list[dict]) -> bool:
+        credits = credited_people(caption)
+        if credits is None:
+            return self._replace_video_people(item_id, (), analysis)
+        keys = {person_key(name) for name in credits}
+        return self._replace_video_people(
+            item_id, credits, (person for person in analysis if person_key(person["name"]) in keys)
+        )
 
     def next_people_ai_job(self, namespace: str, now: float) -> tuple[str, str] | None:
         with self._lock:
@@ -212,6 +225,11 @@ class PeopleRepository(FilesRepository):
 
     def finish_people_ai_job(self, key: str, people: list[dict]) -> int:
         with self._lock, self.conn:
+            job = self.conn.execute(
+                "SELECT caption FROM people_ai_jobs WHERE key=? AND caption IS NOT NULL", (key,)
+            ).fetchone()
+            if job is None:
+                return 0
             self.conn.execute(
                 "UPDATE people_ai_jobs SET result=?,caption=NULL WHERE key=?",
                 (json.dumps(people, ensure_ascii=False), key),
@@ -221,14 +239,7 @@ class PeopleRepository(FilesRepository):
                    WHERE c.people_ai_key=? AND c.state='imported' AND i.category='video'""",
                 (key,),
             ).fetchall()
-            changed = 0
-            for item in items:
-                item_id = item["item_id"]
-                names = [
-                    row["name"]
-                    for row in self.conn.execute(
-                        "SELECT name FROM video_people WHERE item_id=?", (item_id,)
-                    )
-                ]
-                changed += self._replace_video_people(item_id, names, people)
-            return changed
+            return sum(
+                self._apply_people_analysis(item["item_id"], job["caption"], people)
+                for item in items
+            )
