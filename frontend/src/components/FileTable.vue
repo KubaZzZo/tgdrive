@@ -3,7 +3,6 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import type { DriveItem, FileAction } from '@/api/types'
 import { formatBytes, formatDate } from '@/utils/format'
 import { categoryLabel } from '@/utils/categories'
-import { telegramVideoUrl } from '@/utils/telegramMiniApp'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import FileActions from '@/components/FileActions.vue'
 import VideoCover from '@/components/VideoCover.vue'
@@ -47,7 +46,6 @@ function open(item: DriveItem): void {
         /></span>
         <span class="file-card-name">
           <strong class="file-title">{{ item.name }}</strong>
-          <span v-if="telegramVideoUrl(item)" class="telegram-play">Telegram 直连播放</span>
         </span>
       </button>
       <p>
@@ -82,7 +80,6 @@ function open(item: DriveItem): void {
               <div class="file-name-block">
                 <button class="name-btn" type="button" :title="item.name" @click="open(item)">
                   <span class="file-title">{{ item.name }}</span>
-                  <span v-if="telegramVideoUrl(item)" class="telegram-play">Telegram 直连播放</span>
                 </button>
                 <span class="mobile-meta">{{
                   item.kind === 'folder'
@@ -184,12 +181,6 @@ function open(item: DriveItem): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-.telegram-play {
-  display: block;
-  margin-top: 3px;
-  color: var(--accent);
-  font-size: 11px;
 }
 .name-btn:hover {
   color: var(--accent);

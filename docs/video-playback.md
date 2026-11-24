@@ -10,7 +10,9 @@
 
 在 BotFather 将小程序或菜单按钮的 URL 设为现有 CDN 上的 HTTPS 网盘地址，例如 `https://drive.example.com/people` 可以直接进入人物页。通过原生 Telegram 客户端的入口打开后，使用 TG Drive 的访问密码登录。页面、列表和封面通过该域名加载，列表和封面按各自的私有缓存策略处理。页面的嵌入策略会拦截 Telegram Web 的跨站小程序框架，可以直接在浏览器打开网盘地址。
 
-单条频道消息存有完整视频时，点击「Telegram 直连播放」会在小程序里的 TG Drive 播放器打开。设备通过 Telegram WebSocket 按区间读取视频，播放设置里可以设定时关闭。到点关闭播放器后，浏览器结束视频读取。分段视频由 TG Drive 服务器按原文件顺序拼接并播放。 [Telegram 浏览器传输协议](https://core.telegram.org/mtproto/transports) · [Telegram 文件读取接口](https://core.telegram.org/method/upload.getFile)
+点击视频名称或卡片时，TG Drive 服务器使用已有的 Telegram 会话读取视频，并通过网站域名传给小程序播放器。登录 TG Drive 后即可播放，也能在播放设置里设定定时关闭。分段视频由服务器按原文件顺序拼接。
+
+单条频道消息存有完整视频时，可在文件的更多操作菜单选择「Telegram 直连播放」。设备通过 Telegram WebSocket 按区间读取视频，到点关闭播放器后，浏览器结束视频读取。 [Telegram 浏览器传输协议](https://core.telegram.org/mtproto/transports) · [Telegram 文件读取接口](https://core.telegram.org/method/upload.getFile)
 
 首次直连时，可在页面输入从 `my.telegram.org` 获取的 API ID 和 API Hash，再用有权查看存储频道的个人 Telegram 账号完成验证码和两步验证。浏览器把授权请求直接发给 Telegram，并可在同一个小程序标签页内复用会话。退出 TG Drive 或更换直连账号时会向 Telegram 撤销直连会话。关闭标签页后可以在 Telegram 的「设备」中结束对应的 TG Drive Browser 会话。 [Telegram 用户授权](https://core.telegram.org/api/auth)
 

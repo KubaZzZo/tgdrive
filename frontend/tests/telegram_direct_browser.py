@@ -65,7 +65,9 @@ export async function telegramDirectMedia() {
 """
 
 
-def open_app(browser, base, mock, *, transport: str, saved_session: bool = True):
+def open_app(
+    browser, base, mock, *, transport: str, saved_session: bool = True, direct: bool = True
+):
     page = browser.new_page(viewport={"width": 390, "height": 844})
     page.set_default_timeout(8000)
     page.context.route(SDK_URL, lambda route: route.fulfill(status=200, body=""))
@@ -92,7 +94,11 @@ def open_app(browser, base, mock, *, transport: str, saved_session: bool = True)
             """sessionStorage.setItem('tgdrive_telegram_direct_session',
                  JSON.stringify({ apiId: 123, session: 'fixture' }))"""
         )
-    page.get_by_role("button", name=re.compile(r"fixture.mp4.*Telegram")).click()
+    if direct:
+        page.get_by_label("fixture.mp4的更多操作", exact=True).click()
+        page.get_by_role("button", name="Telegram 直连播放", exact=True).click()
+    else:
+        page.get_by_role("button", name="fixture.mp4", exact=True).click()
     return page, downloads
 
 
@@ -120,6 +126,33 @@ def play(page):
     return page.get_by_role("dialog")
 
 
+def close_by_timer(page, dialog):
+    page.clock.install()
+    dialog.get_by_role("button", name="播放设置", exact=True).click()
+    dialog.get_by_label("定时关闭").select_option("custom")
+    dialog.get_by_label("自定义分钟").fill("1")
+    dialog.get_by_role("button", name="开始定时", exact=True).click()
+    expect(dialog.get_by_role("timer")).to_be_visible()
+    page.clock.fast_forward(61_000)
+    expect(dialog).to_have_count(0)
+
+
+def verify_default_playback(browser, base, mock):
+    page, downloads = open_app(
+        browser, base, mock, transport="worker", saved_session=False, direct=False
+    )
+    dialog = play(page)
+    assert any("/api/files/" in url and "/download" in url for url in downloads)
+    close_by_timer(page, dialog)
+
+    page.get_by_role("button", name="网格视图").click()
+    page.locator(".file-card-open").get_by_text("fixture.mp4", exact=True).click()
+    expect(dialog.get_by_role("button", name="开始播放")).to_be_visible()
+    assert page.evaluate("window.telegramFixture === undefined")
+    assert page.evaluate("sessionStorage.getItem('tgdrive_telegram_direct_session')") is None
+    page.close()
+
+
 def verify_timer(browser, base, mock):
     page, downloads = open_app(browser, base, mock, transport="worker")
     dialog = play(page)
@@ -134,14 +167,7 @@ def verify_timer(browser, base, mock):
         path,
     )
     page.wait_for_function("() => window.telegramFixture.held > 0")
-    page.clock.install()
-    dialog.get_by_role("button", name="播放设置", exact=True).click()
-    dialog.get_by_label("定时关闭").select_option("custom")
-    dialog.get_by_label("自定义分钟").fill("1")
-    dialog.get_by_role("button", name="开始定时", exact=True).click()
-    expect(dialog.get_by_role("timer")).to_be_visible()
-    page.clock.fast_forward(61_000)
-    expect(dialog).to_have_count(0)
+    close_by_timer(page, dialog)
     assert page.evaluate("window.pendingRead") == "cancelled"
     assert page.evaluate("window.telegramFixture.aborted") > 0
     assert not downloads
@@ -245,6 +271,7 @@ def main():
             ):
                 configured = replace(settings, tg_direct_api_id=API_ID, tg_direct_api_hash=API_HASH)
                 app.dependency_overrides[get_settings] = lambda: configured
+                verify_default_playback(browser, base, mock)
                 verify_configured_credentials(browser, base, mock)
                 app.dependency_overrides.pop(get_settings)
                 verify_timer(browser, base, mock)
@@ -254,7 +281,7 @@ def main():
         finally:
             server.should_exit = True
             thread.join(timeout=10)
-    print("Verified configured credentials, timer, expired sessions, playback fallback and logout.")
+    print("Verified default server playback, direct authorization, timers, fallback and logout.")
 
 
 if __name__ == "__main__":

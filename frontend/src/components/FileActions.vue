@@ -23,7 +23,10 @@ function choose(action: FileAction, event: Event): void {
     </summary>
     <div class="file-menu-options">
       <template v-if="item.kind === 'file'">
-        <button v-if="telegramVideoUrl(item)" type="button" @click="choose('telegram', $event)">在 Telegram 中播放</button>
+        <template v-if="telegramVideoUrl(item)">
+          <button type="button" @click="choose('telegram-direct', $event)">Telegram 直连播放</button>
+          <button type="button" @click="choose('telegram', $event)">在 Telegram 中播放</button>
+        </template>
         <button type="button" @click="choose('download', $event)">下载文件</button>
         <button type="button" @click="choose('share', $event)">创建分享链接</button>
         <button v-if="auth.features.people && item.category === 'video'" type="button" @click="choose('people', $event)">分配人物标签</button>

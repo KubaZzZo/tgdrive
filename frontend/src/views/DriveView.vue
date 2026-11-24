@@ -87,6 +87,10 @@ function breadcrumb(id: string | null): void {
   void drive.openFolder(id)
 }
 function onAction(action: FileAction, item: DriveItem): void {
+  if (action === 'telegram-direct' && telegramVideoUrl(item)) {
+    closePreview()
+    telegramTarget.value = item
+  }
   if (action === 'telegram') {
     const url = telegramVideoUrl(item)
     if (url) openTelegramVideo(url)
@@ -205,10 +209,6 @@ function openItem(item: DriveItem): void {
 }
 
 function previewItem(item: DriveItem): void {
-  if (telegramVideoUrl(item)) {
-    telegramTarget.value = item
-    return
-  }
   if (previewKind(item) === 'none') {
     download(item)
     return
