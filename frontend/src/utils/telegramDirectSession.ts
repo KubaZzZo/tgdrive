@@ -1,7 +1,9 @@
 import { untilAborted } from './telegramMedia'
 
 const sessionKey = 'tgdrive_telegram_direct_session'
+const revocationKey = `${sessionKey}_revocation`
 let inMemory: TelegramDirectSession | null = null
+let pageRevocation = 0
 
 export interface TelegramDirectSession {
   apiId: number
@@ -28,6 +30,13 @@ export function readTelegramDirectSession(): TelegramDirectSession | null {
 
 export function hasSavedTelegramDirectSession(): boolean {
   return Boolean(storedSession('localStorage'))
+}
+
+export function readTelegramDirectRevocation(): string {
+  let deviceRevocation = ''
+  try { deviceRevocation = localStorage.getItem(revocationKey) ?? '' }
+  catch { /* Storage may be unavailable in a WebView. */ }
+  return `${pageRevocation}:${deviceRevocation}`
 }
 
 export async function withTelegramDirectSessionLock(action: () => Promise<void>, signal?: AbortSignal): Promise<void> {
@@ -59,6 +68,9 @@ export function clearTelegramDirectSession(expected?: TelegramDirectSession): vo
 }
 
 export async function revokeTelegramDirectSession(): Promise<void> {
+  pageRevocation++
+  try { localStorage.setItem(revocationKey, crypto.randomUUID()) }
+  catch { /* Keep the page's pending authorizations invalidated. */ }
   const sessions = new Map<string, TelegramDirectSession>()
   for (const session of [storedSession('sessionStorage'), inMemory, storedSession('localStorage')]) {
     if (session) sessions.set(session.session, session)

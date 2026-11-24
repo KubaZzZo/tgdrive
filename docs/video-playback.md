@@ -16,7 +16,9 @@
 
 要启用设备直连，可在「Telegram 账号 → Telegram 直连授权」中用有权查看存储频道的账号完成一次授权。授权请求直接发给 Telegram。支持保存授权的浏览器或小程序在重开或重新登录 TG Drive 后可以复用会话。可以在此撤销授权，或在 Telegram 的「设备」中结束对应的 TG Drive Browser 会话。主动退出 TG Drive 时也会向 Telegram 撤销设备上的直连会话。 [Telegram 用户授权](https://core.telegram.org/api/auth)
 
-授权时使用从 `my.telegram.org` 获取的 API ID 和 API Hash。个人部署可在服务端设置 `TG_DIRECT_API_ID` 和 `TG_DIRECT_API_HASH`，由设备在点击「获取验证码」时通过同源 API 读取。该响应应绕过 CDN 缓存。Telegram 在设备首次授权时可能要求验证码和两步验证密码。
+授权时使用从 `my.telegram.org` 获取的 API ID 和 API Hash。个人部署可在服务端设置 `TG_DIRECT_API_ID` 和 `TG_DIRECT_API_HASH`。点击「获取验证码」或「Telegram 扫码授权」时，设备通过同源 API 读取配置。该响应应绕过 CDN 缓存。
+
+验证码投递方式由 Telegram 决定。当页面提示账号内收码时，请在同一账号已登录的客户端中打开官方「Telegram」对话。收不到短信时，可选「Telegram 扫码授权」，用另一台已登录该账号的设备，在 Telegram 的「设置 → 设备 → 连接桌面设备」中扫码并确认。开启 Telegram 两步验证的账号还需输入两步验证密码。 [账号内验证码](https://core.telegram.org/constructor/auth.sentCodeTypeApp) · [Telegram 扫码登录](https://core.telegram.org/api/qr-login)
 
 直连播放需要 HTTPS、WebAssembly，以及设备能访问 Telegram WebSocket 数据中心。支持 Service Worker 的 WebView 使用浏览器的 Range 播放。无法启用 Service Worker 时，支持 Media Source 的 WebView 可在浏览器内实时封装带索引的普通 MP4，具体编码由设备解码能力决定。让 `/telegram-media-sw.js` 遵循源站的重新验证策略。 [WebKit Media Source 支持](https://webkit.org/blog/14735/webkit-features-in-safari-17-1/)
 
