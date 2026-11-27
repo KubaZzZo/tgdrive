@@ -38,6 +38,7 @@ from app.services.accounts import AccountManager, Runtime, WorkspaceMiddleware, 
 from app.services.cdn import CDNMonitor
 from app.services.channel_sync import ChannelSyncService
 from app.services.media_cache import MIB, MediaSliceCache
+from app.services.playback import PlaybackTransfers
 from app.services.thumbnails import ThumbnailCache
 from app.services.traffic import TrafficMiddleware, TrafficMonitor
 from app.services.upload_temp import cleanup_faststart_outputs
@@ -141,6 +142,7 @@ def create_app(
     app.state.db = database
     app.state.storage = telegram
     app.state.traffic = traffic
+    app.state.playback_transfers = PlaybackTransfers()
     app.state.cdn = cdn
     app.state.thumbnails = ThumbnailCache(upload_service.video_slots)
     app.state.media_cache = MediaSliceCache(
