@@ -5,11 +5,19 @@ import { api } from '@/api/client'
 import type { DriveItem } from '@/api/types'
 import { formatBytes, previewKind } from '@/utils/format'
 import BaseModal from '@/components/ui/BaseModal.vue'
+import type { PlaybackMode, PlaybackState } from '@/utils/playbackPreferences'
 
 const MediaPlayer = defineAsyncComponent(() => import('@/components/MediaPlayer.vue'))
 
-const props = defineProps<{ open: boolean; openedAt: number; item: DriveItem | null; downloadPending: boolean; downloadStatus: string }>()
-const emit = defineEmits<{ close: []; download: [item: DriveItem] }>()
+const props = defineProps<{
+  open: boolean; openedAt: number; item: DriveItem | null; downloadPending: boolean; downloadStatus: string
+  progressKey: string; initialState?: PlaybackState; directAvailable: boolean
+  preferredMode: PlaybackMode | null; defaultMode: PlaybackMode
+}>()
+const emit = defineEmits<{
+  close: []; download: [item: DriveItem]; switchMode: [mode: PlaybackMode, state: PlaybackState]
+  defaultMode: [mode: PlaybackMode]; clearPreference: []
+}>()
 const closeDeadline = defineModel<number>('closeDeadline', { default: 0 })
 
 const failed = ref(false)
@@ -37,6 +45,11 @@ const src = computed(() => (props.item ? api.downloadUrl(props.item.id) : ''))
       :download-pending="downloadPending"
       :download-status="downloadStatus"
       :poster="kind === 'video' ? api.thumbnailUrl(item.id, item.updated_at) : undefined"
+      :mode="kind === 'video' ? 'server' : undefined"
+      :progress-key="progressKey" :initial-state="initialState" :direct-available="directAvailable"
+      :preferred-mode="preferredMode" :default-mode="defaultMode"
+      @switch-mode="(mode, state) => emit('switchMode', mode, state)"
+      @default-mode="emit('defaultMode', $event)" @clear-preference="emit('clearPreference')"
       @close="emit('close')"
       @download="emit('download', item)"
     />

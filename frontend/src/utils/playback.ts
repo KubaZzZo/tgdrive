@@ -12,15 +12,17 @@ function read(): ProgressMap {
     return {}
   }
 }
-export function playbackPosition(id: string, duration: number): number {
-  const time = Number(read()[id]?.time)
+export function playbackPosition(id: string, duration: number, legacyId?: string): number {
+  const data = read()
+  const time = Number((data[id] ?? (legacyId ? data[legacyId] : undefined))?.time)
   return Number.isFinite(duration) && Number.isFinite(time) && time >= 2 && time < duration - 2
     ? time
     : 0
 }
-export function savePlayback(id: string, time: number, duration: number): void {
+export function savePlayback(id: string, time: number, duration: number, legacyId?: string): void {
   if (!Number.isFinite(time) || !Number.isFinite(duration) || duration <= 0) return
   const data = read()
+  if (legacyId && legacyId !== id) delete data[legacyId]
   if (time < 2 || time >= duration - 2) delete data[id]
   else data[id] = { time, updated: Date.now() }
   const entries = Object.entries(data)

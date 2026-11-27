@@ -5,14 +5,21 @@ import { mediaTime, playbackPosition, savePlayback } from '@/utils/playback'
 import { formatBytes } from '@/utils/format'
 import { holdCoverQueue } from '@/utils/coverQueue'
 import AppIcon from '@/components/ui/AppIcon.vue'
+import PlaybackStats from '@/components/PlaybackStats.vue'
+import type { PlaybackMode, PlaybackState } from '@/utils/playbackPreferences'
 
 const props = withDefaults(defineProps<{
   src: string; itemId: string; kind: 'video' | 'audio'; size: number
   openedAt?: number
   poster?: string; downloadPending?: boolean; downloadStatus?: string; allowDownload?: boolean
   openSource?: (element: HTMLMediaElement, signal: AbortSignal) => Promise<void>
+  progressKey?: string; initialState?: PlaybackState; receivedBytes?: number
+  mode?: PlaybackMode; directAvailable?: boolean; preferredMode?: PlaybackMode | null; defaultMode?: PlaybackMode
 }>(), { allowDownload: true })
-const emit = defineEmits<{ download: []; close: [] }>()
+const emit = defineEmits<{
+  download: []; close: []; switchMode: [mode: PlaybackMode, state: PlaybackState]
+  defaultMode: [mode: PlaybackMode]; clearPreference: []
+}>()
 const closeDeadline = defineModel<number>('closeDeadline', { default: 0 })
 type SafariVideo = HTMLVideoElement & {
   webkitDisplayingFullscreen?: boolean
@@ -35,6 +42,14 @@ const scrub = ref<number | null>(null)
 const rate = ref(1)
 const volume = ref(1)
 const muted = ref(false)
+const transferSession = ref('')
+const mediaSrc = computed(() => {
+  if (props.mode !== 'server') return props.src
+  const url = new URL(props.src, location.href)
+  url.searchParams.set('playback_session', transferSession.value)
+  return url.href
+})
+let restoreState = props.initialState
 const rotation = ref(0)
 const quarterTurn = computed(() => rotation.value % 180 !== 0)
 const videoWidth = ref(0)
@@ -101,10 +116,27 @@ function startCloseTimer(): void {
 watch(closeDeadline, updateCloseTimer)
 function save(): void {
   const media = player.value
-  if (!media || !restored || media.seeking || (resumePending && media.currentTime < 2)) return
+  if (!active || !media || !restored || media.seeking || (resumePending && media.currentTime < 2)) return
   resumePending = false
-  savePlayback(props.itemId, media.currentTime, media.duration)
+  savePlayback(props.progressKey ?? props.itemId, media.currentTime, media.duration, props.progressKey ? props.itemId : undefined)
 }
+function captureState(): PlaybackState {
+  if (restoreState) return { ...restoreState }
+  const media = player.value
+  return {
+    time: media && active && restored ? media.currentTime : current.value,
+    paused: media && active ? media.paused : paused.value,
+    rate: rate.value, volume: volume.value, muted: muted.value,
+  }
+}
+function switchMode(mode: PlaybackMode): void {
+  if (mode === props.mode) return
+  const state = captureState()
+  save()
+  resetMedia()
+  emit('switchMode', mode, state)
+}
+defineExpose({ captureState })
 function measureStartup(stage: 'source' | 'metadata' | 'first-frame'): void {
   if (props.kind !== 'video' || props.openedAt === undefined) return
   try {
@@ -118,20 +150,28 @@ function measureStartup(stage: 'source' | 'metadata' | 'first-frame'): void {
 }
 function metadata(): void {
   const media = player.value
-  if (!media) return
+  if (!media || !active) return
   startupProgress()
   syncPresentation()
   media.playbackRate = rate.value
+  media.volume = volume.value
+  media.muted = muted.value
   duration.value = Number.isFinite(media.duration) ? media.duration : 0
   if (!restored && duration.value > 0) {
     restored = true
     measureStartup('metadata')
-    const position = playbackPosition(props.itemId, media.duration)
+    const position = restoreState
+      ? Math.max(0, Math.min(restoreState.time, Math.max(0, media.duration - 0.05)))
+      : playbackPosition(props.progressKey ?? props.itemId, media.duration, props.progressKey ? props.itemId : undefined)
     resumePending = position > 0
     if (position) {
       media.currentTime = position
       notice.value = `已恢复至 ${mediaTime(position)}`
     }
+    current.value = position
+    const resume = restoreState && !restoreState.paused
+    restoreState = undefined
+    if (resume) void toggle()
   }
   if (props.kind === 'audio') ready()
 }
@@ -153,6 +193,7 @@ function syncPresentation(): void {
   }
 }
 function update(): void {
+  if (!active) return
   current.value = player.value?.currentTime ?? 0
   if (Date.now() - lastSaved > 5000) {
     save()
@@ -191,7 +232,7 @@ function restart(): void {
 }
 function seeking(): void {
   const media = player.value
-  if (!media) return
+  if (!media || !active) return
   current.value = media.currentTime
   loading.value = media.readyState < HTMLMediaElement.HAVE_FUTURE_DATA
 }
@@ -282,6 +323,7 @@ function failed(): void {
 }
 function recover(fallback: string): void {
   if (!active) return
+  restoreState = captureState()
   save()
   resetMedia()
   loading.value = false
@@ -336,6 +378,13 @@ function start(openTime = performance.now()): void {
   error.value = ''
   notice.value = ''
   startedPlayback = false
+  transferSession.value = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
+  if (restoreState) {
+    current.value = restoreState.time
+    rate.value = restoreState.rate
+    volume.value = restoreState.volume
+    muted.value = restoreState.muted
+  }
   if (!player.value) return
   active = true
   openedAt = openTime
@@ -348,10 +397,11 @@ function start(openTime = performance.now()): void {
       if (!signal.aborted) recover(cause instanceof Error ? cause.message : 'Telegram 视频读取中断。')
     })
   } else {
-    player.value.src = props.src
+    player.value.src = mediaSrc.value
   }
 }
 function retry(): void {
+  restoreState = captureState()
   save()
   start()
 }
@@ -377,7 +427,7 @@ function onKey(event: KeyboardEvent): void {
   if (event.key.toLowerCase() === 'f' && props.kind === 'video') void fullscreen()
 }
 function pause(): void {
-  if (!player.value?.paused) return
+  if (!active || !player.value?.paused) return
   paused.value = true
   if (!player.value?.getAttribute('src')) return
   save()
@@ -476,10 +526,14 @@ onBeforeUnmount(() => {
         <div v-if="error" class="media-error" role="alert">
           <p>{{ error }}</p>
           <button class="ghost" type="button" @click="retry">重新加载</button>
+          <button v-if="mode === 'server' && directAvailable" class="ghost" type="button" @click="switchMode('telegram')">Telegram 直连播放</button>
           <slot name="error-actions" />
         </div>
       </div>
       <div class="media-controls">
+        <PlaybackStats v-if="kind === 'video' && mode && transferSession" :key="transferSession"
+          :media="player" :item-id="mode === 'server' ? itemId : undefined"
+          :session-id="transferSession" :received-bytes="receivedBytes" />
         <div class="media-timeline">
           <span>{{ mediaTime(scrub ?? current) }}</span>
           <input
@@ -557,6 +611,26 @@ onBeforeUnmount(() => {
           </button>
         </header>
         <div class="media-settings-body">
+          <template v-if="mode">
+            <label class="media-setting">播放方式
+              <select :value="mode" aria-label="播放方式" @change="switchMode(($event.target as HTMLSelectElement).value as PlaybackMode)">
+                <option value="server">经服务器播放</option>
+                <option value="telegram" :disabled="!directAvailable">Telegram 直连播放</option>
+              </select>
+            </label>
+            <p v-if="!directAvailable" class="media-notice">直连需要设备授权和单条频道消息中的完整视频。</p>
+            <div v-if="preferredMode" class="media-buttons">
+              <span class="media-notice">此视频已记住{{ preferredMode === 'server' ? '服务器播放' : '直连播放' }}</span>
+              <button type="button" @click="emit('clearPreference')">此视频跟随默认</button>
+            </div>
+            <label class="media-setting">默认播放方式
+              <select :value="defaultMode" aria-label="默认播放方式" @change="emit('defaultMode', ($event.target as HTMLSelectElement).value as PlaybackMode)">
+                <option value="server">经服务器播放</option>
+                <option value="telegram">优先 Telegram 直连</option>
+              </select>
+            </label>
+            <p class="media-notice">播放偏好保存在此浏览器，下次打开视频时生效。</p>
+          </template>
           <div v-if="kind === 'video'" class="media-buttons">
             <button type="button" :disabled="listenDisabled" @click="toggleListening">
               <AppIcon :name="listening ? 'video' : 'audio'" :size="15" />{{ listening ? '恢复画面' : '听视频' }}
