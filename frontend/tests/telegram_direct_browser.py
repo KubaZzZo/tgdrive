@@ -639,6 +639,28 @@ def verify_timer_during_switch(browser, base, mock):
     page.close()
 
 
+def verify_switch_before_metadata(browser, base, mock):
+    page, _ = open_app(browser, base, mock, transport="worker", direct=False)
+    dialog = page.get_by_role("dialog")
+    page.wait_for_function("() => document.querySelector('video')?.readyState >= 2")
+    dialog.locator("video").evaluate("video => { video.currentTime = 44; }")
+    page.wait_for_function("() => !document.querySelector('video').seeking")
+    dialog.get_by_role("button", name="关闭", exact=True).click()
+    held = []
+    page.route("**/api/files/*/download?*", lambda route: held.append(route))
+    page.get_by_role("button", name="fixture.mp4", exact=True).click()
+    expect(dialog.get_by_role("button", name="播放设置", exact=True)).to_be_visible()
+    assert video_state(page)["ready"] == 0
+    dialog.get_by_role("button", name="播放设置", exact=True).click()
+    dialog.get_by_label("播放方式", exact=True).select_option("telegram")
+    page.wait_for_function(
+        "() => { const v = document.querySelector('video'); return v?.readyState >= 2 && Math.abs(v.currentTime - 44) < 0.5 && v.paused; }"
+    )
+    for route in held:
+        route.abort()
+    page.close()
+
+
 def main():
     from conftest import FakeTelegramStorage, make_settings
 
@@ -703,6 +725,7 @@ def main():
                 verify_default_playback(browser, base, mock)
                 verify_playback_switching(browser, base, mock, "worker", args.screenshots_dir)
                 verify_playback_switching(browser, base, mock, "mp4", args.screenshots_dir)
+                verify_switch_before_metadata(browser, base, mock)
                 verify_configured_credentials(browser, base, mock)
                 verify_qr_authorization(browser, base, mock)
                 verify_shared_qr_authorization(browser, base, mock)

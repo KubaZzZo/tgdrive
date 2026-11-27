@@ -123,8 +123,9 @@ function save(): void {
 function captureState(): PlaybackState {
   if (restoreState) return { ...restoreState }
   const media = player.value
+  const position = restored ? current.value : undefined
   return {
-    time: media && active && restored ? media.currentTime : current.value,
+    time: media && active && restored ? media.currentTime : position,
     paused: media && active ? media.paused : paused.value,
     rate: rate.value, volume: volume.value, muted: muted.value,
   }
@@ -160,7 +161,7 @@ function metadata(): void {
   if (!restored && duration.value > 0) {
     restored = true
     measureStartup('metadata')
-    const position = restoreState
+    const position = restoreState?.time !== undefined
       ? Math.max(0, Math.min(restoreState.time, Math.max(0, media.duration - 0.05)))
       : playbackPosition(props.progressKey ?? props.itemId, media.duration, props.progressKey ? props.itemId : undefined)
     resumePending = position > 0
@@ -380,7 +381,7 @@ function start(openTime = performance.now()): void {
   startedPlayback = false
   transferSession.value = Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
   if (restoreState) {
-    current.value = restoreState.time
+    current.value = restoreState.time ?? 0
     rate.value = restoreState.rate
     volume.value = restoreState.volume
     muted.value = restoreState.muted

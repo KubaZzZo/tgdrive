@@ -1,6 +1,7 @@
 export type PlaybackMode = 'server' | 'telegram'
 export interface PlaybackState {
-  time: number
+  // An unopened source still needs to restore its saved position after metadata arrives.
+  time?: number
   paused: boolean
   rate: number
   volume: number

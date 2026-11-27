@@ -10,7 +10,7 @@
 
 在 BotFather 将小程序或菜单按钮的 URL 设为现有 CDN 上的 HTTPS 网盘地址，例如 `https://drive.example.com/people` 可以直接进入人物页。通过原生 Telegram 客户端的入口打开后，使用 TG Drive 的访问密码登录。页面、列表和封面通过该域名加载，列表和封面按各自的私有缓存策略处理。页面的嵌入策略会拦截 Telegram Web 的跨站小程序框架，可以直接在浏览器打开网盘地址。
 
-点击视频名称或卡片时，TG Drive 服务器使用已有的 Telegram 会话读取视频，并通过网站域名传给小程序播放器。登录 TG Drive 后即可播放，也能在播放设置里设定定时关闭。分段视频由服务器按原文件顺序拼接。
+首次使用时，点击视频名称或卡片会经 TG Drive 服务器播放，使用已有的 Telegram 会话读取视频，并通过网站域名传给小程序播放器。保存播放偏好后，重新打开视频会按偏好和当前设备能力选择播放方式。登录 TG Drive 后即可播放，也能在播放设置里设定定时关闭。分段视频由服务器按原文件顺序拼接。
 
 网页和小程序都可以从文件菜单选择「Telegram 直连播放」，适用于单条频道消息中保存的完整视频。设备有有效的 Telegram 授权时，通过 Telegram WebSocket 按区间读取视频，到点关闭播放器后，浏览器结束视频读取。设备缺少授权或授权失效时，自动打开服务器播放器，沿用已设定的关闭时间。 [Telegram 浏览器传输协议](https://core.telegram.org/mtproto/transports) · [Telegram 文件读取接口](https://core.telegram.org/method/upload.getFile)
 
