@@ -8,15 +8,24 @@ import { clearTelegramDirectSession, readTelegramDirectSession, withTelegramDire
 import type { TelegramDirectSession } from '@/utils/telegramDirectSession'
 import { openTelegramMedia, prepareTelegramMedia } from '@/utils/telegramMedia'
 import { openTelegramVideo } from '@/utils/telegramMiniApp'
+import type { PlaybackMode, PlaybackState } from '@/utils/playbackPreferences'
 
 const MediaPlayer = defineAsyncComponent(() => import('@/components/MediaPlayer.vue'))
-const props = defineProps<{ item: DriveItem }>()
-const emit = defineEmits<{ close: []; serverFallback: [message?: string] }>()
+const props = defineProps<{
+  item: DriveItem; progressKey: string; initialState?: PlaybackState; directAvailable: boolean
+  preferredMode: PlaybackMode | null; defaultMode: PlaybackMode
+}>()
+const emit = defineEmits<{
+  close: []; serverFallback: [message?: string, state?: PlaybackState]
+  switchMode: [mode: PlaybackMode, state?: PlaybackState]; defaultMode: [mode: PlaybackMode]; clearPreference: []
+}>()
 const closeDeadline = defineModel<number>('closeDeadline', { default: 0 })
 
 const stage = ref<'opening' | 'playing' | 'failed'>('opening')
 const error = ref('')
 const src = ref('')
+const player = ref<{ captureState: () => PlaybackState } | null>(null)
+const receivedBytes = ref(0)
 const openSource = shallowRef<(element: HTMLMediaElement, signal: AbortSignal) => Promise<void>>()
 
 const lifetime = new AbortController()
@@ -34,16 +43,23 @@ function releaseClient(): void {
 }
 
 async function expireSession(saved: TelegramDirectSession): Promise<void> {
+  const state = player.value?.captureState() ?? props.initialState
   releaseClient()
   await withTelegramDirectSessionLock(async () => clearTelegramDirectSession(saved))
-  if (!lifetime.signal.aborted) emit('serverFallback', 'Telegram 直连授权已失效，已改用服务器播放。')
+  if (!lifetime.signal.aborted) emit('serverFallback', 'Telegram 直连授权已失效，已改用服务器播放。', state)
+}
+
+function serverPlayback(): void {
+  emit('switchMode', 'server', player.value?.captureState() ?? props.initialState)
 }
 
 async function play(authorizedClient: BaseTelegramClient, saved: TelegramDirectSession): Promise<void> {
   if (!telegram) return
   const telegramClient = telegram
   const deadline = AbortSignal.any([lifetime.signal, AbortSignal.timeout(30_000)])
-  const media = await telegramClient.telegramDirectMedia(authorizedClient, props.item, deadline)
+  receivedBytes.value = 0
+  const media = await telegramClient.telegramDirectMedia(authorizedClient, props.item, deadline,
+    bytes => { receivedBytes.value += bytes })
   lifetime.signal.throwIfAborted()
   const connection = new AbortController()
   playback = connection
@@ -74,7 +90,7 @@ async function start(): Promise<void> {
   error.value = ''
   const saved = readTelegramDirectSession()
   if (!saved) {
-    emit('serverFallback', '当前设备尚未授权 Telegram 直连，已改用服务器播放。')
+    emit('serverFallback', '当前设备尚未授权 Telegram 直连，已改用服务器播放。', props.initialState)
     return
   }
   try {
@@ -131,13 +147,18 @@ onBeforeUnmount(() => {
 
 <template>
   <BaseModal :open="true" :title="item.name" :wide="stage === 'playing'" :media="stage === 'playing'" @close="emit('close')">
-    <MediaPlayer v-if="stage === 'playing'"
+    <MediaPlayer v-if="stage === 'playing'" ref="player"
       v-model:close-deadline="closeDeadline"
       :src="src" :open-source="openSource" :item-id="item.id" kind="video" :size="item.size"
       :poster="api.thumbnailUrl(item.id, item.updated_at)" :allow-download="false"
+      mode="telegram" :received-bytes="receivedBytes"
+      :progress-key="progressKey" :initial-state="initialState" :direct-available="directAvailable"
+      :preferred-mode="preferredMode" :default-mode="defaultMode"
+      @switch-mode="(mode, state) => emit('switchMode', mode, state)"
+      @default-mode="emit('defaultMode', $event)" @clear-preference="emit('clearPreference')"
       @close="emit('close')">
       <template #error-actions>
-        <button class="ghost" type="button" @click="emit('serverFallback')">经服务器播放</button>
+        <button class="ghost" type="button" @click="serverPlayback">经服务器播放</button>
         <button v-if="item.telegram_video_url" class="ghost" type="button" @click="openTelegramVideo(item.telegram_video_url)">在 Telegram 中播放</button>
       </template>
     </MediaPlayer>
@@ -145,7 +166,7 @@ onBeforeUnmount(() => {
     <p v-if="error" class="inline-error" role="alert">{{ error }}</p>
     <template v-if="stage !== 'playing'" #footer>
       <button v-if="stage === 'failed'" class="ghost" type="button" @click="start">重试直连</button>
-      <button class="ghost" type="button" @click="emit('serverFallback')">经服务器播放</button>
+      <button class="ghost" type="button" @click="serverPlayback">经服务器播放</button>
       <button v-if="item.telegram_video_url" class="ghost" type="button" @click="openTelegramVideo(item.telegram_video_url)">在 Telegram 中播放</button>
     </template>
   </BaseModal>

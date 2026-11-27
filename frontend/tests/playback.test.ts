@@ -29,3 +29,11 @@ test('media time formats long videos and incomplete metadata', () => {
   assert.equal(mediaTime(65), '1:05')
   assert.equal(mediaTime(Infinity), '0:00')
 })
+test('scoped progress migrates legacy records and keeps channels independent', () => {
+  savePlayback('video', 34, 120)
+  assert.equal(playbackPosition('["a","video"]', 120, 'video'), 34)
+  savePlayback('["a","video"]', 45, 120, 'video')
+  assert.equal(playbackPosition('["a","video"]', 120, 'video'), 45)
+  assert.equal(playbackPosition('["b","video"]', 120, 'video'), 0)
+  assert.equal(playbackPosition('video', 120), 0)
+})

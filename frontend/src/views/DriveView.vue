@@ -13,6 +13,9 @@ import { useUploadStore } from '@/stores/uploads'
 import { formatBytes, previewKind } from '@/utils/format'
 import { groupFolderFiles } from '@/utils/folderUpload'
 import { openTelegramVideo } from '@/utils/telegramMiniApp'
+import { readTelegramDirectSession } from '@/utils/telegramDirectSession'
+import { playbackPreference, resolvePlaybackMode, saveDefaultPlaybackMode, savePlaybackPreference, videoPlaybackKey } from '@/utils/playbackPreferences'
+import type { PlaybackMode, PlaybackState } from '@/utils/playbackPreferences'
 import AppIcon from '@/components/ui/AppIcon.vue'
 import BaseModal from '@/components/ui/BaseModal.vue'
 import ConfirmDialog from '@/components/ui/ConfirmDialog.vue'
@@ -89,7 +92,8 @@ function breadcrumb(id: string | null): void {
 function onAction(action: FileAction, item: DriveItem): void {
   if (action === 'telegram-direct' && item.telegram_video_url) {
     closePreview()
-    telegramTarget.value = item
+    openItem(item, 0, 'telegram')
+    if (directAvailable.value) rememberMode('telegram')
   }
   if (action === 'telegram' && item.telegram_video_url) openTelegramVideo(item.telegram_video_url)
   if (action === 'download') download(item)
@@ -137,7 +141,21 @@ const previewOpen = ref(false)
 const previewOpenedAt = ref(0)
 const telegramTarget = ref<DriveItem | null>(null)
 const closeDeadline = ref(0)
+const initialPlaybackState = ref<PlaybackState>()
+const progressKey = ref('')
+const preferredMode = ref<PlaybackMode | null>(null)
+const defaultMode = ref<PlaybackMode>('server')
+const directAvailable = ref(false)
 const downloadStatus = ref('')
+
+watch(closeDeadline, (deadline, _previous, onCleanup) => {
+  if (!deadline) return
+  // Keep the deadline active while the next playback source is still opening.
+  const timer = setInterval(() => {
+    if (Date.now() >= deadline) closePreview()
+  }, 1000)
+  onCleanup(() => clearInterval(timer))
+})
 
 const isEmpty = computed(() => !drive.loading && !drive.error && drive.items.length === 0)
 const hasFilters = computed(() => Object.values(drive.filters).some((value) => value !== undefined))
@@ -200,18 +218,46 @@ async function openFolder(item: DriveItem): Promise<void> {
   await drive.openFolder(item.id)
 }
 
-function openItem(item: DriveItem, deadline = 0): void {
+function openItem(item: DriveItem, deadline = 0, forcedMode?: PlaybackMode, state?: PlaybackState): void {
+  const video = previewKind(item) === 'video'
+  progressKey.value = videoPlaybackKey(auth.storage?.chat_id ?? item.tg_chat_id, item.id)
+  const preference = playbackPreference(progressKey.value)
+  preferredMode.value = preference.preferred
+  defaultMode.value = preference.defaultMode
+  const mp4 = /^video\/(mp4|quicktime|x-m4v)(;|$)/i.test(item.mime ?? '') || /\.(mp4|m4v|mov)$/i.test(item.name)
+  directAvailable.value = Boolean(video && item.telegram_video_url && readTelegramDirectSession() &&
+    isSecureContext && typeof AbortSignal.any === 'function' &&
+    (navigator.serviceWorker || (mp4 && (window.MediaSource || 'ManagedMediaSource' in window))))
+  const mode = forcedMode ?? resolvePlaybackMode(preferredMode.value, defaultMode.value, directAvailable.value)
   previewOpenedAt.value = performance.now()
-  telegramTarget.value = null
+  initialPlaybackState.value = state
   closeDeadline.value = deadline
-  previewTarget.value = item
-  previewOpen.value = true
+  telegramTarget.value = video && mode === 'telegram' ? item : null
+  previewTarget.value = telegramTarget.value ? null : item
+  previewOpen.value = !telegramTarget.value
   downloadStatus.value = ''
 }
 
-function playViaServer(message?: string): void {
+function rememberMode(mode: PlaybackMode | null): void {
+  savePlaybackPreference(progressKey.value, mode)
+  preferredMode.value = mode
+}
+
+function changeDefaultMode(mode: PlaybackMode): void {
+  saveDefaultPlaybackMode(mode)
+  defaultMode.value = mode
+}
+
+function switchPlayback(mode: PlaybackMode, state?: PlaybackState): void {
+  const item = telegramTarget.value ?? previewTarget.value
+  if (!item) return
+  rememberMode(mode)
+  openItem(item, closeDeadline.value, mode, state)
+}
+
+function playViaServer(message?: string, state?: PlaybackState): void {
   if (!telegramTarget.value) return
-  openItem(telegramTarget.value, closeDeadline.value)
+  openItem(telegramTarget.value, closeDeadline.value, 'server', state)
   if (message) toast.push(message)
 }
 
@@ -701,6 +747,9 @@ watch(() => route.fullPath, () => {
       @close="advancedOpen = false" @apply="applyFilters" />
     <TelegramDirectPlayer v-if="telegramTarget" :key="telegramTarget.id" :item="telegramTarget"
       v-model:close-deadline="closeDeadline"
+      :progress-key="progressKey" :initial-state="initialPlaybackState" :direct-available="directAvailable"
+      :preferred-mode="preferredMode" :default-mode="defaultMode"
+      @switch-mode="switchPlayback" @default-mode="changeDefaultMode" @clear-preference="rememberMode(null)"
       @close="closePreview" @server-fallback="playViaServer" />
     <PreviewModal
       v-if="previewOpen && previewTarget"
@@ -710,6 +759,9 @@ watch(() => route.fullPath, () => {
       :item="previewTarget"
       :download-pending="!!previewTarget && pendingDownloads.has(previewTarget.id)"
       :download-status="downloadStatus"
+      :progress-key="progressKey" :initial-state="initialPlaybackState" :direct-available="directAvailable"
+      :preferred-mode="preferredMode" :default-mode="defaultMode"
+      @switch-mode="switchPlayback" @default-mode="changeDefaultMode" @clear-preference="rememberMode(null)"
       @close="closePreview"
       @download="download"
     />

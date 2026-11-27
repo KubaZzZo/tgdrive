@@ -96,13 +96,16 @@ test('Telegram QR login records authorization before the SDK reads the profile i
 test('Telegram direct reads align ranges, refresh stale file references and reuse the block', async () => {
   const { client, reads } = fixture()
   const signal = new AbortController().signal
-  const source = await telegramDirectMedia(client, item, signal)
+  let received = 0
+  const source = await telegramDirectMedia(client, item, signal, bytes => { received += bytes })
   assert.deepEqual(await source.read(blockSize + 7, blockSize + 10, signal), new Uint8Array([7, 7, 7]))
   assert.equal((await source.read(blockSize + 19, blockSize + 21, signal)).length, 2)
   assert.deepEqual(reads, [blockSize, blockSize])
+  assert.equal(received, blockSize)
   assert.equal((await source.read(item.size - 2, item.size, signal)).length, 2)
   await assert.rejects(source.read(0, 16, AbortSignal.abort()), { name: 'AbortError' })
   assert.deepEqual(reads, [blockSize, blockSize, blockSize * 5])
+  assert.equal(received, blockSize + 9)
 })
 
 test('Telegram direct reads reject a replaced video instead of mixing bytes', async () => {

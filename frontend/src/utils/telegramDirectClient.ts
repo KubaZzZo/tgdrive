@@ -96,6 +96,7 @@ export async function telegramDirectMedia(
   client: BaseTelegramClient,
   item: DriveItem,
   signal: AbortSignal,
+  onReceived?: (bytes: number) => void,
 ): Promise<TelegramMediaSource> {
   const link = /^https:\/\/t\.me\/c\/([1-9]\d*)\/([1-9]\d*)\?single&t=0$/.exec(item.telegram_video_url ?? '')
   const channelId = Number(item.tg_chat_id)
@@ -138,6 +139,7 @@ export async function telegramDirectMedia(
         limit: blockSize,
       }, { dcId, kind: 'download', abortSignal: requestSignal, timeout: 20_000, maxRetryCount: 1 })
       if (response._ !== 'upload.file') throw new DirectVideoError('Telegram 未返回视频分块。')
+      onReceived?.(response.bytes.length)
       return response.bytes
     }
 

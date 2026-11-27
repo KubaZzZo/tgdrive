@@ -314,6 +314,9 @@ export const api = {
   telegramSwitch: (id: string) => request<TelegramAccountStatus>(`/api/telegram/profiles/${encodeURIComponent(id)}/activate`, { method: 'POST', signal: AbortSignal.timeout(180_000) }),
   telegramDeleteProfile: (id: string) => request<TelegramAccountStatus>(`/api/telegram/profiles/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   traffic: () => request<TrafficStatus>('/api/traffic'),
+  playbackTransfer: (itemId: string, sessionId: string, signal: AbortSignal) => request<{ bytes: number | null; sampled_at: number }>(
+    `/api/files/${encodeURIComponent(itemId)}/playback/${sessionId}`, { signal, cache: 'no-store' },
+  ),
   saveTrafficQuota: (quotaBytes: number) => jsonRequest<TrafficStatus>('PUT', '/api/traffic/settings', { quota_bytes: quotaBytes }),
   syncStatus: () => request<SyncStatus>('/api/sync'),
   requestSync: (full = false) => jsonRequest<SyncStatus>('POST', '/api/sync', { full }),

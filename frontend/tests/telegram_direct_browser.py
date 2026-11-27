@@ -87,7 +87,13 @@ export async function revokeTelegramDirectAuthorization(saved) {
 }
 export function telegramSessionExpired(error) { return error?.message === 'expired'; }
 export function telegramDirectError() { return 'Telegram fixture error'; }
-export async function telegramDirectMedia() {
+export async function telegramDirectMedia(_client, _item, _signal, onReceived) {
+  if (window.fixtureHoldMedia) {
+    state.opening = true;
+    await new Promise((_, reject) => {
+      _signal.addEventListener('abort', () => reject(_signal.reason), {once: true});
+    });
+  }
   return {
     size: media.byteLength,
     mime: 'video/mp4',
@@ -102,7 +108,9 @@ export async function telegramDirectMedia() {
           }, { once: true });
         });
       }
-      return media.slice(offset, Math.min(offset + 262144, end));
+      const block = media.slice(offset, Math.min(offset + 262144, end));
+      onReceived?.(block.length);
+      return block;
     },
   };
 }
@@ -485,25 +493,47 @@ def verify_expiry(browser, base, mock, transport):
     start_close_timer(page, dialog)
     page.clock.fast_forward(20_000)
     assert not downloads
-    page.evaluate("window.telegramFixture.mode = 'expired'")
+    dialog.locator("video").evaluate("video => video.pause()")
     if transport == "worker":
+        dialog.locator("video").evaluate("video => { video.currentTime = 37; }")
+        page.wait_for_function("() => !document.querySelector('video').seeking")
         path = dialog.locator("video").get_attribute("src")
         page.evaluate(
-            """(path) => { void fetch(path, {headers: {Range: 'bytes=12-15'}})
+            """(path) => { window.telegramFixture.mode = 'expired';
+              void fetch(path, {headers: {Range: 'bytes=12-15'}})
               .then(response => response.arrayBuffer()).catch(() => {}); }""",
             path,
         )
     else:
-        dialog.locator("video").evaluate("(video) => { video.currentTime = 70; }")
+        dialog.locator("video").evaluate(
+            "(video) => { window.telegramFixture.mode = 'expired'; video.currentTime = 70; }"
+        )
     expect(page.get_by_text("Telegram 直连授权已失效，已改用服务器播放。")).to_be_visible()
     expect(dialog.get_by_label("API ID", exact=True)).to_have_count(0)
     assert page.evaluate("sessionStorage.getItem('tgdrive_telegram_direct_session')") is None
-    play(page)
+    expected_time = 37 if transport == "worker" else 70
+    try:
+        page.wait_for_function(
+            "time => { const v = document.querySelector('video'); return v?.readyState >= 2 && Math.abs(v.currentTime - time) < 1 && v.paused; }",
+            arg=expected_time,
+        )
+    except Exception:
+        print("Expiry state", transport, video_state(page))
+        raise
+    assert page.evaluate(
+        "() => Object.values(JSON.parse(localStorage.getItem('tgdrive_playback_preferences_v1')).videos).includes('telegram')"
+    )
     assert any("/api/files/" in url and "/download" in url for url in downloads)
     expect(dialog.get_by_role("timer")).to_be_visible()
     page.clock.fast_forward(41_000)
     expect(dialog).to_have_count(0)
     page.close()
+
+
+def video_state(page):
+    return page.locator("video").evaluate(
+        "v => ({time: v.currentTime, ready: v.readyState, paused: v.paused, src: v.src, error: v.error?.message})"
+    )
 
 
 def verify_fallback_and_logout(browser, base, mock):
@@ -527,6 +557,110 @@ def verify_fallback_and_logout(browser, base, mock):
     page.close()
 
 
+def verify_playback_switching(browser, base, mock, transport, screenshots):
+    page, _ = open_app(
+        browser, base, mock, transport=transport, direct=False, mini_app=transport == "worker"
+    )
+    dialog = page.get_by_role("dialog")
+    video = dialog.locator("video")
+    page.wait_for_function("() => document.querySelector('video')?.readyState >= 2")
+    expect(dialog.get_by_label("播放传输状态")).to_contain_text(re.compile(r"服务器发送 .*/s"))
+    expect(dialog.get_by_label("播放传输状态")).to_contain_text(re.compile(r"已缓冲 \d+ 秒"))
+    video.evaluate("video => { video.currentTime = 36; video.volume = 0.35; video.muted = true; }")
+    page.wait_for_function("() => !document.querySelector('video').seeking")
+    dialog.get_by_role("button", name="播放设置", exact=True).click()
+    dialog.get_by_label("播放速度", exact=True).select_option("1.5")
+    dialog.get_by_label("播放方式", exact=True).select_option("telegram")
+    page.wait_for_function(
+        "() => { const v = document.querySelector('video'); return v?.readyState >= 2 && Math.abs(v.currentTime - 36) < 0.5 && v.paused && v.playbackRate === 1.5 && v.muted && Math.abs(v.volume - 0.35) < 0.01; }"
+    )
+    expect(dialog.get_by_label("播放传输状态")).to_contain_text(re.compile(r"Telegram 下载 .*/s"))
+    source = video.get_attribute("src")
+    assert source and source.startswith("/telegram-media/" if transport == "worker" else "blob:")
+    dialog.get_by_role("button", name="播放", exact=True).click()
+    page.wait_for_function("() => document.querySelector('video').currentTime > 36.3")
+    dialog.get_by_role("button", name="播放设置", exact=True).click()
+    position = video.evaluate("video => video.currentTime")
+    dialog.get_by_label("播放方式", exact=True).select_option("server")
+    page.wait_for_function(
+        "time => { const v = document.querySelector('video'); return v?.src.includes('/download') && v.readyState >= 2 && !v.paused && v.currentTime >= time && v.currentTime < time + 8 && v.playbackRate === 1.5; }",
+        arg=position,
+    )
+    dialog.get_by_role("button", name="暂停", exact=True).click()
+    dialog.get_by_role("button", name="播放设置", exact=True).click()
+    dialog.get_by_role("button", name="从头播放", exact=True).click()
+    dialog.get_by_label("播放方式", exact=True).select_option("telegram")
+    page.wait_for_function(
+        "() => { const v = document.querySelector('video'); return v?.readyState >= 2 && v.currentTime < 0.1 && v.paused; }"
+    )
+    # Reopening uses the explicit video preference, even with a different global default.
+    dialog.get_by_role("button", name="关闭", exact=True).click()
+    page.get_by_role("button", name="fixture.mp4", exact=True).click()
+    expect(dialog.get_by_label("播放传输状态")).to_contain_text("Telegram 下载")
+    dialog.get_by_role("button", name="播放设置", exact=True).click()
+    expect(dialog.get_by_label("默认播放方式", exact=True)).to_have_value("server")
+    expect(dialog.get_by_label("播放方式", exact=True)).to_have_value("telegram")
+    if screenshots:
+        screenshots.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(screenshots / f"playback-{transport}-settings.png"))
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    dialog.get_by_role("button", name="此视频跟随默认", exact=True).click()
+    dialog.get_by_role("button", name="关闭", exact=True).click()
+    page.get_by_role("button", name="fixture.mp4", exact=True).click()
+    expect(dialog.get_by_label("播放传输状态")).to_contain_text("服务器发送")
+    dialog.get_by_role("button", name="播放设置", exact=True).click()
+    dialog.get_by_label("默认播放方式", exact=True).select_option("telegram")
+    dialog.get_by_role("button", name="关闭", exact=True).click()
+    page.get_by_role("button", name="fixture.mp4", exact=True).click()
+    expect(dialog.get_by_label("播放传输状态")).to_contain_text("Telegram 下载")
+    dialog.get_by_role("button", name="关闭", exact=True).click()
+    page.evaluate("sessionStorage.removeItem('tgdrive_telegram_direct_session')")
+    page.get_by_role("button", name="fixture.mp4", exact=True).click()
+    expect(dialog.get_by_label("播放传输状态")).to_contain_text("服务器发送")
+    dialog.get_by_role("button", name="播放设置", exact=True).click()
+    expect(dialog.get_by_label("默认播放方式", exact=True)).to_have_value("telegram")
+    expect(dialog.get_by_label("播放方式", exact=True).locator('option[value="telegram"]')).to_have_attribute("disabled", "")
+    if screenshots:
+        page.screenshot(path=str(screenshots / f"playback-{transport}-fallback.png"))
+    page.close()
+
+
+def verify_timer_during_switch(browser, base, mock):
+    page, _ = open_app(browser, base, mock, transport="worker", direct=False)
+    dialog = play(page)
+    start_close_timer(page, dialog)
+    page.clock.fast_forward(50_000)
+    page.evaluate("window.fixtureHoldMedia = true")
+    dialog.get_by_label("播放方式", exact=True).select_option("telegram")
+    page.wait_for_function("() => window.telegramFixture?.opening")
+    expect(dialog.get_by_text("正在准备 Telegram 直连播放…", exact=True)).to_be_visible()
+    page.clock.fast_forward(11_000)
+    expect(dialog).to_have_count(0)
+    page.close()
+
+
+def verify_switch_before_metadata(browser, base, mock):
+    page, _ = open_app(browser, base, mock, transport="worker", direct=False)
+    dialog = page.get_by_role("dialog")
+    page.wait_for_function("() => document.querySelector('video')?.readyState >= 2")
+    dialog.locator("video").evaluate("video => { video.currentTime = 44; }")
+    page.wait_for_function("() => !document.querySelector('video').seeking")
+    dialog.get_by_role("button", name="关闭", exact=True).click()
+    held = []
+    page.route("**/api/files/*/download?*", lambda route: held.append(route))
+    page.get_by_role("button", name="fixture.mp4", exact=True).click()
+    expect(dialog.get_by_role("button", name="播放设置", exact=True)).to_be_visible()
+    assert video_state(page)["ready"] == 0
+    dialog.get_by_role("button", name="播放设置", exact=True).click()
+    dialog.get_by_label("播放方式", exact=True).select_option("telegram")
+    page.wait_for_function(
+        "() => { const v = document.querySelector('video'); return v?.readyState >= 2 && Math.abs(v.currentTime - 44) < 0.5 && v.paused; }"
+    )
+    for route in held:
+        route.abort()
+    page.close()
+
+
 def main():
     from conftest import FakeTelegramStorage, make_settings
 
@@ -536,6 +670,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ffmpeg", default="ffmpeg")
     parser.add_argument("--channel", help="Playwright Chromium channel, such as chrome")
+    parser.add_argument("--screenshots-dir", type=Path)
     args = parser.parse_args()
     dist = ROOT / "static" / "dist"
     assert (dist / "telegram-media-sw.js").is_file(), "Run npm --prefix frontend run build first"
@@ -588,6 +723,9 @@ def main():
                 verify_unauthorized_playback(browser, base, mock, mini_app=True)
                 verify_unauthorized_playback(browser, base, mock, mini_app=False)
                 verify_default_playback(browser, base, mock)
+                verify_playback_switching(browser, base, mock, "worker", args.screenshots_dir)
+                verify_playback_switching(browser, base, mock, "mp4", args.screenshots_dir)
+                verify_switch_before_metadata(browser, base, mock)
                 verify_configured_credentials(browser, base, mock)
                 verify_qr_authorization(browser, base, mock)
                 verify_shared_qr_authorization(browser, base, mock)
@@ -601,6 +739,7 @@ def main():
                 verify_shared_authorization(browser, base, mock)
                 app.dependency_overrides.pop(get_settings)
                 verify_timer(browser, base, mock)
+                verify_timer_during_switch(browser, base, mock)
                 verify_expiry(browser, base, mock, "worker")
                 verify_expiry(browser, base, mock, "mp4")
                 verify_fallback_and_logout(browser, base, mock)
@@ -609,7 +748,7 @@ def main():
             thread.join(timeout=10)
             assert not thread.is_alive(), "Fixture server did not shut down"
     print(
-        "Verified prompt-free playback, code delivery, QR authorization and revocation, timers and logout."
+        "Verified playback stats, switching, preferences, authorization, expiry, timers and logout."
     )
 
 

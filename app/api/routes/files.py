@@ -4,7 +4,8 @@ import hashlib
 import html
 import logging
 import mimetypes
-from collections.abc import AsyncGenerator
+import re
+from collections.abc import AsyncGenerator, Callable
 from contextlib import aclosing
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -13,9 +14,9 @@ from typing import Any
 from urllib.parse import quote
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
-from starlette.types import Send
+from fastapi import APIRouter, Depends, HTTPException, Path, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from starlette.types import Message, Send
 from telethon.errors import RPCError
 
 from app.api.deps import get_db, get_settings, get_storage
@@ -36,10 +37,16 @@ logger = logging.getLogger("tgdrive.media")
 
 class FileStreamingResponse(StreamingResponse):
     body_iterator: AsyncGenerator[bytes, None]
+    record_bytes: Callable[[int], None] | None = None
 
     async def stream_response(self, send: Send) -> None:
+        async def send_counted(message: Message) -> None:
+            await send(message)
+            if self.record_bytes and message["type"] == "http.response.body":
+                self.record_bytes(len(message.get("body", b"")))
+
         try:
-            await super().stream_response(send)
+            await super().stream_response(send_counted)
         finally:
             # A disconnect can interrupt send() while the iterator is suspended.
             with anyio.CancelScope(shield=True):
@@ -210,6 +217,17 @@ async def stream_item(
     trace = video and (start == 0 or (probe and partial and length <= 1024 * 1024))
     debug = video and logger.isEnabledFor(logging.DEBUG)
     mode = "probe" if probe else "range" if start else "initial-range"
+    transfer_id = request.query_params.get("playback_session", "")
+    record_bytes = None
+    if video and re.fullmatch(r"[a-f0-9]{32}", transfer_id):
+        transfers = request.app.state.playback_transfers
+        transfer_key = (str(db.path), item["id"], transfer_id)
+        transfers.record(transfer_key, 0)
+
+        def record_bytes(size: int) -> None:
+            transfers.record(transfer_key, size)
+
+        headers["Cache-Control"] = "private, no-store"
     if bot and bot_file_id:
         started = perf_counter()
         try:
@@ -225,7 +243,15 @@ async def stream_item(
                 received,
             )
         await cdn.charge(len(data))
-        return Response(data, status_code=206 if partial else 200, media_type=mime, headers=headers)
+
+        async def bot_stream():
+            yield data
+
+        response = FileStreamingResponse(
+            bot_stream(), status_code=206 if partial else 200, media_type=mime, headers=headers
+        )
+        response.record_bytes = record_bytes
+        return response
     cache = request.app.state.media_cache
     media_read = MediaRead() if trace or debug else None
     if cache.enabled and inline and item.get("category") == "video":
@@ -281,12 +307,28 @@ async def stream_item(
         stream = trace_media_range(
             stream, request.state.request_id, start, length, mode, media_read, debug=not trace
         )
-    return FileStreamingResponse(
+    response = FileStreamingResponse(
         stream,
         status_code=206 if partial else 200,
         media_type=mime,
         headers=headers,
     )
+    response.record_bytes = record_bytes
+    return response
+
+
+@auth_router.get("/files/{item_id}/playback/{session_id}")
+async def playback_transfer(
+    item_id: str,
+    request: Request,
+    session_id: str = Path(pattern=r"^[a-f0-9]{32}$"),
+    db: Database = Depends(get_db),
+) -> Response:
+    item = db.get_item(item_id)
+    if not item or item["kind"] != "file":
+        raise HTTPException(404, "文件不存在")
+    snapshot = request.app.state.playback_transfers.snapshot((str(db.path), item_id, session_id))
+    return JSONResponse(snapshot, headers={"Cache-Control": "no-store"})
 
 
 @auth_router.api_route("/files/{item_id}/download", methods=["GET", "HEAD"])
